@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WAL & Transactions — Visualisation PostgreSQL</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#1a1a2e;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-serif;overflow-x:hidden}
+  .header{background:#16213e;border-bottom:1px solid #333;padding:12px 24px;display:flex;align-items:center;gap:16px}
+  .header h1{font-size:1.3rem;color:#8be9fd}
+  .header .badge{background:#ffb86c22;color:#ffb86c;padding:2px 10px;border-radius:12px;font-size:.75rem}
+  .controls{background:#16213e;border-bottom:1px solid #333;padding:12px 24px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+  select{background:#0f3460;border:1px solid #333;color:#e0e0e0;padding:7px 12px;border-radius:6px;font-size:.85rem;cursor:pointer}
+  select:focus{outline:none;border-color:#8be9fd}
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border:1px solid #333;border-radius:6px;background:#0f3460;color:#e0e0e0;cursor:pointer;font-size:.82rem;transition:all .2s}
+  .btn:hover{border-color:#8be9fd;color:#8be9fd}
+  .btn-green{background:#50fa7b22;border-color:#50fa7b;color:#50fa7b}
+  .btn-primary{background:#8be9fd22;border-color:#8be9fd;color:#8be9fd}
+  .btn-red{background:#ff555522;border-color:#ff5555;color:#ff5555}
+  label{font-size:.82rem;color:#aaa;margin-right:6px}
+  .main-area{height:calc(100vh - 106px);display:grid;grid-template-rows:1fr auto}
+  .viz{padding:30px;overflow:auto}
+  .explanation{background:#16213e;border-top:1px solid #333;padding:14px 24px;font-size:.85rem;color:#ccc;line-height:1.5}
+  .explanation strong{color:#8be9fd}
+  /* Pipeline visualization */
+  .pipeline{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;justify-content:center}
+  .stage{background:#16213e;border:1px solid #333;border-radius:10px;padding:18px;min-width:180px;max-width:220px;text-align:center;transition:all .4s;position:relative}
+  .stage h3{font-size:.85rem;color:#bd93f9;margin-bottom:8px}
+  .stage.active{border-color:#8be9fd;box-shadow:0 0 18px #8be9fd33}
+  .stage.done{border-color:#50fa7b}
+  .stage.error{border-color:#ff5555;box-shadow:0 0 18px #ff555533}
+  .stage-icon{font-size:2rem;margin-bottom:8px}
+  .stage-status{font-size:.78rem;color:#888;margin-top:6px;min-height:20px}
+  .stage-status.ok{color:#50fa7b}
+  .stage-status.err{color:#ff5555}
+  .stage-status.warn{color:#ffb86c}
+  .arrow{font-size:1.6rem;color:#555;align-self:center;margin-top:20px}
+  .arrow.active{color:#8be9fd}
+  /* WAL buffer bar */
+  .wal-bar{margin-top:30px;background:#0f3460;border:1px solid #333;border-radius:8px;padding:14px;max-width:700px;margin-left:auto;margin-right:auto}
+  .wal-bar h3{font-size:.85rem;color:#ffb86c;margin-bottom:10px}
+  .wal-records{display:flex;gap:3px;flex-wrap:wrap;min-height:32px}
+  .wal-rec{padding:4px 8px;border-radius:4px;font-size:.7rem;font-weight:600;font-family:Consolas,monospace;transition:all .3s}
+  .wal-rec.insert{background:#50fa7b22;border:1px solid #50fa7b;color:#50fa7b}
+  .wal-rec.update{background:#8be9fd22;border:1px solid #8be9fd;color:#8be9fd}
+  .wal-rec.commit{background:#bd93f922;border:1px solid #bd93f9;color:#bd93f9}
+  .wal-rec.rollback{background:#ff555522;border:1px solid #ff5555;color:#ff5555}
+  .wal-rec.flushed{opacity:.5}
+  .wal-rec.replayed{box-shadow:0 0 8px #50fa7b88}
+  .wal-rec.skipped{opacity:.3;text-decoration:line-through}
+  /* Data files */
+  .data-section{margin-top:20px;display:flex;gap:20px;justify-content:center;flex-wrap:wrap}
+  .data-box{background:#0f3460;border:1px solid #333;border-radius:8px;padding:14px;min-width:200px;text-align:center}
+  .data-box h4{font-size:.82rem;color:#bd93f9;margin-bottom:8px}
+  .data-rows{font-family:Consolas,monospace;font-size:.75rem;text-align:left}
+  .data-row{padding:3px 6px;border-bottom:1px solid #33333366;transition:all .3s}
+  .data-row.dirty{color:#ffb86c;background:#ffb86c11}
+  .data-row.clean{color:#50fa7b}
+  .data-row.crash{color:#ff5555;text-decoration:line-through}
+  /* Crash overlay */
+  .crash-overlay{display:none;position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(255,85,85,.15);z-index:10;justify-content:center;align-items:center;border-radius:10px}
+  .crash-overlay span{font-size:2rem}
+  .step-panel{margin-top:20px;max-width:700px;margin-left:auto;margin-right:auto;background:#16213e;border:1px solid #333;border-radius:8px;padding:14px}
+  .step-panel h3{font-size:.85rem;color:#bd93f9;margin-bottom:6px}
+  .step-text{font-size:.82rem;color:#ccc;line-height:1.5;min-height:40px}
+  @media(max-width:800px){.pipeline{flex-direction:column;align-items:center}.arrow{transform:rotate(90deg)}}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>WAL & Transactions</h1>
+  <span class="badge">Module 04</span>
+  <span style="flex:1"></span>
+  <span style="font-size:.75rem;color:#888">Visualisation interactive PostgreSQL</span>
+</div>
+
+<div class="controls">
+  <label>Scénario :</label>
+  <select id="scenarioSelect" onchange="reset()">
+    <option value="commit">COMMIT normal</option>
+    <option value="rollback">ROLLBACK</option>
+    <option value="crash">Crash + Recovery</option>
+  </select>
+  <button class="btn btn-green" onclick="play()">&#9654; Play</button>
+  <button class="btn" onclick="doPause()">&#10074;&#10074; Pause</button>
+  <button class="btn btn-primary" onclick="doStep()">&#9654;| Pas-à-pas</button>
+  <button class="btn btn-red" onclick="reset()">&#8634; Reset</button>
+  <span style="flex:1"></span>
+  <span style="font-size:.78rem;color:#888" id="stepCounter">Étape 0/0</span>
+</div>
+
+<div class="main-area">
+  <div class="viz" id="vizArea">
+    <!-- Pipeline stages -->
+    <div class="pipeline" id="pipeline">
+      <div class="stage" id="stClient">
+        <div class="stage-icon">&#128187;</div>
+        <h3>Client</h3>
+        <div class="stage-status" id="clientStatus">Prêt</div>
+      </div>
+      <div class="arrow" id="arr1">&#10132;</div>
+      <div class="stage" id="stBackend">
+        <div class="stage-icon">&#9881;</div>
+        <h3>Backend PostgreSQL</h3>
+        <div class="stage-status" id="backendStatus">En attente</div>
+        <div class="crash-overlay" id="crashOverlay"><span>&#9889; CRASH</span></div>
+      </div>
+      <div class="arrow" id="arr2">&#10132;</div>
+      <div class="stage" id="stWalBuf">
+        <div class="stage-icon">&#128196;</div>
+        <h3>WAL Buffer</h3>
+        <div style="font-size:.7rem;color:#666">(Mémoire partagée)</div>
+        <div class="stage-status" id="walBufStatus">Vide</div>
+      </div>
+      <div class="arrow" id="arr3">&#10132;</div>
+      <div class="stage" id="stWalDisk">
+        <div class="stage-icon">&#128190;</div>
+        <h3>WAL sur disque</h3>
+        <div style="font-size:.7rem;color:#666">(pg_wal/)</div>
+        <div class="stage-status" id="walDiskStatus">Vide</div>
+      </div>
+      <div class="arrow" id="arr4">&#10132;</div>
+      <div class="stage" id="stDataFiles">
+        <div class="stage-icon">&#128451;</div>
+        <h3>Fichiers de données</h3>
+        <div style="font-size:.7rem;color:#666">(base/)</div>
+        <div class="stage-status" id="dataStatus">Propre</div>
+      </div>
+    </div>
+
+    <!-- WAL records bar -->
+    <div class="wal-bar">
+      <h3>WAL Records</h3>
+      <div class="wal-records" id="walRecords"></div>
+    </div>
+
+    <!-- Data section -->
+    <div class="data-section">
+      <div class="data-box">
+        <h4>Shared Buffers (mémoire)</h4>
+        <div class="data-rows" id="sharedBuf">
+          <div class="data-row">employes: (1, 'Alice', 50000)</div>
+          <div class="data-row">employes: (2, 'Bob', 45000)</div>
+        </div>
+      </div>
+      <div class="data-box">
+        <h4>Fichiers sur disque</h4>
+        <div class="data-rows" id="diskData">
+          <div class="data-row clean">employes: (1, 'Alice', 50000)</div>
+          <div class="data-row clean">employes: (2, 'Bob', 45000)</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step explanation panel -->
+    <div class="step-panel">
+      <h3>Détail de l'étape</h3>
+      <div class="step-text" id="stepText">Sélectionnez un scénario et appuyez sur Play.</div>
+    </div>
+  </div>
+
+  <div class="explanation" id="explanation">
+    <strong>Write-Ahead Logging (WAL) :</strong> PostgreSQL écrit toutes les modifications dans le journal WAL <em>avant</em> de modifier les fichiers de données. Lors d'un COMMIT, le WAL est synchronisé sur disque (fsync). Les fichiers de données sont écrits plus tard lors du checkpoint. En cas de crash, les enregistrements WAL sont rejoués pour restaurer l'état cohérent.
+  </div>
+</div>
+
+<script>
+const stageIds = ['stClient','stBackend','stWalBuf','stWalDisk','stDataFiles'];
+const arrowIds = ['arr1','arr2','arr3','arr4'];
+const statusIds = ['clientStatus','backendStatus','walBufStatus','walDiskStatus','dataStatus'];
+
+function clearStages() {
+  stageIds.forEach(id => {
+    const el = document.getElementById(id);
+    el.classList.remove('active','done','error');
+  });
+  arrowIds.forEach(id => {
+    document.getElementById(id).classList.remove('active');
+  });
+  statusIds.forEach(id => {
+    const el = document.getElementById(id);
+    el.className = 'stage-status';
+    el.textContent = '';
+  });
+  document.getElementById('walRecords').innerHTML = '';
+  document.getElementById('crashOverlay').style.display = 'none';
+  document.getElementById('sharedBuf').innerHTML = `
+    <div class="data-row">employes: (1, 'Alice', 50000)</div>
+    <div class="data-row">employes: (2, 'Bob', 45000)</div>`;
+  document.getElementById('diskData').innerHTML = `
+    <div class="data-row clean">employes: (1, 'Alice', 50000)</div>
+    <div class="data-row clean">employes: (2, 'Bob', 45000)</div>`;
+}
+
+const scenarioSteps = {
+  commit: [
+    { active: 'stClient', arrow: null, text: "Le client envoie : <code>BEGIN; UPDATE employes SET salaire=55000 WHERE id=1; COMMIT;</code>",
+      client: "Envoi SQL", backend: "", walBuf: "", walDisk: "", data: "" },
+    { active: 'stBackend', arrow: 'arr1', text: "Le backend reçoit la requête et commence à traiter l'UPDATE. Il modifie la page en mémoire (shared buffers).",
+      client: "Envoyé", backend: "UPDATE en cours...", walBuf: "", walDisk: "", data: "",
+      bufChange: [{idx:0, text:"employes: (1, 'Alice', 55000)", cls:"dirty"}] },
+    { active: 'stWalBuf', arrow: 'arr2', text: "Avant de modifier les données, le backend écrit un <strong>WAL record</strong> dans le WAL buffer (en mémoire). C'est le principe du Write-Ahead Logging.",
+      client: "", backend: "WAL record créé", walBuf: "1 record", walDisk: "", data: "",
+      walAdd: [{text:"UPDATE t=emp id=1 sal:50k→55k", cls:"update"}] },
+    { active: 'stBackend', arrow: null, text: "Le client envoie <code>COMMIT</code>. Le backend doit maintenant garantir la durabilité de la transaction.",
+      client: "COMMIT", backend: "COMMIT reçu", walBuf: "1 record", walDisk: "", data: "",
+      walAdd: [{text:"COMMIT xid=101", cls:"commit"}] },
+    { active: 'stWalDisk', arrow: 'arr3', text: "<strong>fsync !</strong> Le WAL buffer est vidé (flush) vers le fichier WAL sur disque. C'est l'opération critique : tant que le WAL est sur disque, la transaction est durable.",
+      client: "", backend: "fsync WAL...", walBuf: "Flushing...", walDisk: "2 records", data: "",
+      walFlush: true,
+      statusCls: {walDisk:"ok"} },
+    { active: 'stClient', arrow: 'arr1', text: "Le backend envoie la confirmation au client : <strong>COMMIT OK</strong>. La transaction est maintenant durable. Les données ne sont PAS encore écrites dans les fichiers de données !",
+      client: "COMMIT OK ✓", backend: "Réponse envoyée", walBuf: "Vide", walDisk: "2 records ✓", data: "Pages dirty",
+      statusCls: {client:"ok", walDisk:"ok", data:"warn"} },
+    { active: 'stDataFiles', arrow: 'arr4', text: "<strong>Checkpoint</strong> (plus tard) : Le background writer écrit les pages modifiées (dirty pages) des shared buffers vers les fichiers de données. Ce processus est asynchrone et n'impacte pas la transaction.",
+      client: "✓", backend: "Checkpoint...", walBuf: "", walDisk: "Archivé", data: "Écrit ✓",
+      statusCls: {client:"ok", data:"ok", walDisk:"ok"},
+      diskChange: [{idx:0, text:"employes: (1, 'Alice', 55000)", cls:"clean"}],
+      bufChange: [{idx:0, text:"employes: (1, 'Alice', 55000)", cls:""}] }
+  ],
+  rollback: [
+    { active: 'stClient', arrow: null, text: "Le client envoie : <code>BEGIN; UPDATE employes SET salaire=55000 WHERE id=1;</code>",
+      client: "Envoi SQL", backend: "", walBuf: "", walDisk: "", data: "" },
+    { active: 'stBackend', arrow: 'arr1', text: "Le backend traite l'UPDATE et modifie la page en mémoire.",
+      client: "Envoyé", backend: "UPDATE en cours...", walBuf: "", walDisk: "", data: "",
+      bufChange: [{idx:0, text:"employes: (1, 'Alice', 55000)", cls:"dirty"}] },
+    { active: 'stWalBuf', arrow: 'arr2', text: "Un WAL record est écrit dans le buffer WAL.",
+      client: "", backend: "WAL record créé", walBuf: "1 record", walDisk: "", data: "",
+      walAdd: [{text:"UPDATE t=emp id=1 sal:50k→55k", cls:"update"}] },
+    { active: 'stBackend', arrow: null, text: "Le client envoie <code>ROLLBACK</code>. La transaction doit être annulée.",
+      client: "ROLLBACK", backend: "ROLLBACK reçu", walBuf: "1 record", walDisk: "", data: "",
+      walAdd: [{text:"ABORT xid=101", cls:"rollback"}] },
+    { active: 'stBackend', arrow: null, text: "Le backend marque la transaction comme <strong>ABORTED</strong> dans pg_xact (anciennement pg_clog). Les WAL records ne seront pas flushés pour cette transaction. Les pages en mémoire restent modifiées mais la ligne a un xmax qui la rend invisible.",
+      client: "", backend: "ABORT marqué", walBuf: "Ignoré", walDisk: "—", data: "Ligne invisible",
+      statusCls: {backend:"warn"},
+      bufChange: [{idx:0, text:"employes: (1, 'Alice', 55000) [ABORTED]", cls:"data-row crash"}] },
+    { active: 'stClient', arrow: 'arr1', text: "<strong>ROLLBACK OK</strong> — La transaction est annulée. Les anciennes données restent valides. Aucune écriture sur disque n'a été nécessaire pour le ROLLBACK (pas de fsync).",
+      client: "ROLLBACK OK", backend: "Nettoyé", walBuf: "Vide", walDisk: "—", data: "Intact",
+      statusCls: {client:"err"},
+      bufChange: [{idx:0, text:"employes: (1, 'Alice', 50000)", cls:""}] }
+  ],
+  crash: [
+    { active: 'stClient', arrow: null, text: "Deux transactions sont en cours : T1 (COMMITTED) a modifié la ligne 1, T2 (en cours) modifie la ligne 2. Les WAL records de T1 sont sur disque.",
+      client: "T1: COMMIT\nT2: en cours", backend: "2 transactions", walBuf: "", walDisk: "", data: "" },
+    { active: 'stWalDisk', arrow: 'arr3', text: "Le WAL sur disque contient : les records de T1 (UPDATE + COMMIT) et le début de T2 (UPDATE sans COMMIT).",
+      client: "", backend: "", walBuf: "T2: 1 record", walDisk: "T1: 2 rec + T2: 1 rec", data: "",
+      walAdd: [{text:"T1:UPDATE sal→55k", cls:"update"},{text:"T1:COMMIT", cls:"commit"},{text:"T2:UPDATE sal→40k", cls:"update"}] },
+    { active: 'stDataFiles', arrow: null, text: "Les fichiers de données n'ont PAS encore reçu les modifications (pas de checkpoint). Le shared buffer contient les pages dirty.",
+      client: "", backend: "", walBuf: "", walDisk: "3 records", data: "Pas à jour !",
+      statusCls: {data:"warn"},
+      bufChange: [{idx:0, text:"employes: (1, 'Alice', 55000)", cls:"dirty"},{idx:1, text:"employes: (2, 'Bob', 40000)", cls:"dirty"}] },
+    { active: 'stBackend', arrow: null, text: "<strong>&#9889; CRASH !</strong> Le serveur PostgreSQL s'arrête brutalement. Le contenu de la mémoire (shared buffers, WAL buffer) est perdu !",
+      client: "Déconnecté", backend: "CRASH !", walBuf: "PERDU !", walDisk: "Intact", data: "Ancien état",
+      statusCls: {client:"err", backend:"err", walBuf:"err", walDisk:"ok"},
+      crash: true,
+      bufChange: [{idx:0, text:"employes: (1, 'Alice', 50000)", cls:""},{idx:1, text:"employes: (2, 'Bob', 45000)", cls:""}] },
+    { active: 'stBackend', arrow: null, text: "<strong>Recovery !</strong> PostgreSQL redémarre et entre en mode recovery. Il lit le WAL sur disque à partir du dernier checkpoint.",
+      client: "—", backend: "Recovery mode", walBuf: "—", walDisk: "Lecture WAL...", data: "",
+      statusCls: {backend:"warn", walDisk:"ok"},
+      crashEnd: true },
+    { active: 'stWalDisk', arrow: null, text: "<strong>Redo T1 :</strong> Le record UPDATE de T1 est rejoué (redo). Puis le COMMIT de T1 est trouvé → la modification est valide et appliquée aux fichiers de données.",
+      client: "", backend: "Redo T1...", walBuf: "", walDisk: "Replay ▶", data: "T1 restauré ✓",
+      statusCls: {data:"ok"},
+      walReplay: [0, 1],
+      diskChange: [{idx:0, text:"employes: (1, 'Alice', 55000)", cls:"clean"}],
+      bufChange: [{idx:0, text:"employes: (1, 'Alice', 55000)", cls:""}] },
+    { active: 'stWalDisk', arrow: null, text: "<strong>Skip T2 :</strong> Le record UPDATE de T2 est trouvé, mais aucun COMMIT n'est présent → T2 n'a jamais été committée. La modification est ignorée (skip). La ligne 2 garde sa valeur originale.",
+      client: "", backend: "Skip T2...", walBuf: "", walDisk: "Skip ⏭", data: "T2 ignoré",
+      walSkip: [2] },
+    { active: 'stBackend', arrow: null, text: "<strong>Recovery terminée !</strong> La base de données est dans un état cohérent : T1 (committée) est restaurée, T2 (non committée) est annulée. C'est la garantie ACID de durabilité (D).",
+      client: "Reconnexion OK", backend: "Prêt ✓", walBuf: "Vide", walDisk: "Archivé", data: "Cohérent ✓",
+      statusCls: {client:"ok", backend:"ok", data:"ok", walDisk:"ok"} }
+  ]
+};
+
+let scenario = 'commit';
+let stepIdx = 0;
+let playing = false;
+let paused = false;
+let timer = null;
+
+function reset() {
+  scenario = document.getElementById('scenarioSelect').value;
+  stepIdx = 0;
+  playing = false;
+  paused = false;
+  if (timer) clearTimeout(timer);
+  clearStages();
+  document.getElementById('clientStatus').textContent = 'Prêt';
+  document.getElementById('backendStatus').textContent = 'En attente';
+  document.getElementById('walBufStatus').textContent = 'Vide';
+  document.getElementById('walDiskStatus').textContent = 'Vide';
+  document.getElementById('dataStatus').textContent = 'Propre';
+  document.getElementById('stepText').textContent = 'Appuyez sur Play pour lancer l\'animation.';
+  const total = scenarioSteps[scenario].length;
+  document.getElementById('stepCounter').textContent = `Étape 0/${total}`;
+
+  const explanations = {
+    commit: `<strong>COMMIT normal :</strong> Les modifications passent par le WAL buffer → WAL disque (fsync) → réponse client. Les fichiers de données sont mis à jour plus tard lors du checkpoint. C'est le chemin critique de la durabilité ACID.`,
+    rollback: `<strong>ROLLBACK :</strong> Les modifications en mémoire sont simplement marquées comme annulées. Pas de fsync nécessaire pour le ROLLBACK, ce qui le rend très rapide. Le mécanisme MVCC gère la visibilité des lignes.`,
+    crash: `<strong>Crash + Recovery :</strong> Après un crash, PostgreSQL rejoue les WAL records pour restaurer les transactions committées et ignorer les transactions non committées. C'est le fondement de la durabilité ACID.`
+  };
+  document.getElementById('explanation').innerHTML = explanations[scenario];
+}
+
+function applyStep(step) {
+  // Clear active states
+  stageIds.forEach(id => document.getElementById(id).classList.remove('active'));
+  arrowIds.forEach(id => document.getElementById(id).classList.remove('active'));
+
+  // Set active stage
+  if (step.active) document.getElementById(step.active).classList.add('active');
+  if (step.arrow) document.getElementById(step.arrow).classList.add('active');
+
+  // Set status texts
+  const fields = ['client','backend','walBuf','walDisk','data'];
+  const elIds = statusIds;
+  fields.forEach((f, i) => {
+    if (step[f] !== undefined && step[f] !== '') {
+      document.getElementById(elIds[i]).textContent = step[f];
+    }
+  });
+
+  // Status classes
+  if (step.statusCls) {
+    const map = { client: 0, backend: 1, walBuf: 2, walDisk: 3, data: 4 };
+    for (const [k, v] of Object.entries(step.statusCls)) {
+      document.getElementById(elIds[map[k]]).className = 'stage-status ' + v;
+    }
+  }
+
+  // WAL records
+  if (step.walAdd) {
+    const container = document.getElementById('walRecords');
+    step.walAdd.forEach(rec => {
+      const d = document.createElement('div');
+      d.className = 'wal-rec ' + rec.cls;
+      d.textContent = rec.text;
+      container.appendChild(d);
+    });
+  }
+
+  if (step.walFlush) {
+    document.querySelectorAll('.wal-rec').forEach(el => el.classList.add('flushed'));
+  }
+
+  if (step.walReplay) {
+    const recs = document.querySelectorAll('.wal-rec');
+    step.walReplay.forEach(idx => { if (recs[idx]) recs[idx].classList.add('replayed'); });
+  }
+
+  if (step.walSkip) {
+    const recs = document.querySelectorAll('.wal-rec');
+    step.walSkip.forEach(idx => { if (recs[idx]) recs[idx].classList.add('skipped'); });
+  }
+
+  // Buffer changes
+  if (step.bufChange) {
+    const buf = document.getElementById('sharedBuf');
+    step.bufChange.forEach(ch => {
+      const rows = buf.querySelectorAll('.data-row');
+      if (rows[ch.idx]) {
+        rows[ch.idx].textContent = ch.text;
+        rows[ch.idx].className = 'data-row ' + ch.cls;
+      }
+    });
+  }
+
+  // Disk changes
+  if (step.diskChange) {
+    const disk = document.getElementById('diskData');
+    step.diskChange.forEach(ch => {
+      const rows = disk.querySelectorAll('.data-row');
+      if (rows[ch.idx]) {
+        rows[ch.idx].textContent = ch.text;
+        rows[ch.idx].className = 'data-row ' + ch.cls;
+      }
+    });
+  }
+
+  // Crash effect
+  if (step.crash) {
+    document.getElementById('crashOverlay').style.display = 'flex';
+    document.getElementById('stBackend').classList.add('error');
+  }
+  if (step.crashEnd) {
+    document.getElementById('crashOverlay').style.display = 'none';
+    document.getElementById('stBackend').classList.remove('error');
+  }
+
+  // Step text
+  document.getElementById('stepText').innerHTML = step.text;
+  document.getElementById('stepCounter').textContent = `Étape ${stepIdx + 1}/${scenarioSteps[scenario].length}`;
+}
+
+function play() {
+  if (paused) { paused = false; runNext(); return; }
+  reset();
+  playing = true;
+  runNext();
+}
+
+function doPause() {
+  paused = true;
+  if (timer) clearTimeout(timer);
+}
+
+function doStep() {
+  if (!playing) { reset(); playing = true; }
+  const steps = scenarioSteps[scenario];
+  if (stepIdx < steps.length) {
+    applyStep(steps[stepIdx]);
+    stepIdx++;
+  }
+}
+
+function runNext() {
+  if (paused || !playing) return;
+  const steps = scenarioSteps[scenario];
+  if (stepIdx >= steps.length) { playing = false; return; }
+  applyStep(steps[stepIdx]);
+  stepIdx++;
+  timer = setTimeout(runNext, 2000);
+}
+
+// init
+reset();
+</script>
+</body>
+</html>

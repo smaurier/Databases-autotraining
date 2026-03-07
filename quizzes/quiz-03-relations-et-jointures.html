@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quiz 03 — Relations & Jointures</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1a1a2e; color: #e0e0e0; min-height: 100vh; padding: 2rem 1rem; }
+    .container { max-width: 800px; margin: 0 auto; }
+    h1 { text-align: center; margin-bottom: 0.5rem; font-size: 1.8rem; color: #ffffff; }
+    .subtitle { text-align: center; color: #8892b0; margin-bottom: 2rem; font-size: 1rem; }
+    .progress-bar-container { background: #0d1117; border-radius: 10px; height: 14px; margin-bottom: 2rem; overflow: hidden; }
+    .progress-bar { background: linear-gradient(90deg, #0d6efd, #4dabf7); height: 100%; width: 0%; border-radius: 10px; transition: width 0.4s ease; }
+    .progress-text { text-align: center; color: #8892b0; margin-bottom: 1rem; font-size: 0.9rem; }
+    .card { background: #16213e; border-radius: 12px; padding: 2rem; margin-bottom: 1.5rem; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+    .question-label { font-size: 0.85rem; color: #4dabf7; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem; }
+    .question-text { font-size: 1.15rem; margin-bottom: 1.2rem; line-height: 1.5; color: #ffffff; }
+    pre { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 1rem; margin-bottom: 1.2rem; overflow-x: auto; font-size: 0.95rem; }
+    code { font-family: 'Consolas', 'Fira Code', 'Courier New', monospace; color: #c9d1d9; }
+    .options { list-style: none; }
+    .options li { margin-bottom: 0.5rem; }
+    .options label { display: flex; align-items: center; gap: 0.75rem; padding: 0.8rem 1rem; background: #0d1117; border: 2px solid #30363d; border-radius: 8px; cursor: pointer; transition: border-color 0.2s, background 0.2s; font-size: 1rem; }
+    .options label:hover { border-color: #4dabf7; background: #1c2a4a; }
+    .options input[type="radio"] { accent-color: #0d6efd; width: 18px; height: 18px; flex-shrink: 0; }
+    .btn { display: inline-block; padding: 0.7rem 2rem; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: background 0.2s, transform 0.1s; }
+    .btn-primary { background: #0d6efd; color: #fff; }
+    .btn-primary:hover { background: #3b82f6; }
+    .btn-primary:disabled { background: #374151; cursor: not-allowed; }
+    .btn-restart { background: #238636; color: #fff; margin-top: 1rem; padding: 0.7rem 2rem; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; }
+    .btn-restart:hover { background: #2ea043; }
+    .feedback { margin-top: 1rem; padding: 1rem 1.2rem; border-radius: 8px; font-size: 0.95rem; line-height: 1.5; display: none; }
+    .feedback.correct { background: #0f5132; border: 1px solid #198754; color: #d1fae5; display: block; }
+    .feedback.wrong { background: #842029; border: 1px solid #dc3545; color: #fdd; display: block; }
+    .score-card { text-align: center; padding: 3rem 2rem; }
+    .score-card .score { font-size: 3rem; font-weight: 700; color: #4dabf7; margin-bottom: 0.5rem; }
+    .score-card .score-label { font-size: 1.2rem; color: #8892b0; margin-bottom: 1.5rem; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Quiz 03 — Relations & Jointures</h1>
+    <p class="subtitle">FK, JOIN types, tables de jonction</p>
+    <div class="progress-bar-container"><div class="progress-bar" id="progressBar"></div></div>
+    <p class="progress-text" id="progressText">Question 1 / 5</p>
+    <div id="quizContainer"></div>
+    <div id="scoreContainer" class="card score-card hidden"></div>
+  </div>
+  <script>
+    const questions = [
+      {
+        label: "Concept",
+        text: "Que se passe-t-il pour les lignes de la table de gauche qui n'ont pas de correspondance dans un LEFT JOIN ?",
+        code: "SELECT u.name, o.id AS order_id\nFROM users u\nLEFT JOIN orders o ON o.user_id = u.id;",
+        options: [
+          "Ces lignes sont exclues du résultat",
+          "PostgreSQL lève une erreur",
+          "Ces lignes apparaissent avec des valeurs NULL pour les colonnes de la table de droite",
+          "Ces lignes sont dupliquées"
+        ],
+        answer: 2,
+        explanation: "Un LEFT JOIN conserve toutes les lignes de la table de gauche (users), même celles sans correspondance dans la table de droite (orders). Pour ces lignes sans correspondance, les colonnes de la table de droite contiennent NULL. C'est utile pour lister tous les utilisateurs, y compris ceux sans commande."
+      },
+      {
+        label: "Prédiction",
+        text: "Quelle différence de résultat entre INNER JOIN et LEFT JOIN ici ?",
+        code: "-- users: (1,'Alice'), (2,'Bob'), (3,'Charlie')\n-- orders: (101, user_id=1), (102, user_id=1), (103, user_id=2)\n\n-- Requête A : INNER JOIN\nSELECT u.name, o.id FROM users u\nINNER JOIN orders o ON o.user_id = u.id;\n\n-- Requête B : LEFT JOIN\nSELECT u.name, o.id FROM users u\nLEFT JOIN orders o ON o.user_id = u.id;",
+        options: [
+          "Même résultat : 3 lignes",
+          "INNER JOIN : 3 lignes (Alice x2, Bob x1). LEFT JOIN : 4 lignes (Alice x2, Bob x1, Charlie avec NULL)",
+          "INNER JOIN : 2 lignes. LEFT JOIN : 3 lignes",
+          "Les deux retournent une erreur car Charlie n'a pas de commande"
+        ],
+        answer: 1,
+        explanation: "INNER JOIN ne retourne que les lignes avec correspondance : Alice apparaît 2 fois (2 commandes), Bob 1 fois (1 commande), Charlie est exclu (0 commande) = 3 lignes. LEFT JOIN ajoute Charlie avec order_id=NULL = 4 lignes. La différence clé est que LEFT JOIN ne perd jamais de lignes de la table de gauche."
+      },
+      {
+        label: "Concept",
+        text: "Quelle est la conséquence de ON DELETE CASCADE sur les lignes enfants quand on supprime une ligne parent ?",
+        code: "CREATE TABLE orders (\n  id SERIAL PRIMARY KEY,\n  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE\n);",
+        options: [
+          "La suppression du parent est bloquée si des enfants existent",
+          "Les lignes enfants sont automatiquement supprimées avec le parent",
+          "Les lignes enfants ont leur foreign key mise à NULL",
+          "Les lignes enfants restent intactes avec une référence invalide"
+        ],
+        answer: 1,
+        explanation: "ON DELETE CASCADE signifie que la suppression d'une ligne parent entraîne automatiquement la suppression de toutes les lignes enfants qui y font référence. Si on supprime un user, toutes ses orders sont supprimées aussi. C'est pratique mais dangereux : une suppression peut avoir un effet en cascade sur de nombreuses tables. Les alternatives sont RESTRICT (bloquer), SET NULL ou SET DEFAULT."
+      },
+      {
+        label: "Concept",
+        text: "Quelle structure est nécessaire pour modéliser une relation N:M (many-to-many) entre étudiants et cours ?",
+        code: null,
+        options: [
+          "Ajouter un ARRAY de cours_id dans la table students",
+          "Une table de jonction avec deux foreign keys (student_id, course_id) formant la clé primaire composite",
+          "Ajouter une colonne student_id dans la table courses",
+          "Utiliser un type JSONB pour stocker les associations"
+        ],
+        answer: 1,
+        explanation: "Une relation N:M nécessite une table de jonction (ou table d'association) contenant deux foreign keys : l'une vers students, l'autre vers courses. La clé primaire composite (student_id, course_id) garantit l'unicité de chaque association. Cette table peut aussi porter des attributs propres à la relation, comme une date d'inscription ou une note."
+      },
+      {
+        label: "Concept",
+        text: "Quel est le cas d'usage typique d'un self-join (jointure d'une table sur elle-même) ?",
+        code: "SELECT e.name AS employee, m.name AS manager\nFROM employees e\nLEFT JOIN employees m ON e.manager_id = m.id;",
+        options: [
+          "Dupliquer les données d'une table",
+          "Modéliser une relation hiérarchique comme employé/manager dans une même table",
+          "Optimiser les performances en évitant les sous-requêtes",
+          "Créer une copie de sauvegarde de la table"
+        ],
+        answer: 1,
+        explanation: "Un self-join est utilisé quand une table contient une relation hiérarchique interne, comme un employé et son manager qui sont tous deux dans la table employees. La colonne manager_id fait référence à la colonne id de la même table. On utilise des alias (e et m) pour distinguer les deux instances de la table dans la jointure."
+      }
+    ];
+
+    let currentQuestion = 0, score = 0, answered = false;
+
+    function renderQuestion() {
+      if (currentQuestion >= questions.length) { showScore(); return; }
+      const q = questions[currentQuestion];
+      const pct = (currentQuestion / questions.length) * 100;
+      document.getElementById('progressBar').style.width = pct + '%';
+      document.getElementById('progressText').textContent = 'Question ' + (currentQuestion + 1) + ' / ' + questions.length;
+      let html = '<div class="card">';
+      html += '<div class="question-label">' + q.label + '</div>';
+      html += '<div class="question-text">' + q.text + '</div>';
+      if (q.code) html += '<pre><code>' + q.code + '</code></pre>';
+      html += '<ul class="options">';
+      q.options.forEach(function(opt, i) {
+        html += '<li><label><input type="radio" name="q" value="' + i + '"> ' + opt + '</label></li>';
+      });
+      html += '</ul>';
+      html += '<button class="btn btn-primary" id="validateBtn" onclick="validate()" disabled>Valider</button>';
+      html += '<div class="feedback" id="feedback"></div>';
+      html += '</div>';
+      document.getElementById('quizContainer').innerHTML = html;
+      document.getElementById('scoreContainer').classList.add('hidden');
+      answered = false;
+      document.querySelectorAll('input[name="q"]').forEach(function(input) {
+        input.addEventListener('change', function() {
+          document.getElementById('validateBtn').disabled = false;
+        });
+      });
+    }
+
+    function validate() {
+      if (answered) return;
+      answered = true;
+      const selected = document.querySelector('input[name="q"]:checked');
+      if (!selected) return;
+      const val = parseInt(selected.value);
+      const q = questions[currentQuestion];
+      const fb = document.getElementById('feedback');
+      if (val === q.answer) {
+        score++;
+        fb.className = 'feedback correct';
+        fb.innerHTML = '<strong>Correct !</strong> ' + q.explanation;
+      } else {
+        fb.className = 'feedback wrong';
+        fb.innerHTML = '<strong>Incorrect.</strong> ' + q.explanation;
+      }
+      document.getElementById('validateBtn').disabled = true;
+      setTimeout(function() {
+        currentQuestion++;
+        renderQuestion();
+      }, 3000);
+    }
+
+    function showScore() {
+      document.getElementById('quizContainer').innerHTML = '';
+      document.getElementById('progressBar').style.width = '100%';
+      document.getElementById('progressText').textContent = 'Terminé !';
+      const sc = document.getElementById('scoreContainer');
+      sc.classList.remove('hidden');
+      const pct = Math.round((score / questions.length) * 100);
+      let msg = pct >= 80 ? 'Excellent travail !' : pct >= 60 ? 'Bon travail, quelques points à revoir.' : 'Continuez à étudier, vous progresserez !';
+      sc.innerHTML = '<div class="score">' + score + ' / ' + questions.length + '</div><div class="score-label">' + pct + '% — ' + msg + '</div><button class="btn-restart" onclick="restart()">Recommencer</button>';
+    }
+
+    function restart() {
+      currentQuestion = 0; score = 0; answered = false;
+      renderQuestion();
+    }
+
+    renderQuestion();
+  </script>
+</body>
+</html>

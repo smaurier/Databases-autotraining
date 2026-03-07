@@ -1,0 +1,60 @@
+{
+  "name": "postgres-course",
+  "version": "1.0.0",
+  "description": "Formation complète PostgreSQL & Databases : indexes, query planner, locks, isolation, MVCC, JSONB, full-text search (débutant → expert)",
+  "type": "module",
+  "scripts": {
+    "docs:copy-assets": "node scripts/copy-assets.js",
+    "docs:dev": "npm run docs:copy-assets && vitepress dev",
+    "docs:build": "npm run docs:copy-assets && vitepress build",
+    "docs:preview": "vitepress preview",
+    "lab:01": "node labs/lab-01-premiers-pas-psql/exercise.js",
+    "lab:02": "node labs/lab-02-crud-complet/exercise.js",
+    "lab:03": "node labs/lab-03-jointures-en-pratique/exercise.js",
+    "lab:04": "node labs/lab-04-transactions/exercise.js",
+    "lab:05": "node labs/lab-05-index-et-explain/exercise.js",
+    "lab:05:step1": "node labs/lab-05-index-et-explain/exercise-step1.js",
+    "lab:05:step2": "node labs/lab-05-index-et-explain/exercise-step2.js",
+    "lab:05:step3": "node labs/lab-05-index-et-explain/exercise-step3.js",
+    "lab:06": "node labs/lab-06-query-planner-deep-dive/exercise.js",
+    "lab:07": "node labs/lab-07-index-gin-gist-brin/exercise.js",
+    "lab:08": "node labs/lab-08-isolation-levels/exercise.js",
+    "lab:09": "node labs/lab-09-locks-en-action/exercise.js",
+    "lab:10": "node labs/lab-10-deadlocks/exercise.js",
+    "lab:11": "node labs/lab-11-performances/exercise.js",
+    "lab:12": "node labs/lab-12-window-functions-cte/exercise.js",
+    "lab:13": "node labs/lab-13-jsonb-fulltext/exercise.js",
+    "lab:14": "node labs/lab-14-securite-rls/exercise.js",
+    "lab:15": "node labs/lab-15-systeme-reservation/exercise.js",
+    "solution:01": "node labs/lab-01-premiers-pas-psql/solution.js",
+    "solution:02": "node labs/lab-02-crud-complet/solution.js",
+    "solution:03": "node labs/lab-03-jointures-en-pratique/solution.js",
+    "solution:04": "node labs/lab-04-transactions/solution.js",
+    "solution:05": "node labs/lab-05-index-et-explain/solution.js",
+    "solution:06": "node labs/lab-06-query-planner-deep-dive/solution.js",
+    "solution:07": "node labs/lab-07-index-gin-gist-brin/solution.js",
+    "solution:08": "node labs/lab-08-isolation-levels/solution.js",
+    "solution:09": "node labs/lab-09-locks-en-action/solution.js",
+    "solution:10": "node labs/lab-10-deadlocks/solution.js",
+    "solution:11": "node labs/lab-11-performances/solution.js",
+    "solution:12": "node labs/lab-12-window-functions-cte/solution.js",
+    "solution:13": "node labs/lab-13-jsonb-fulltext/solution.js",
+    "solution:14": "node labs/lab-14-securite-rls/solution.js",
+    "solution:15": "node labs/lab-15-systeme-reservation/solution.js",
+    "lab:16": "node labs/lab-16-replication/exercise.js",
+    "lab:17": "node labs/lab-17-monitoring/exercise.js",
+    "lab:18": "node labs/lab-18-partitioning/exercise.js",
+    "solution:16": "node labs/lab-16-replication/solution.js",
+    "solution:17": "node labs/lab-17-monitoring/solution.js",
+    "solution:18": "node labs/lab-18-partitioning/solution.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.0"
+  }
+}

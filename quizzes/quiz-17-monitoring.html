@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quiz 17 — Monitoring & Observabilité</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1a1a2e; color: #e0e0e0; min-height: 100vh; padding: 2rem 1rem; }
+    .container { max-width: 800px; margin: 0 auto; }
+    h1 { text-align: center; margin-bottom: 0.5rem; font-size: 1.8rem; color: #ffffff; }
+    .subtitle { text-align: center; color: #8892b0; margin-bottom: 2rem; font-size: 1rem; }
+    .progress-bar-container { background: #0d1117; border-radius: 10px; height: 14px; margin-bottom: 2rem; overflow: hidden; }
+    .progress-bar { background: linear-gradient(90deg, #0d6efd, #4dabf7); height: 100%; width: 0%; border-radius: 10px; transition: width 0.4s ease; }
+    .progress-text { text-align: center; color: #8892b0; margin-bottom: 1rem; font-size: 0.9rem; }
+    .card { background: #16213e; border-radius: 12px; padding: 2rem; margin-bottom: 1.5rem; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+    .question-label { font-size: 0.85rem; color: #4dabf7; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem; }
+    .question-text { font-size: 1.15rem; margin-bottom: 1.2rem; line-height: 1.5; color: #ffffff; }
+    pre { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 1rem; margin-bottom: 1.2rem; overflow-x: auto; font-size: 0.95rem; }
+    code { font-family: 'Consolas', 'Fira Code', 'Courier New', monospace; color: #c9d1d9; }
+    .options { list-style: none; }
+    .options li { margin-bottom: 0.5rem; }
+    .options label { display: flex; align-items: center; gap: 0.75rem; padding: 0.8rem 1rem; background: #0d1117; border: 2px solid #30363d; border-radius: 8px; cursor: pointer; transition: border-color 0.2s, background 0.2s; font-size: 1rem; }
+    .options label:hover { border-color: #4dabf7; background: #1c2a4a; }
+    .options input[type="radio"] { accent-color: #0d6efd; width: 18px; height: 18px; flex-shrink: 0; }
+    .btn { display: inline-block; padding: 0.7rem 2rem; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: background 0.2s, transform 0.1s; }
+    .btn-primary { background: #0d6efd; color: #fff; }
+    .btn-primary:hover { background: #3b82f6; }
+    .btn-primary:disabled { background: #374151; cursor: not-allowed; }
+    .btn-restart { background: #238636; color: #fff; margin-top: 1rem; padding: 0.7rem 2rem; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; }
+    .btn-restart:hover { background: #2ea043; }
+    .feedback { margin-top: 1rem; padding: 1rem 1.2rem; border-radius: 8px; font-size: 0.95rem; line-height: 1.5; display: none; }
+    .feedback.correct { background: #0f5132; border: 1px solid #198754; color: #d1fae5; display: block; }
+    .feedback.wrong { background: #842029; border: 1px solid #dc3545; color: #fdd; display: block; }
+    .score-card { text-align: center; padding: 3rem 2rem; }
+    .score-card .score { font-size: 3rem; font-weight: 700; color: #4dabf7; margin-bottom: 0.5rem; }
+    .score-card .score-label { font-size: 1.2rem; color: #8892b0; margin-bottom: 1.5rem; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Quiz 17 — Monitoring & Observabilité</h1>
+    <p class="subtitle">pg_stat_*, slow queries, alerting</p>
+    <div class="progress-bar-container"><div class="progress-bar" id="progressBar"></div></div>
+    <p class="progress-text" id="progressText">Question 1 / 5</p>
+    <div id="quizContainer"></div>
+    <div id="scoreContainer" class="card score-card hidden"></div>
+  </div>
+  <script>
+    const questions = [
+      {
+        label: "Concept",
+        text: "Quelles informations fournit la vue <code>pg_stat_statements</code> ?",
+        code: "SELECT query, calls, total_exec_time, mean_exec_time, rows\nFROM pg_stat_statements\nORDER BY total_exec_time DESC\nLIMIT 10;",
+        options: [
+          "Uniquement la liste des requêtes en cours d'exécution",
+          "Le temps d'exécution cumulé, le nombre d'appels, les rows retournées par requête normalisée — c'est l'outil principal pour identifier les requêtes les plus coûteuses",
+          "Les plans d'exécution détaillés de chaque requête",
+          "Les requêtes bloquées et les verrous actifs"
+        ],
+        answer: 1,
+        explanation: "<code>pg_stat_statements</code> agrège les statistiques d'exécution de toutes les requêtes SQL normalisées (les valeurs littérales sont remplacées par $1, $2...). Pour chaque requête, on obtient : <code>calls</code> (nombre d'exécutions), <code>total_exec_time</code> (temps cumulé), <code>mean_exec_time</code> (temps moyen), <code>rows</code> (lignes retournées/affectées), et bien d'autres métriques. C'est l'outil #1 pour identifier les requêtes à optimiser en production. Il nécessite l'extension <code>pg_stat_statements</code> chargée via <code>shared_preload_libraries</code>."
+      },
+      {
+        label: "Code",
+        text: "Comment calcule-t-on le cache hit ratio dans PostgreSQL ?",
+        code: "SELECT\n  datname,\n  blks_hit,\n  blks_read,\n  ???  AS cache_hit_ratio\nFROM pg_stat_database\nWHERE datname = current_database();",
+        options: [
+          "blks_read / blks_hit * 100",
+          "blks_hit / blks_read * 100",
+          "blks_hit / (blks_hit + blks_read) * 100",
+          "(blks_hit - blks_read) / blks_hit * 100"
+        ],
+        answer: 2,
+        explanation: "La formule correcte est : <code>blks_hit / (blks_hit + blks_read) * 100</code>. <code>blks_hit</code> = blocs trouvés dans le shared buffer cache (mémoire). <code>blks_read</code> = blocs lus depuis le disque (ou le cache OS). Le ratio donne le pourcentage de lectures servies depuis la mémoire. Un bon ratio est > 99% pour une base OLTP en production. Si le ratio est < 90%, il faut augmenter <code>shared_buffers</code> ou analyser les requêtes qui balaient trop de données."
+      },
+      {
+        label: "Concept",
+        text: "Que fait le paramètre <code>log_min_duration_statement = 500</code> ?",
+        code: "-- postgresql.conf\nlog_min_duration_statement = 500",
+        options: [
+          "Il limite la durée maximale des requêtes à 500 ms",
+          "Il logge toutes les requêtes dont l'exécution prend plus de 500 ms dans les logs PostgreSQL",
+          "Il logge les 500 premières requêtes de chaque session",
+          "Il arrête automatiquement les requêtes après 500 ms"
+        ],
+        answer: 1,
+        explanation: "Le paramètre <code>log_min_duration_statement = 500</code> configure PostgreSQL pour loguer automatiquement toute requête dont le temps d'exécution dépasse 500 millisecondes. La requête complète avec sa durée apparaît dans les logs PostgreSQL. C'est un outil essentiel pour identifier les slow queries en production sans overhead significatif. Valeur 0 = loguer toutes les requêtes (très verbeux). Valeur -1 = désactivé. En production, une valeur entre 100 et 1000 ms est courante."
+      },
+      {
+        label: "Concept",
+        text: "La colonne <code>n_dead_tup</code> dans <code>pg_stat_user_tables</code> est très élevée pour une table. Que faire ?",
+        code: "SELECT relname, n_live_tup, n_dead_tup,\n  last_autovacuum, last_vacuum\nFROM pg_stat_user_tables\nWHERE n_dead_tup > 10000;",
+        options: [
+          "Supprimer la table et la recréer",
+          "Augmenter la mémoire du serveur",
+          "Vérifier les paramètres d'autovacuum et lancer VACUUM manuellement si nécessaire",
+          "Créer un index supplémentaire sur la table"
+        ],
+        answer: 2,
+        explanation: "Un nombre élevé de <code>n_dead_tup</code> (tuples morts) signifie que des lignes supprimées ou mises à jour n'ont pas encore été nettoyées par VACUUM. Les causes possibles : autovacuum désactivé ou trop lent, longue transaction ouverte qui empêche le nettoyage, ou paramètres autovacuum trop conservateurs. Actions : (1) Lancer <code>VACUUM VERBOSE table</code> manuellement. (2) Vérifier <code>autovacuum_vacuum_threshold</code> et <code>autovacuum_vacuum_scale_factor</code>. (3) Vérifier qu'il n'y a pas de transaction idle in transaction bloquante. Les dead tuples provoquent du bloat (espace gaspillé) et ralentissent les scans."
+      },
+      {
+        label: "Concept",
+        text: "Que retourne la fonction <code>pg_blocking_pids(pid)</code> ?",
+        code: "SELECT pid, pg_blocking_pids(pid) AS blocked_by,\n  state, query\nFROM pg_stat_activity\nWHERE cardinality(pg_blocking_pids(pid)) > 0;",
+        options: [
+          "Le nombre de verrous détenus par un backend",
+          "La liste des PIDs des sessions qui sont bloquées par le PID donné",
+          "Un tableau des PIDs des sessions qui bloquent le backend donné (empêchent sa requête de progresser)",
+          "Le temps d'attente total du backend en millisecondes"
+        ],
+        answer: 2,
+        explanation: "<code>pg_blocking_pids(pid)</code> retourne un tableau (integer[]) contenant les PIDs de toutes les sessions qui bloquent le backend identifié par <code>pid</code>. Si le backend n'est pas bloqué, le tableau est vide. Combiné avec <code>pg_stat_activity</code>, cela permet d'identifier rapidement les chaînes de blocage : qui bloque qui, quelle requête cause le blocage, et depuis combien de temps. C'est plus fiable que de joindre manuellement <code>pg_locks</code>, car cette fonction gère les cas complexes (blocage indirect, verrous d'advisory, etc.)."
+      }
+    ];
+
+    let currentQuestion = 0, score = 0, answered = false;
+
+    function renderQuestion() {
+      if (currentQuestion >= questions.length) { showScore(); return; }
+      const q = questions[currentQuestion];
+      const pct = (currentQuestion / questions.length) * 100;
+      document.getElementById('progressBar').style.width = pct + '%';
+      document.getElementById('progressText').textContent = 'Question ' + (currentQuestion + 1) + ' / ' + questions.length;
+      let html = '<div class="card">';
+      html += '<div class="question-label">' + q.label + '</div>';
+      html += '<div class="question-text">' + q.text + '</div>';
+      if (q.code) html += '<pre><code>' + q.code + '</code></pre>';
+      html += '<ul class="options">';
+      q.options.forEach(function(opt, i) {
+        html += '<li><label><input type="radio" name="q" value="' + i + '"> ' + opt + '</label></li>';
+      });
+      html += '</ul>';
+      html += '<button class="btn btn-primary" id="validateBtn" onclick="validate()" disabled>Valider</button>';
+      html += '<div class="feedback" id="feedback"></div>';
+      html += '</div>';
+      document.getElementById('quizContainer').innerHTML = html;
+      document.getElementById('scoreContainer').classList.add('hidden');
+      answered = false;
+      document.querySelectorAll('input[name="q"]').forEach(function(input) {
+        input.addEventListener('change', function() {
+          document.getElementById('validateBtn').disabled = false;
+        });
+      });
+    }
+
+    function validate() {
+      if (answered) return;
+      answered = true;
+      const selected = document.querySelector('input[name="q"]:checked');
+      if (!selected) return;
+      const val = parseInt(selected.value);
+      const q = questions[currentQuestion];
+      const fb = document.getElementById('feedback');
+      if (val === q.answer) {
+        score++;
+        fb.className = 'feedback correct';
+        fb.innerHTML = '<strong>Correct !</strong> ' + q.explanation;
+      } else {
+        fb.className = 'feedback wrong';
+        fb.innerHTML = '<strong>Incorrect.</strong> ' + q.explanation;
+      }
+      document.getElementById('validateBtn').disabled = true;
+      setTimeout(function() {
+        currentQuestion++;
+        renderQuestion();
+      }, 3000);
+    }
+
+    function showScore() {
+      document.getElementById('quizContainer').innerHTML = '';
+      document.getElementById('progressBar').style.width = '100%';
+      document.getElementById('progressText').textContent = 'Terminé !';
+      const sc = document.getElementById('scoreContainer');
+      sc.classList.remove('hidden');
+      const pct = Math.round((score / questions.length) * 100);
+      let msg = pct >= 80 ? 'Excellent travail !' : pct >= 60 ? 'Bon travail, quelques points à revoir.' : 'Continuez à étudier, vous progresserez !';
+      sc.innerHTML = '<div class="score">' + score + ' / ' + questions.length + '</div><div class="score-label">' + pct + '% — ' + msg + '</div><button class="btn-restart" onclick="restart()">Recommencer</button>';
+    }
+
+    function restart() {
+      currentQuestion = 0; score = 0; answered = false;
+      renderQuestion();
+    }
+
+    renderQuestion();
+  </script>
+</body>
+</html>

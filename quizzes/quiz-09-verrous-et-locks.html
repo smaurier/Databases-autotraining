@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quiz 09 — Verrous & Locks</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1a1a2e; color: #e0e0e0; min-height: 100vh; padding: 2rem 1rem; }
+    .container { max-width: 800px; margin: 0 auto; }
+    h1 { text-align: center; margin-bottom: 0.5rem; font-size: 1.8rem; color: #ffffff; }
+    .subtitle { text-align: center; color: #8892b0; margin-bottom: 2rem; font-size: 1rem; }
+    .progress-bar-container { background: #0d1117; border-radius: 10px; height: 14px; margin-bottom: 2rem; overflow: hidden; }
+    .progress-bar { background: linear-gradient(90deg, #0d6efd, #4dabf7); height: 100%; width: 0%; border-radius: 10px; transition: width 0.4s ease; }
+    .progress-text { text-align: center; color: #8892b0; margin-bottom: 1rem; font-size: 0.9rem; }
+    .card { background: #16213e; border-radius: 12px; padding: 2rem; margin-bottom: 1.5rem; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+    .question-label { font-size: 0.85rem; color: #4dabf7; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem; }
+    .question-text { font-size: 1.15rem; margin-bottom: 1.2rem; line-height: 1.5; color: #ffffff; }
+    pre { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 1rem; margin-bottom: 1.2rem; overflow-x: auto; font-size: 0.95rem; }
+    code { font-family: 'Consolas', 'Fira Code', 'Courier New', monospace; color: #c9d1d9; }
+    .options { list-style: none; }
+    .options li { margin-bottom: 0.5rem; }
+    .options label { display: flex; align-items: center; gap: 0.75rem; padding: 0.8rem 1rem; background: #0d1117; border: 2px solid #30363d; border-radius: 8px; cursor: pointer; transition: border-color 0.2s, background 0.2s; font-size: 1rem; }
+    .options label:hover { border-color: #4dabf7; background: #1c2a4a; }
+    .options input[type="radio"] { accent-color: #0d6efd; width: 18px; height: 18px; flex-shrink: 0; }
+    .btn { display: inline-block; padding: 0.7rem 2rem; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: background 0.2s, transform 0.1s; }
+    .btn-primary { background: #0d6efd; color: #fff; }
+    .btn-primary:hover { background: #3b82f6; }
+    .btn-primary:disabled { background: #374151; cursor: not-allowed; }
+    .btn-restart { background: #238636; color: #fff; margin-top: 1rem; padding: 0.7rem 2rem; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; }
+    .btn-restart:hover { background: #2ea043; }
+    .feedback { margin-top: 1rem; padding: 1rem 1.2rem; border-radius: 8px; font-size: 0.95rem; line-height: 1.5; display: none; }
+    .feedback.correct { background: #0f5132; border: 1px solid #198754; color: #d1fae5; display: block; }
+    .feedback.wrong { background: #842029; border: 1px solid #dc3545; color: #fdd; display: block; }
+    .score-card { text-align: center; padding: 3rem 2rem; }
+    .score-card .score { font-size: 3rem; font-weight: 700; color: #4dabf7; margin-bottom: 0.5rem; }
+    .score-card .score-label { font-size: 1.2rem; color: #8892b0; margin-bottom: 1.5rem; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Quiz 09 — Verrous & Locks</h1>
+    <p class="subtitle">FOR UPDATE, NOWAIT, SKIP LOCKED, advisory locks</p>
+    <div class="progress-bar-container"><div class="progress-bar" id="progressBar"></div></div>
+    <p class="progress-text" id="progressText">Question 1 / 5</p>
+    <div id="quizContainer"></div>
+    <div id="scoreContainer" class="card score-card hidden"></div>
+  </div>
+  <script>
+    const questions = [
+      {
+        label: "Concept",
+        text: "Que verrouille exactement SELECT ... FOR UPDATE ?",
+        code: "SELECT * FROM accounts WHERE id = 1 FOR UPDATE;",
+        options: [
+          "La table entière (table-level lock)",
+          "La page du disque contenant la ligne",
+          "Les lignes sélectionnées avec un verrou exclusif au niveau ligne (row-level exclusive lock)",
+          "L'index utilisé pour la recherche"
+        ],
+        answer: 2,
+        explanation: "FOR UPDATE acquiert un verrou exclusif au niveau de chaque ligne retournée par le SELECT. Les autres transactions qui tentent un SELECT FOR UPDATE, UPDATE ou DELETE sur ces mêmes lignes seront bloquées jusqu'au COMMIT ou ROLLBACK de la transaction détenant le verrou. Les SELECT simples (sans FOR UPDATE) ne sont pas bloqués grâce au MVCC."
+      },
+      {
+        label: "Concept",
+        text: "Quel est le comportement de NOWAIT quand les lignes demandées sont déjà verrouillées ?",
+        code: "SELECT * FROM accounts WHERE id = 1 FOR UPDATE NOWAIT;",
+        options: [
+          "La requête attend indéfiniment que le verrou soit libéré",
+          "La requête retourne immédiatement une erreur au lieu d'attendre",
+          "La requête ignore les lignes verrouillées",
+          "La requête force la libération du verrou existant"
+        ],
+        answer: 1,
+        explanation: "NOWAIT modifie le comportement par défaut de FOR UPDATE. Au lieu d'attendre que le verrou soit libéré (ce qui pourrait prendre longtemps), la requête échoue immédiatement avec l'erreur « could not obtain lock on row ». C'est utile quand l'application préfère gérer un échec rapide plutôt que de bloquer un thread/processus en attente."
+      },
+      {
+        label: "Concept",
+        text: "Quel est le cas d'usage principal de SKIP LOCKED ?",
+        code: "SELECT * FROM jobs\nWHERE status = 'pending'\nORDER BY created_at\nLIMIT 1\nFOR UPDATE SKIP LOCKED;",
+        options: [
+          "Éviter les deadlocks dans les transactions longues",
+          "Implémenter une job queue / file de traitement parallèle où chaque worker prend un job non verrouillé",
+          "Accélérer les SELECT en ignorant les lignes modifiées",
+          "Supprimer automatiquement les lignes verrouillées"
+        ],
+        answer: 1,
+        explanation: "SKIP LOCKED est idéal pour les job queues. Plusieurs workers exécutent la même requête en parallèle : chacun saute les lignes déjà verrouillées par d'autres workers et prend le prochain job disponible. Cela permet un traitement parallèle sans conflit ni attente. C'est le pattern recommandé pour implémenter une file d'attente directement dans PostgreSQL sans outil externe."
+      },
+      {
+        label: "Concept",
+        text: "Quelle est la différence entre un advisory lock et un row lock ?",
+        code: "SELECT pg_advisory_lock(42);\n-- ... traitement ...\nSELECT pg_advisory_unlock(42);",
+        options: [
+          "Un advisory lock est plus rapide qu'un row lock",
+          "Un advisory lock n'est pas lié à une ligne ou table spécifique : c'est un verrou applicatif basé sur un identifiant numérique arbitraire",
+          "Un advisory lock est automatiquement libéré à la fin de chaque instruction",
+          "Un advisory lock empêche les SELECT sur la table"
+        ],
+        answer: 1,
+        explanation: "Les advisory locks sont des verrous purement applicatifs. Ils ne sont liés à aucune ligne, table ou ressource PostgreSQL. L'application choisit un identifiant numérique arbitraire pour représenter une ressource logique (ex: 42 = « processus d'import »). Contrairement aux row locks, ils ne sont pas automatiquement libérés au COMMIT (sauf pg_advisory_xact_lock). C'est utile pour synchroniser des processus applicatifs."
+      },
+      {
+        label: "Code",
+        text: "Quel mode de verrou de table permet les SELECT concurrents mais bloque les UPDATE ?",
+        code: "-- Mode A : ACCESS SHARE (acquis par SELECT)\n-- Mode B : ROW SHARE (acquis par SELECT FOR UPDATE)\n-- Mode C : ROW EXCLUSIVE (acquis par UPDATE/DELETE/INSERT)\n-- Mode D : SHARE (acquis par CREATE INDEX)",
+        options: [
+          "ACCESS SHARE : permet tout sauf DROP TABLE",
+          "SHARE : permet les lectures concurrentes mais bloque les écritures (UPDATE, DELETE, INSERT)",
+          "ROW EXCLUSIVE : permet les SELECT mais bloque les autres écritures",
+          "ROW SHARE : permet les SELECT et les UPDATE concurrents"
+        ],
+        answer: 1,
+        explanation: "Le mode SHARE (acquis par exemple par CREATE INDEX non-concurrent) permet les lectures concurrentes (SELECT) mais bloque toute modification de données (UPDATE, DELETE, INSERT). C'est un verrou de type « lecteurs multiples, aucun écrivain ». ACCESS SHARE est le moins restrictif (SELECT simple), tandis que ACCESS EXCLUSIVE est le plus restrictif (bloque tout, acquis par ALTER TABLE, DROP TABLE)."
+      }
+    ];
+
+    let currentQuestion = 0, score = 0, answered = false;
+
+    function renderQuestion() {
+      if (currentQuestion >= questions.length) { showScore(); return; }
+      const q = questions[currentQuestion];
+      const pct = (currentQuestion / questions.length) * 100;
+      document.getElementById('progressBar').style.width = pct + '%';
+      document.getElementById('progressText').textContent = 'Question ' + (currentQuestion + 1) + ' / ' + questions.length;
+      let html = '<div class="card">';
+      html += '<div class="question-label">' + q.label + '</div>';
+      html += '<div class="question-text">' + q.text + '</div>';
+      if (q.code) html += '<pre><code>' + q.code + '</code></pre>';
+      html += '<ul class="options">';
+      q.options.forEach(function(opt, i) {
+        html += '<li><label><input type="radio" name="q" value="' + i + '"> ' + opt + '</label></li>';
+      });
+      html += '</ul>';
+      html += '<button class="btn btn-primary" id="validateBtn" onclick="validate()" disabled>Valider</button>';
+      html += '<div class="feedback" id="feedback"></div>';
+      html += '</div>';
+      document.getElementById('quizContainer').innerHTML = html;
+      document.getElementById('scoreContainer').classList.add('hidden');
+      answered = false;
+      document.querySelectorAll('input[name="q"]').forEach(function(input) {
+        input.addEventListener('change', function() {
+          document.getElementById('validateBtn').disabled = false;
+        });
+      });
+    }
+
+    function validate() {
+      if (answered) return;
+      answered = true;
+      const selected = document.querySelector('input[name="q"]:checked');
+      if (!selected) return;
+      const val = parseInt(selected.value);
+      const q = questions[currentQuestion];
+      const fb = document.getElementById('feedback');
+      if (val === q.answer) {
+        score++;
+        fb.className = 'feedback correct';
+        fb.innerHTML = '<strong>Correct !</strong> ' + q.explanation;
+      } else {
+        fb.className = 'feedback wrong';
+        fb.innerHTML = '<strong>Incorrect.</strong> ' + q.explanation;
+      }
+      document.getElementById('validateBtn').disabled = true;
+      setTimeout(function() {
+        currentQuestion++;
+        renderQuestion();
+      }, 3000);
+    }
+
+    function showScore() {
+      document.getElementById('quizContainer').innerHTML = '';
+      document.getElementById('progressBar').style.width = '100%';
+      document.getElementById('progressText').textContent = 'Terminé !';
+      const sc = document.getElementById('scoreContainer');
+      sc.classList.remove('hidden');
+      const pct = Math.round((score / questions.length) * 100);
+      let msg = pct >= 80 ? 'Excellent travail !' : pct >= 60 ? 'Bon travail, quelques points à revoir.' : 'Continuez à étudier, vous progresserez !';
+      sc.innerHTML = '<div class="score">' + score + ' / ' + questions.length + '</div><div class="score-label">' + pct + '% — ' + msg + '</div><button class="btn-restart" onclick="restart()">Recommencer</button>';
+    }
+
+    function restart() {
+      currentQuestion = 0; score = 0; answered = false;
+      renderQuestion();
+    }
+
+    renderQuestion();
+  </script>
+</body>
+</html>

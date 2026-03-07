@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quiz 16 — Réplication</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1a1a2e; color: #e0e0e0; min-height: 100vh; padding: 2rem 1rem; }
+    .container { max-width: 800px; margin: 0 auto; }
+    h1 { text-align: center; margin-bottom: 0.5rem; font-size: 1.8rem; color: #ffffff; }
+    .subtitle { text-align: center; color: #8892b0; margin-bottom: 2rem; font-size: 1rem; }
+    .progress-bar-container { background: #0d1117; border-radius: 10px; height: 14px; margin-bottom: 2rem; overflow: hidden; }
+    .progress-bar { background: linear-gradient(90deg, #0d6efd, #4dabf7); height: 100%; width: 0%; border-radius: 10px; transition: width 0.4s ease; }
+    .progress-text { text-align: center; color: #8892b0; margin-bottom: 1rem; font-size: 0.9rem; }
+    .card { background: #16213e; border-radius: 12px; padding: 2rem; margin-bottom: 1.5rem; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+    .question-label { font-size: 0.85rem; color: #4dabf7; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem; }
+    .question-text { font-size: 1.15rem; margin-bottom: 1.2rem; line-height: 1.5; color: #ffffff; }
+    pre { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 1rem; margin-bottom: 1.2rem; overflow-x: auto; font-size: 0.95rem; }
+    code { font-family: 'Consolas', 'Fira Code', 'Courier New', monospace; color: #c9d1d9; }
+    .options { list-style: none; }
+    .options li { margin-bottom: 0.5rem; }
+    .options label { display: flex; align-items: center; gap: 0.75rem; padding: 0.8rem 1rem; background: #0d1117; border: 2px solid #30363d; border-radius: 8px; cursor: pointer; transition: border-color 0.2s, background 0.2s; font-size: 1rem; }
+    .options label:hover { border-color: #4dabf7; background: #1c2a4a; }
+    .options input[type="radio"] { accent-color: #0d6efd; width: 18px; height: 18px; flex-shrink: 0; }
+    .btn { display: inline-block; padding: 0.7rem 2rem; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: background 0.2s, transform 0.1s; }
+    .btn-primary { background: #0d6efd; color: #fff; }
+    .btn-primary:hover { background: #3b82f6; }
+    .btn-primary:disabled { background: #374151; cursor: not-allowed; }
+    .btn-restart { background: #238636; color: #fff; margin-top: 1rem; padding: 0.7rem 2rem; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; }
+    .btn-restart:hover { background: #2ea043; }
+    .feedback { margin-top: 1rem; padding: 1rem 1.2rem; border-radius: 8px; font-size: 0.95rem; line-height: 1.5; display: none; }
+    .feedback.correct { background: #0f5132; border: 1px solid #198754; color: #d1fae5; display: block; }
+    .feedback.wrong { background: #842029; border: 1px solid #dc3545; color: #fdd; display: block; }
+    .score-card { text-align: center; padding: 3rem 2rem; }
+    .score-card .score { font-size: 3rem; font-weight: 700; color: #4dabf7; margin-bottom: 0.5rem; }
+    .score-card .score-label { font-size: 1.2rem; color: #8892b0; margin-bottom: 1.5rem; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Quiz 16 — Réplication</h1>
+    <p class="subtitle">Streaming, logical, failover, PITR</p>
+    <div class="progress-bar-container"><div class="progress-bar" id="progressBar"></div></div>
+    <p class="progress-text" id="progressText">Question 1 / 5</p>
+    <div id="quizContainer"></div>
+    <div id="scoreContainer" class="card score-card hidden"></div>
+  </div>
+  <script>
+    const questions = [
+      {
+        label: "Concept",
+        text: "Quelle est la différence fondamentale entre la réplication physique et la réplication logique dans PostgreSQL ?",
+        code: null,
+        options: [
+          "La réplication physique est plus rapide, la logique est plus fiable",
+          "La réplication physique copie les WAL bit-à-bit (niveau bloc), la réplication logique transmet les changements au niveau SQL (données)",
+          "La réplication physique ne fonctionne qu'en mode synchrone, la logique qu'en asynchrone",
+          "La réplication physique nécessite la même version de PostgreSQL, la logique non — c'est la seule différence"
+        ],
+        answer: 1,
+        explanation: "La réplication physique (streaming replication) transmet les enregistrements WAL bruts — le standby rejoue les mêmes écritures au niveau bloc. Le standby est une copie exacte bit-à-bit du primary. La réplication logique décode les WAL en changements logiques (INSERT, UPDATE, DELETE) et les transmet au subscriber qui les applique comme des opérations SQL. Cela permet la réplication sélective (table par table), entre versions différentes, et même des écritures sur le subscriber."
+      },
+      {
+        label: "Code",
+        text: "Que garantit le paramètre <code>synchronous_commit = remote_apply</code> dans un contexte de réplication synchrone ?",
+        code: "-- postgresql.conf (primary)\nsynchronous_commit = remote_apply\nsynchronous_standby_names = 'standby1'",
+        options: [
+          "Le standby a reçu les WAL mais ne les a pas encore écrits sur disque",
+          "Le standby a écrit les WAL sur disque mais ne les a pas encore appliqués",
+          "Le standby a appliqué les changements — un SELECT sur le standby voit les données immédiatement après le COMMIT sur le primary",
+          "Le primary attend la confirmation de tous les standbys avant de répondre au client"
+        ],
+        answer: 2,
+        explanation: "Avec <code>synchronous_commit = remote_apply</code>, le primary ne confirme le COMMIT au client que lorsque le standby a effectivement appliqué (replay) les changements WAL. Cela garantit qu'une lecture sur le standby immédiatement après le COMMIT sur le primary verra les données à jour. C'est le niveau le plus strict — il élimine le replication lag visible. Le coût : latence accrue sur les écritures car le primary attend le replay complet du standby."
+      },
+      {
+        label: "Concept",
+        text: "À quoi sert un replication slot dans PostgreSQL ?",
+        code: "SELECT * FROM pg_replication_slots;",
+        options: [
+          "Il accélère le transfert des WAL entre le primary et le standby",
+          "Il compresse les WAL avant de les envoyer au standby",
+          "Il empêche PostgreSQL de recycler les fichiers WAL tant que le subscriber/standby ne les a pas consommés",
+          "Il distribue les connexions de réplication sur plusieurs standbys"
+        ],
+        answer: 2,
+        explanation: "Un replication slot est un mécanisme qui garantit que le primary conserve tous les fichiers WAL nécessaires pour un consumer donné (standby ou subscriber logique). Sans slot, PostgreSQL peut recycler des WAL que le standby n'a pas encore reçus (par ex. lors d'une déconnexion prolongée), forçant une resynchronisation complète. Le slot empêche ce recyclage, mais attention : si un subscriber est déconnecté longtemps, les WAL s'accumulent et remplissent le disque."
+      },
+      {
+        label: "Prédiction",
+        text: "Le primary crash. Le standby asynchrone a un replication lag de 5 secondes. Que se passe-t-il pour les données des 5 dernières secondes ?",
+        code: "-- Configuration\nsynchronous_commit = off  -- asynchrone\n\n-- Sur le primary, 5 secondes de transactions\n-- puis... crash !",
+        options: [
+          "Les données sont récupérées automatiquement par le standby via les fichiers WAL archivés",
+          "Les WAL non envoyés au standby sont perdus — les transactions des ~5 dernières secondes ne sont pas sur le standby",
+          "PostgreSQL garantit zéro perte de données même en mode asynchrone",
+          "Le standby rattrape automatiquement son retard après le failover"
+        ],
+        answer: 1,
+        explanation: "En réplication asynchrone, le primary confirme les COMMIT au client avant que les WAL soient envoyés au standby. Si le primary crash, les WAL encore en mémoire (non envoyés) sont perdus. Le standby n'a pas reçu ces dernières transactions — elles sont définitivement perdues lors du failover. C'est le trade-off de l'asynchrone : meilleures performances (pas d'attente réseau) mais risque de perte de données (RPO > 0). Pour zéro perte, il faut <code>synchronous_commit = on</code> ou <code>remote_apply</code>."
+      },
+      {
+        label: "Pourquoi ?",
+        text: "Pourquoi la réplication logique ne réplique-t-elle pas les commandes DDL (CREATE TABLE, ALTER TABLE, etc.) ?",
+        code: "-- Sur le publisher\nCREATE PUBLICATION my_pub FOR TABLE orders;\n\n-- ALTER TABLE orders ADD COLUMN notes TEXT;\n-- → PAS répliqué automatiquement sur le subscriber !",
+        options: [
+          "C'est un bug connu qui sera corrigé dans une future version",
+          "La réplication logique est trop lente pour gérer le DDL",
+          "La réplication logique opère au niveau des changements de données (DML) via le décodage logique des WAL, pas au niveau du catalogue système — le DDL modifie le catalogue et n'est pas capturé par ce mécanisme",
+          "Le DDL est répliqué mais seulement en mode synchrone"
+        ],
+        answer: 2,
+        explanation: "La réplication logique fonctionne en décodant les WAL pour extraire les changements de données (INSERT, UPDATE, DELETE) au niveau des tuples. Les commandes DDL (CREATE TABLE, ALTER TABLE) modifient le catalogue système (pg_class, pg_attribute, etc.) et ne sont pas décodées par le plugin de décodage logique. C'est un choix d'architecture : la réplication logique est conçue pour être flexible (schémas différents possibles entre publisher et subscriber), ce qui rend la réplication du DDL complexe. Il faut appliquer le DDL manuellement ou utiliser des outils tiers."
+      }
+    ];
+
+    let currentQuestion = 0, score = 0, answered = false;
+
+    function renderQuestion() {
+      if (currentQuestion >= questions.length) { showScore(); return; }
+      const q = questions[currentQuestion];
+      const pct = (currentQuestion / questions.length) * 100;
+      document.getElementById('progressBar').style.width = pct + '%';
+      document.getElementById('progressText').textContent = 'Question ' + (currentQuestion + 1) + ' / ' + questions.length;
+      let html = '<div class="card">';
+      html += '<div class="question-label">' + q.label + '</div>';
+      html += '<div class="question-text">' + q.text + '</div>';
+      if (q.code) html += '<pre><code>' + q.code + '</code></pre>';
+      html += '<ul class="options">';
+      q.options.forEach(function(opt, i) {
+        html += '<li><label><input type="radio" name="q" value="' + i + '"> ' + opt + '</label></li>';
+      });
+      html += '</ul>';
+      html += '<button class="btn btn-primary" id="validateBtn" onclick="validate()" disabled>Valider</button>';
+      html += '<div class="feedback" id="feedback"></div>';
+      html += '</div>';
+      document.getElementById('quizContainer').innerHTML = html;
+      document.getElementById('scoreContainer').classList.add('hidden');
+      answered = false;
+      document.querySelectorAll('input[name="q"]').forEach(function(input) {
+        input.addEventListener('change', function() {
+          document.getElementById('validateBtn').disabled = false;
+        });
+      });
+    }
+
+    function validate() {
+      if (answered) return;
+      answered = true;
+      const selected = document.querySelector('input[name="q"]:checked');
+      if (!selected) return;
+      const val = parseInt(selected.value);
+      const q = questions[currentQuestion];
+      const fb = document.getElementById('feedback');
+      if (val === q.answer) {
+        score++;
+        fb.className = 'feedback correct';
+        fb.innerHTML = '<strong>Correct !</strong> ' + q.explanation;
+      } else {
+        fb.className = 'feedback wrong';
+        fb.innerHTML = '<strong>Incorrect.</strong> ' + q.explanation;
+      }
+      document.getElementById('validateBtn').disabled = true;
+      setTimeout(function() {
+        currentQuestion++;
+        renderQuestion();
+      }, 3000);
+    }
+
+    function showScore() {
+      document.getElementById('quizContainer').innerHTML = '';
+      document.getElementById('progressBar').style.width = '100%';
+      document.getElementById('progressText').textContent = 'Terminé !';
+      const sc = document.getElementById('scoreContainer');
+      sc.classList.remove('hidden');
+      const pct = Math.round((score / questions.length) * 100);
+      let msg = pct >= 80 ? 'Excellent travail !' : pct >= 60 ? 'Bon travail, quelques points à revoir.' : 'Continuez à étudier, vous progresserez !';
+      sc.innerHTML = '<div class="score">' + score + ' / ' + questions.length + '</div><div class="score-label">' + pct + '% — ' + msg + '</div><button class="btn-restart" onclick="restart()">Recommencer</button>';
+    }
+
+    function restart() {
+      currentQuestion = 0; score = 0; answered = false;
+      renderQuestion();
+    }
+
+    renderQuestion();
+  </script>
+</body>
+</html>

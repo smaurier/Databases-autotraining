@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>B-tree Index — Visualisation PostgreSQL</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#1a1a2e;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-serif;overflow-x:hidden}
+  .header{background:#16213e;border-bottom:1px solid #333;padding:12px 24px;display:flex;align-items:center;gap:16px}
+  .header h1{font-size:1.3rem;color:#8be9fd}
+  .header .badge{background:#8be9fd22;color:#8be9fd;padding:2px 10px;border-radius:12px;font-size:.75rem}
+  .main{display:grid;grid-template-columns:260px 1fr 280px;grid-template-rows:1fr auto;height:calc(100vh - 52px)}
+  .panel{background:#16213e;border:1px solid #333;padding:16px;overflow-y:auto}
+  .panel h2{font-size:.95rem;color:#bd93f9;margin-bottom:12px;text-transform:uppercase;letter-spacing:1px}
+  label{display:block;font-size:.82rem;color:#aaa;margin-bottom:4px;margin-top:10px}
+  input[type=number],input[type=text]{width:100%;background:#0f3460;border:1px solid #333;color:#e0e0e0;padding:7px 10px;border-radius:6px;font-size:.9rem}
+  input:focus{outline:none;border-color:#8be9fd}
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border:1px solid #333;border-radius:6px;background:#0f3460;color:#e0e0e0;cursor:pointer;font-size:.82rem;transition:all .2s}
+  .btn:hover{border-color:#8be9fd;color:#8be9fd}
+  .btn-primary{background:#8be9fd22;border-color:#8be9fd;color:#8be9fd}
+  .btn-green{background:#50fa7b22;border-color:#50fa7b;color:#50fa7b}
+  .btn-orange{background:#ffb86c22;border-color:#ffb86c;color:#ffb86c}
+  .btn-red{background:#ff555522;border-color:#ff5555;color:#ff5555}
+  .btn-group{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+  .canvas-area{position:relative;overflow:auto;background:#1a1a2e}
+  canvas{display:block}
+  .log-entry{font-size:.78rem;padding:4px 0;border-bottom:1px solid #333;font-family:'Consolas',monospace}
+  .log-entry.search{color:#8be9fd}
+  .log-entry.insert{color:#50fa7b}
+  .log-entry.split{color:#ffb86c}
+  .log-entry.range{color:#bd93f9}
+  .stats{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:12px}
+  .stat-box{background:#0f3460;border:1px solid #333;border-radius:6px;padding:8px;text-align:center}
+  .stat-box .val{font-size:1.4rem;font-weight:700;color:#8be9fd}
+  .stat-box .lbl{font-size:.7rem;color:#888;margin-top:2px}
+  .explanation{grid-column:1/-1;background:#16213e;border-top:1px solid #333;padding:14px 24px;font-size:.85rem;line-height:1.5;color:#ccc}
+  .explanation strong{color:#8be9fd}
+  .controls-bar{display:flex;align-items:center;gap:8px;margin-top:14px;flex-wrap:wrap}
+  .info-banner{background:#0f3460;border:1px solid #8be9fd;border-left:4px solid #8be9fd;border-radius:6px;padding:12px 18px;margin:0;font-size:.85rem;line-height:1.5;color:#ccc}
+  .info-banner strong{color:#8be9fd}
+  @media(max-width:900px){.main{grid-template-columns:1fr;grid-template-rows:auto 1fr auto auto}}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>B-tree Index</h1>
+  <span class="badge">Modules 05-07</span>
+  <span style="flex:1"></span>
+  <span style="font-size:.75rem;color:#888">Visualisation interactive PostgreSQL</span>
+</div>
+
+<div class="info-banner" style="margin:10px 24px 0 24px">
+  <strong>Note pedagogique :</strong> cette visualisation utilise un B-tree d'ordre 4 (max 3 cles par noeud) pour la clarte. En production, un noeud B-tree PostgreSQL contient des centaines a milliers de cles dans une page de 8 Ko, ce qui donne des arbres beaucoup moins profonds (typiquement 3-4 niveaux pour des millions de lignes).
+</div>
+
+<div class="main">
+  <!-- Left Panel -->
+  <div class="panel" style="border-right:1px solid #333">
+    <h2>Operations</h2>
+
+    <label>Insérer une valeur</label>
+    <input type="number" id="insertVal" value="42" min="1" max="999">
+    <div class="btn-group">
+      <button class="btn btn-green" onclick="doInsert()">&#9654; Insérer</button>
+      <button class="btn" onclick="insertRandom()">Aléatoire</button>
+    </div>
+
+    <label>Rechercher une valeur</label>
+    <input type="number" id="searchVal" value="42" min="1" max="999">
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="doSearch()">&#128269; Rechercher</button>
+    </div>
+
+    <label>Range Scan (min – max)</label>
+    <div style="display:flex;gap:6px">
+      <input type="number" id="rangeMin" value="20" min="1" max="999" style="width:48%">
+      <input type="number" id="rangeMax" value="60" min="1" max="999" style="width:48%">
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-orange" onclick="doRangeScan()">&#8596; Range Scan</button>
+    </div>
+
+    <div class="controls-bar">
+      <button class="btn btn-red" onclick="resetTree()">&#8634; Reset</button>
+      <button class="btn" onclick="loadSample()">Charger exemple</button>
+    </div>
+
+    <div class="stats">
+      <div class="stat-box"><div class="val" id="statComp">0</div><div class="lbl">Comparaisons</div></div>
+      <div class="stat-box"><div class="val" id="statPages">0</div><div class="lbl">Pages lues</div></div>
+      <div class="stat-box"><div class="val" id="statHeight">0</div><div class="lbl">Hauteur</div></div>
+      <div class="stat-box"><div class="val" id="statKeys">0</div><div class="lbl">Clés totales</div></div>
+    </div>
+  </div>
+
+  <!-- Center Canvas -->
+  <div class="canvas-area" id="canvasArea">
+    <canvas id="treeCanvas"></canvas>
+  </div>
+
+  <!-- Right Panel -->
+  <div class="panel" style="border-left:1px solid #333">
+    <h2>Journal des opérations</h2>
+    <div id="logPanel" style="max-height:calc(100vh - 160px);overflow-y:auto"></div>
+  </div>
+
+  <!-- Explanation -->
+  <div class="explanation" id="explanation">
+    <strong>B-tree dans PostgreSQL :</strong> Chaque index B-tree est un arbre équilibré d'ordre élevé. La recherche parcourt de la racine aux feuilles en O(log n) comparaisons. Les feuilles sont chaînées entre elles pour permettre des <strong>range scans</strong> efficaces sans remonter dans l'arbre. Insérez des valeurs et observez les <strong>splits de nœuds</strong> quand un nœud dépasse sa capacité.
+  </div>
+</div>
+
+<script>
+// ── B-tree data structure (order 4 = max 3 keys per node) ──
+const ORDER = 4;
+let root = null;
+let animQueue = [];
+let comparisons = 0, pagesAccessed = 0;
+
+class BNode {
+  constructor(leaf = true) {
+    this.keys = [];
+    this.children = [];
+    this.leaf = leaf;
+    this.next = null; // leaf linked list
+    this.id = BNode.nextId++;
+    this.highlight = null; // null | 'search' | 'insert' | 'split' | 'range'
+    this.highlightKeys = new Set();
+  }
+}
+BNode.nextId = 0;
+
+function insertKey(val) {
+  if (!root) { root = new BNode(true); root.keys.push(val); updateStats(); return; }
+  if (root.keys.length === ORDER - 1) {
+    const s = new BNode(false);
+    s.children.push(root);
+    splitChild(s, 0);
+    root = s;
+  }
+  insertNonFull(root, val);
+  updateStats();
+}
+
+function splitChild(parent, i) {
+  const y = parent.children[i];
+  const t = Math.floor(ORDER / 2);
+  const z = new BNode(y.leaf);
+  const mid = y.keys[t - 1];
+  z.keys = y.keys.splice(t);
+  y.keys.splice(t - 1); // remove mid
+  if (!y.leaf) { z.children = y.children.splice(t); }
+  if (y.leaf) { z.next = y.next; y.next = z; }
+  parent.keys.splice(i, 0, mid);
+  parent.children.splice(i + 1, 0, z);
+  addLog('split', `Split nœud: clé médiane ${mid} remontée`);
+}
+
+function insertNonFull(node, val) {
+  let i = node.keys.length - 1;
+  if (node.leaf) {
+    while (i >= 0 && val < node.keys[i]) { i--; }
+    node.keys.splice(i + 1, 0, val);
+  } else {
+    while (i >= 0 && val < node.keys[i]) { i--; }
+    i++;
+    if (node.children[i].keys.length === ORDER - 1) {
+      splitChild(node, i);
+      if (val > node.keys[i]) i++;
+    }
+    insertNonFull(node.children[i], val);
+  }
+}
+
+function searchKey(node, val) {
+  if (!node) return { found: false, path: [], comparisons: 0 };
+  let path = [{ node, keyIdx: -1 }];
+  let comp = 0;
+  let i = 0;
+  while (i < node.keys.length && val > node.keys[i]) { comp++; i++; }
+  if (i < node.keys.length && val === node.keys[i]) {
+    comp++;
+    path[0].keyIdx = i;
+    return { found: true, path, comparisons: comp };
+  }
+  comp++;
+  if (node.leaf) return { found: false, path, comparisons: comp };
+  const sub = searchKey(node.children[i], val);
+  return { found: sub.found, path: path.concat(sub.path), comparisons: comp + sub.comparisons };
+}
+
+function rangeScan(minV, maxV) {
+  // find starting leaf
+  let node = root;
+  let pages = 0;
+  let results = [];
+  if (!node) return { results, pages };
+  while (!node.leaf) {
+    let i = 0;
+    while (i < node.keys.length && minV > node.keys[i]) i++;
+    node = node.children[i];
+    pages++;
+  }
+  pages++;
+  // scan leaf chain
+  while (node) {
+    for (const k of node.keys) {
+      if (k >= minV && k <= maxV) results.push(k);
+      if (k > maxV) return { results, pages };
+    }
+    node = node.next;
+    if (node) pages++;
+  }
+  return { results, pages };
+}
+
+// ── Layout & Drawing ──
+const canvas = document.getElementById('treeCanvas');
+const ctx = canvas.getContext('2d');
+const NODE_H = 36, KEY_W = 44, GAP_X = 18, GAP_Y = 70;
+let layoutMap = new Map(); // nodeId → {x, y, w}
+let highlightedNodes = new Set();
+let highlightedEdges = [];
+let highlightedLeafRange = [];
+let animFrameId = null;
+
+function calcWidth(node) {
+  if (!node) return 0;
+  if (node.leaf) return node.keys.length * KEY_W + GAP_X;
+  let w = 0;
+  for (const c of node.children) w += calcWidth(c);
+  w += (node.children.length - 1) * GAP_X;
+  return Math.max(w, node.keys.length * KEY_W + GAP_X);
+}
+
+function layoutTree(node, x, y) {
+  if (!node) return;
+  const w = node.keys.length * KEY_W;
+  if (node.leaf) {
+    layoutMap.set(node.id, { x: x, y, w });
+    return;
+  }
+  // layout children first to determine positions
+  let childWidths = node.children.map(c => calcWidth(c));
+  let totalW = childWidths.reduce((a, b) => a + b, 0) + (node.children.length - 1) * GAP_X;
+  let cx = x + w / 2 - totalW / 2;
+  for (let i = 0; i < node.children.length; i++) {
+    const cw = childWidths[i];
+    layoutTree(node.children[i], cx, y + GAP_Y);
+    cx += cw + GAP_X;
+  }
+  // center parent over children
+  const firstChild = layoutMap.get(node.children[0].id);
+  const lastChild = layoutMap.get(node.children[node.children.length - 1].id);
+  const parentX = (firstChild.x + lastChild.x + lastChild.w) / 2 - w / 2;
+  layoutMap.set(node.id, { x: parentX, y, w });
+}
+
+function computeLayout() {
+  layoutMap.clear();
+  if (!root) return;
+  const totalW = calcWidth(root);
+  const areaW = Math.max(canvas.width, totalW + 60);
+  layoutTree(root, (areaW - root.keys.length * KEY_W) / 2, 30);
+  // ensure all x >= 10
+  let minX = Infinity;
+  layoutMap.forEach(v => { if (v.x < minX) minX = v.x; });
+  if (minX < 10) {
+    const shift = 10 - minX;
+    layoutMap.forEach(v => { v.x += shift; });
+  }
+}
+
+function resizeCanvas() {
+  const area = document.getElementById('canvasArea');
+  canvas.width = Math.max(area.clientWidth, 800);
+  canvas.height = Math.max(area.clientHeight, 500);
+  computeLayout();
+  drawTree();
+}
+
+function drawTree() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!root) {
+    ctx.fillStyle = '#555';
+    ctx.font = '14px Segoe UI';
+    ctx.textAlign = 'center';
+    ctx.fillText('Arbre vide — insérez des valeurs pour commencer', canvas.width / 2, canvas.height / 2);
+    return;
+  }
+  drawNode(root);
+}
+
+function drawNode(node) {
+  if (!node) return;
+  const layout = layoutMap.get(node.id);
+  if (!layout) return;
+  const { x, y, w } = layout;
+
+  // draw edges to children first
+  if (!node.leaf) {
+    for (const c of node.children) {
+      const cl = layoutMap.get(c.id);
+      if (!cl) continue;
+      const isEdgeHighlighted = highlightedEdges.some(e => e[0] === node.id && e[1] === c.id);
+      ctx.beginPath();
+      ctx.moveTo(x + w / 2, y + NODE_H);
+      ctx.lineTo(cl.x + cl.w / 2, cl.y);
+      ctx.strokeStyle = isEdgeHighlighted ? '#8be9fd' : '#333';
+      ctx.lineWidth = isEdgeHighlighted ? 2.5 : 1;
+      ctx.stroke();
+    }
+  }
+
+  // draw leaf chain arrows
+  if (node.leaf && node.next) {
+    const nl = layoutMap.get(node.next.id);
+    if (nl) {
+      const isRange = highlightedLeafRange.includes(node.id) && highlightedLeafRange.includes(node.next.id);
+      ctx.beginPath();
+      ctx.moveTo(x + w + 4, y + NODE_H / 2);
+      ctx.lineTo(nl.x - 4, nl.y + NODE_H / 2);
+      ctx.strokeStyle = isRange ? '#bd93f9' : '#333';
+      ctx.lineWidth = isRange ? 2.5 : 1;
+      ctx.stroke();
+      // arrowhead
+      const ax = nl.x - 4, ay = nl.y + NODE_H / 2;
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(ax - 8, ay - 4);
+      ctx.lineTo(ax - 8, ay + 4);
+      ctx.closePath();
+      ctx.fillStyle = isRange ? '#bd93f9' : '#555';
+      ctx.fill();
+    }
+  }
+
+  // draw node rectangle
+  const isHighlighted = highlightedNodes.has(node.id);
+  const isRangeHL = highlightedLeafRange.includes(node.id);
+  ctx.fillStyle = isHighlighted ? '#8be9fd18' : (isRangeHL ? '#bd93f918' : '#16213e');
+  ctx.strokeStyle = isHighlighted ? '#8be9fd' : (isRangeHL ? '#bd93f9' : '#333');
+  ctx.lineWidth = isHighlighted || isRangeHL ? 2 : 1;
+  roundRect(ctx, x, y, w, NODE_H, 8);
+  ctx.fill();
+  ctx.stroke();
+
+  if (isHighlighted) {
+    ctx.shadowColor = '#8be9fd';
+    ctx.shadowBlur = 12;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  // draw keys
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 13px Consolas, monospace';
+  for (let i = 0; i < node.keys.length; i++) {
+    const kx = x + i * KEY_W + KEY_W / 2;
+    const ky = y + NODE_H / 2;
+    const isKeyHL = node.highlightKeys.has(i);
+    ctx.fillStyle = isKeyHL ? '#50fa7b' : (isHighlighted ? '#8be9fd' : '#e0e0e0');
+    ctx.fillText(node.keys[i], kx, ky);
+    if (i < node.keys.length - 1) {
+      ctx.beginPath();
+      ctx.moveTo(x + (i + 1) * KEY_W, y + 4);
+      ctx.lineTo(x + (i + 1) * KEY_W, y + NODE_H - 4);
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
+
+  // draw children
+  if (!node.leaf) {
+    for (const c of node.children) drawNode(c);
+  }
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+// ── Animation helpers ──
+function clearHighlights(node) {
+  if (!node) return;
+  node.highlight = null;
+  node.highlightKeys = new Set();
+  highlightedNodes.clear();
+  highlightedEdges = [];
+  highlightedLeafRange = [];
+  if (!node.leaf) node.children.forEach(c => clearHighlights(c));
+}
+
+async function animateSearch(path, found, val) {
+  clearHighlights(root);
+  for (let i = 0; i < path.length; i++) {
+    const { node, keyIdx } = path[i];
+    highlightedNodes.add(node.id);
+    if (i > 0) highlightedEdges.push([path[i - 1].node.id, node.id]);
+    if (keyIdx >= 0) node.highlightKeys.add(keyIdx);
+    computeLayout();
+    drawTree();
+    await sleep(400);
+  }
+  if (found) {
+    setExplanation(`<strong>Trouvé !</strong> La valeur ${val} a été trouvée après ${comparisons} comparaisons et ${pagesAccessed} pages lues. Complexité : O(log n).`);
+  } else {
+    setExplanation(`<strong>Non trouvé.</strong> La valeur ${val} n'existe pas dans l'index. ${comparisons} comparaisons, ${pagesAccessed} pages parcourues.`);
+  }
+}
+
+async function animateRangeScan(results, pages, minV, maxV) {
+  clearHighlights(root);
+  // find leaf nodes in range
+  let node = root;
+  while (node && !node.leaf) {
+    let i = 0;
+    while (i < node.keys.length && minV > node.keys[i]) i++;
+    highlightedNodes.add(node.id);
+    node = node.children[i];
+  }
+  computeLayout(); drawTree(); await sleep(300);
+  // scan leaves
+  while (node) {
+    let inRange = false;
+    for (const k of node.keys) {
+      if (k >= minV && k <= maxV) { inRange = true; break; }
+      if (k > maxV) break;
+    }
+    if (inRange) {
+      highlightedLeafRange.push(node.id);
+      for (let i = 0; i < node.keys.length; i++) {
+        if (node.keys[i] >= minV && node.keys[i] <= maxV) node.highlightKeys.add(i);
+      }
+    }
+    if (node.keys[node.keys.length - 1] > maxV) break;
+    node = node.next;
+    computeLayout(); drawTree(); await sleep(250);
+  }
+  computeLayout(); drawTree();
+  setExplanation(`<strong>Range Scan [${minV}, ${maxV}] :</strong> ${results.length} clés trouvées (${results.join(', ')}), ${pages} pages lues. Les feuilles chaînées permettent de scanner sans remonter dans l'arbre.`);
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ── User actions ──
+function doInsert() {
+  const val = parseInt(document.getElementById('insertVal').value);
+  if (isNaN(val) || val < 1 || val > 999) return;
+  clearHighlights(root);
+  comparisons = 0; pagesAccessed = 0;
+  insertKey(val);
+  addLog('insert', `INSERT ${val}`);
+  computeLayout();
+  drawTree();
+  updateStats();
+  setExplanation(`<strong>Insertion de ${val} :</strong> La valeur est insérée dans la feuille appropriée. Si le nœud dépasse ${ORDER - 1} clés, il est scindé (split) et la clé médiane remonte au parent.`);
+}
+
+function insertRandom() {
+  const val = Math.floor(Math.random() * 200) + 1;
+  document.getElementById('insertVal').value = val;
+  doInsert();
+}
+
+async function doSearch() {
+  const val = parseInt(document.getElementById('searchVal').value);
+  if (isNaN(val) || !root) return;
+  clearHighlights(root);
+  const result = searchKey(root, val);
+  comparisons = result.comparisons;
+  pagesAccessed = result.path.length;
+  updateStats();
+  addLog('search', `SEARCH ${val} → ${result.found ? 'Trouvé' : 'Non trouvé'}`);
+  await animateSearch(result.path, result.found, val);
+}
+
+async function doRangeScan() {
+  const minV = parseInt(document.getElementById('rangeMin').value);
+  const maxV = parseInt(document.getElementById('rangeMax').value);
+  if (isNaN(minV) || isNaN(maxV) || !root) return;
+  clearHighlights(root);
+  const result = rangeScan(minV, maxV);
+  pagesAccessed = result.pages;
+  comparisons = 0;
+  updateStats();
+  addLog('range', `RANGE [${minV},${maxV}] → ${result.results.length} résultats`);
+  await animateRangeScan(result.results, result.pages, minV, maxV);
+}
+
+function resetTree() {
+  root = null;
+  BNode.nextId = 0;
+  comparisons = 0; pagesAccessed = 0;
+  highlightedNodes.clear();
+  highlightedEdges = [];
+  highlightedLeafRange = [];
+  document.getElementById('logPanel').innerHTML = '';
+  updateStats();
+  computeLayout();
+  drawTree();
+  setExplanation(`<strong>B-tree dans PostgreSQL :</strong> Chaque index B-tree est un arbre équilibré d'ordre élevé. La recherche parcourt de la racine aux feuilles en O(log n). Insérez des valeurs pour commencer.`);
+}
+
+function loadSample() {
+  resetTree();
+  const vals = [50, 25, 75, 10, 30, 60, 80, 5, 15, 28, 35, 55, 65, 78, 90, 3, 8, 20, 40];
+  vals.forEach(v => { insertKey(v); addLog('insert', `INSERT ${v}`); });
+  computeLayout();
+  drawTree();
+  updateStats();
+  setExplanation(`<strong>Exemple chargé :</strong> ${vals.length} clés insérées. Essayez de rechercher une valeur ou de faire un range scan.`);
+}
+
+// ── Helpers ──
+function getHeight(node) {
+  if (!node) return 0;
+  if (node.leaf) return 1;
+  return 1 + getHeight(node.children[0]);
+}
+
+function countKeys(node) {
+  if (!node) return 0;
+  let c = node.keys.length;
+  if (!node.leaf) node.children.forEach(ch => { c += countKeys(ch); });
+  return c;
+}
+
+function updateStats() {
+  document.getElementById('statComp').textContent = comparisons;
+  document.getElementById('statPages').textContent = pagesAccessed;
+  document.getElementById('statHeight').textContent = getHeight(root);
+  document.getElementById('statKeys').textContent = countKeys(root);
+}
+
+function addLog(type, msg) {
+  const div = document.getElementById('logPanel');
+  const entry = document.createElement('div');
+  entry.className = 'log-entry ' + type;
+  entry.textContent = `[${new Date().toLocaleTimeString('fr-FR')}] ${msg}`;
+  div.prepend(entry);
+  if (div.children.length > 100) div.removeChild(div.lastChild);
+}
+
+function setExplanation(html) {
+  document.getElementById('explanation').innerHTML = html;
+}
+
+// ── Init ──
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+</script>
+</body>
+</html>

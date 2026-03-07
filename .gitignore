@@ -1,0 +1,10 @@
+node_modules/
+.env
+*.log
+.DS_Store
+Thumbs.db
+.claude/
+.vitepress/cache
+.vitepress/dist
+public/quizzes/
+public/visualizations/

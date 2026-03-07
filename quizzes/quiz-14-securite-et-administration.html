@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quiz 14 — Sécurité & Administration</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1a1a2e; color: #e0e0e0; min-height: 100vh; padding: 2rem 1rem; }
+    .container { max-width: 800px; margin: 0 auto; }
+    h1 { text-align: center; margin-bottom: 0.5rem; font-size: 1.8rem; color: #ffffff; }
+    .subtitle { text-align: center; color: #8892b0; margin-bottom: 2rem; font-size: 1rem; }
+    .progress-bar-container { background: #0d1117; border-radius: 10px; height: 14px; margin-bottom: 2rem; overflow: hidden; }
+    .progress-bar { background: linear-gradient(90deg, #0d6efd, #4dabf7); height: 100%; width: 0%; border-radius: 10px; transition: width 0.4s ease; }
+    .progress-text { text-align: center; color: #8892b0; margin-bottom: 1rem; font-size: 0.9rem; }
+    .card { background: #16213e; border-radius: 12px; padding: 2rem; margin-bottom: 1.5rem; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+    .question-label { font-size: 0.85rem; color: #4dabf7; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem; }
+    .question-text { font-size: 1.15rem; margin-bottom: 1.2rem; line-height: 1.5; color: #ffffff; }
+    pre { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 1rem; margin-bottom: 1.2rem; overflow-x: auto; font-size: 0.95rem; }
+    code { font-family: 'Consolas', 'Fira Code', 'Courier New', monospace; color: #c9d1d9; }
+    .options { list-style: none; }
+    .options li { margin-bottom: 0.5rem; }
+    .options label { display: flex; align-items: center; gap: 0.75rem; padding: 0.8rem 1rem; background: #0d1117; border: 2px solid #30363d; border-radius: 8px; cursor: pointer; transition: border-color 0.2s, background 0.2s; font-size: 1rem; }
+    .options label:hover { border-color: #4dabf7; background: #1c2a4a; }
+    .options input[type="radio"] { accent-color: #0d6efd; width: 18px; height: 18px; flex-shrink: 0; }
+    .btn { display: inline-block; padding: 0.7rem 2rem; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: background 0.2s, transform 0.1s; }
+    .btn-primary { background: #0d6efd; color: #fff; }
+    .btn-primary:hover { background: #3b82f6; }
+    .btn-primary:disabled { background: #374151; cursor: not-allowed; }
+    .btn-restart { background: #238636; color: #fff; margin-top: 1rem; padding: 0.7rem 2rem; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; }
+    .btn-restart:hover { background: #2ea043; }
+    .feedback { margin-top: 1rem; padding: 1rem 1.2rem; border-radius: 8px; font-size: 0.95rem; line-height: 1.5; display: none; }
+    .feedback.correct { background: #0f5132; border: 1px solid #198754; color: #d1fae5; display: block; }
+    .feedback.wrong { background: #842029; border: 1px solid #dc3545; color: #fdd; display: block; }
+    .score-card { text-align: center; padding: 3rem 2rem; }
+    .score-card .score { font-size: 3rem; font-weight: 700; color: #4dabf7; margin-bottom: 0.5rem; }
+    .score-card .score-label { font-size: 1.2rem; color: #8892b0; margin-bottom: 1.5rem; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Quiz 14 — Sécurité & Administration</h1>
+    <p class="subtitle">Roles, RLS, pg_dump, monitoring</p>
+    <div class="progress-bar-container"><div class="progress-bar" id="progressBar"></div></div>
+    <p class="progress-text" id="progressText">Question 1 / 5</p>
+    <div id="quizContainer"></div>
+    <div id="scoreContainer" class="card score-card hidden"></div>
+  </div>
+  <script>
+    const questions = [
+      {
+        label: "Concept",
+        text: "Quand s'applique le Row Level Security (RLS) dans la chaîne de vérification d'accès ?",
+        code: "ALTER TABLE documents ENABLE ROW LEVEL SECURITY;\n\nCREATE POLICY user_docs ON documents\n  FOR ALL\n  USING (owner_id = current_setting('app.user_id')::int);",
+        options: [
+          "Avant les contraintes GRANT (permissions de table)",
+          "À la place des contraintes GRANT",
+          "Après les contraintes GRANT : d'abord le rôle doit avoir le droit d'accès à la table, puis RLS filtre les lignes visibles",
+          "Uniquement lors de la création de la table"
+        ],
+        answer: 2,
+        explanation: "RLS (Row Level Security) est une couche de sécurité supplémentaire qui s'applique APRÈS les vérifications GRANT. D'abord, PostgreSQL vérifie que le rôle a le droit d'accéder à la table (GRANT SELECT...). Ensuite, RLS filtre les lignes visibles selon les policies définies. Un rôle sans GRANT SELECT ne pourra pas du tout accéder à la table, même si une policy lui donnerait accès. Les superusers et le propriétaire de la table contournent RLS par défaut."
+      },
+      {
+        label: "Concept",
+        text: "pg_dump produit-il une sauvegarde logique ou physique ?",
+        code: "pg_dump -Fc mydb > backup.dump\npg_restore -d mydb_copy backup.dump",
+        options: [
+          "Physique : il copie les fichiers de données binaires",
+          "Logique : il génère les commandes SQL (DDL + DML) nécessaires pour recréer la base",
+          "Les deux simultanément",
+          "Ni l'un ni l'autre : c'est un snapshot de la mémoire"
+        ],
+        answer: 1,
+        explanation: "pg_dump produit une sauvegarde logique : il lit la base et génère les instructions SQL (CREATE TABLE, INSERT ou COPY) pour la recréer. Avantages : portable entre versions PostgreSQL, peut restaurer des tables individuelles. Inconvénients : plus lent que la copie physique, ne capture pas la configuration du serveur. Pour une sauvegarde physique (copie des fichiers WAL et data), utilisez pg_basebackup."
+      },
+      {
+        label: "Code",
+        text: "Après avoir exécuté ce GRANT, que peut faire exactement le rôle 'app_reader' ?",
+        code: "GRANT SELECT ON TABLE users TO app_reader;",
+        options: [
+          "Lire et modifier les données de la table users",
+          "Uniquement exécuter des requêtes SELECT sur la table users",
+          "Lire toutes les tables de la base de données",
+          "Lire la table users et créer des index dessus"
+        ],
+        answer: 1,
+        explanation: "GRANT SELECT ON TABLE users accorde uniquement le droit de lire (SELECT) la table users au rôle app_reader. Ce rôle ne peut pas INSERT, UPDATE, DELETE, ni modifier la structure de la table. Les GRANT sont spécifiques : chaque permission (SELECT, INSERT, UPDATE, DELETE) doit être accordée explicitement. Le rôle ne peut pas non plus accéder aux autres tables sans GRANT supplémentaires."
+      },
+      {
+        label: "Concept",
+        text: "Quelles informations l'extension pg_stat_statements fournit-elle ?",
+        code: "SELECT query, calls, total_exec_time, mean_exec_time, rows\nFROM pg_stat_statements\nORDER BY total_exec_time DESC\nLIMIT 10;",
+        options: [
+          "Les requêtes en cours d'exécution uniquement",
+          "Les statistiques agrégées des requêtes SQL les plus consommatrices : nombre d'appels, temps total, temps moyen, lignes retournées",
+          "Le plan d'exécution de chaque requête",
+          "Les erreurs SQL des dernières 24 heures"
+        ],
+        answer: 1,
+        explanation: "pg_stat_statements collecte des statistiques agrégées sur toutes les requêtes SQL exécutées : nombre d'appels (calls), temps total d'exécution (total_exec_time), temps moyen (mean_exec_time), nombre de lignes (rows), et plus. Les requêtes sont normalisées (les valeurs littérales sont remplacées par $1, $2...). C'est l'outil essentiel pour identifier les « top SQL » qui consomment le plus de ressources en production."
+      },
+      {
+        label: "Pourquoi ?",
+        text: "Pourquoi scram-sha-256 est-il meilleur que md5 pour l'authentification PostgreSQL ?",
+        code: "-- Dans pg_hba.conf\n# TYPE  DATABASE  USER  ADDRESS       METHOD\nhost    all       all   0.0.0.0/0     scram-sha-256",
+        options: [
+          "scram-sha-256 est plus rapide que md5",
+          "scram-sha-256 utilise un salt unique et des itérations multiples, ce qui le rend résistant aux rainbow tables et aux attaques par force brute",
+          "md5 ne fonctionne plus dans les versions récentes de PostgreSQL",
+          "scram-sha-256 ne nécessite pas de mot de passe"
+        ],
+        answer: 1,
+        explanation: "SCRAM-SHA-256 (Salted Challenge Response Authentication Mechanism) est nettement plus sécurisé que MD5. Il utilise un salt aléatoire unique par utilisateur (rendant les rainbow tables inutiles), des milliers d'itérations de hachage (ralentissant le brute force), et un mécanisme challenge-response (le mot de passe n'est jamais envoyé en clair). MD5 utilise un simple hachage sans salt, vulnérable aux attaques par dictionnaire."
+      }
+    ];
+
+    let currentQuestion = 0, score = 0, answered = false;
+
+    function renderQuestion() {
+      if (currentQuestion >= questions.length) { showScore(); return; }
+      const q = questions[currentQuestion];
+      const pct = (currentQuestion / questions.length) * 100;
+      document.getElementById('progressBar').style.width = pct + '%';
+      document.getElementById('progressText').textContent = 'Question ' + (currentQuestion + 1) + ' / ' + questions.length;
+      let html = '<div class="card">';
+      html += '<div class="question-label">' + q.label + '</div>';
+      html += '<div class="question-text">' + q.text + '</div>';
+      if (q.code) html += '<pre><code>' + q.code + '</code></pre>';
+      html += '<ul class="options">';
+      q.options.forEach(function(opt, i) {
+        html += '<li><label><input type="radio" name="q" value="' + i + '"> ' + opt + '</label></li>';
+      });
+      html += '</ul>';
+      html += '<button class="btn btn-primary" id="validateBtn" onclick="validate()" disabled>Valider</button>';
+      html += '<div class="feedback" id="feedback"></div>';
+      html += '</div>';
+      document.getElementById('quizContainer').innerHTML = html;
+      document.getElementById('scoreContainer').classList.add('hidden');
+      answered = false;
+      document.querySelectorAll('input[name="q"]').forEach(function(input) {
+        input.addEventListener('change', function() {
+          document.getElementById('validateBtn').disabled = false;
+        });
+      });
+    }
+
+    function validate() {
+      if (answered) return;
+      answered = true;
+      const selected = document.querySelector('input[name="q"]:checked');
+      if (!selected) return;
+      const val = parseInt(selected.value);
+      const q = questions[currentQuestion];
+      const fb = document.getElementById('feedback');
+      if (val === q.answer) {
+        score++;
+        fb.className = 'feedback correct';
+        fb.innerHTML = '<strong>Correct !</strong> ' + q.explanation;
+      } else {
+        fb.className = 'feedback wrong';
+        fb.innerHTML = '<strong>Incorrect.</strong> ' + q.explanation;
+      }
+      document.getElementById('validateBtn').disabled = true;
+      setTimeout(function() {
+        currentQuestion++;
+        renderQuestion();
+      }, 3000);
+    }
+
+    function showScore() {
+      document.getElementById('quizContainer').innerHTML = '';
+      document.getElementById('progressBar').style.width = '100%';
+      document.getElementById('progressText').textContent = 'Terminé !';
+      const sc = document.getElementById('scoreContainer');
+      sc.classList.remove('hidden');
+      const pct = Math.round((score / questions.length) * 100);
+      let msg = pct >= 80 ? 'Excellent travail !' : pct >= 60 ? 'Bon travail, quelques points à revoir.' : 'Continuez à étudier, vous progresserez !';
+      sc.innerHTML = '<div class="score">' + score + ' / ' + questions.length + '</div><div class="score-label">' + pct + '% — ' + msg + '</div><button class="btn-restart" onclick="restart()">Recommencer</button>';
+    }
+
+    function restart() {
+      currentQuestion = 0; score = 0; answered = false;
+      renderQuestion();
+    }
+
+    renderQuestion();
+  </script>
+</body>
+</html>

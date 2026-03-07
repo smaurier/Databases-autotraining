@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Query Planner — Visualisation PostgreSQL</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#1a1a2e;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-serif;overflow-x:hidden}
+  .header{background:#16213e;border-bottom:1px solid #333;padding:12px 24px;display:flex;align-items:center;gap:16px}
+  .header h1{font-size:1.3rem;color:#8be9fd}
+  .header .badge{background:#bd93f922;color:#bd93f9;padding:2px 10px;border-radius:12px;font-size:.75rem}
+  .top-bar{background:#16213e;border-bottom:1px solid #333;padding:12px 24px;display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap}
+  .sql-area{flex:1;min-width:300px}
+  .sql-area textarea{width:100%;height:56px;background:#0f3460;border:1px solid #333;color:#50fa7b;padding:8px 12px;border-radius:6px;font-family:Consolas,monospace;font-size:.85rem;resize:vertical}
+  .sql-area textarea:focus{outline:none;border-color:#8be9fd}
+  select{background:#0f3460;border:1px solid #333;color:#e0e0e0;padding:7px 12px;border-radius:6px;font-size:.85rem;cursor:pointer}
+  select:focus{outline:none;border-color:#8be9fd}
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border:1px solid #333;border-radius:6px;background:#0f3460;color:#e0e0e0;cursor:pointer;font-size:.82rem;transition:all .2s}
+  .btn:hover{border-color:#8be9fd;color:#8be9fd}
+  .btn-primary{background:#8be9fd22;border-color:#8be9fd;color:#8be9fd}
+  .btn-green{background:#50fa7b22;border-color:#50fa7b;color:#50fa7b}
+  .btn-red{background:#ff555522;border-color:#ff5555;color:#ff5555}
+  .btn-group{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  label{font-size:.82rem;color:#aaa;margin-bottom:2px;display:block}
+  .main-grid{display:grid;grid-template-columns:1fr;grid-template-rows:1fr auto;height:calc(100vh - 145px)}
+  .viz-area{position:relative;overflow:auto;padding:24px}
+  .bottom-panels{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid #333}
+  .panel{background:#16213e;padding:16px;overflow-y:auto}
+  .panel h2{font-size:.9rem;color:#bd93f9;margin-bottom:10px;text-transform:uppercase;letter-spacing:1px}
+  .explain-output{font-family:Consolas,monospace;font-size:.78rem;white-space:pre-wrap;color:#8be9fd;background:#0f3460;padding:12px;border-radius:6px;border:1px solid #333;max-height:200px;overflow-y:auto;line-height:1.5}
+  .stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .stat-box{background:#0f3460;border:1px solid #333;border-radius:6px;padding:10px;text-align:center}
+  .stat-box .val{font-size:1.3rem;font-weight:700;color:#8be9fd}
+  .stat-box .lbl{font-size:.7rem;color:#888;margin-top:2px}
+  .explanation{padding:14px 24px;background:#16213e;border-top:1px solid #333;font-size:.85rem;color:#ccc;line-height:1.5}
+  .explanation strong{color:#8be9fd}
+  /* Speed slider */
+  input[type=range]{-webkit-appearance:none;appearance:none;width:100px;height:6px;background:#333;border-radius:3px;outline:none}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:#8be9fd;cursor:pointer}
+  /* Animation elements */
+  .block{position:absolute;width:40px;height:28px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;transition:all .15s}
+  .scan-container{position:relative;background:#0f3460;border:1px solid #333;border-radius:8px;padding:16px;margin-bottom:18px;min-height:120px}
+  .scan-container h3{font-size:.85rem;color:#ffb86c;margin-bottom:10px}
+  .table-blocks{display:flex;gap:4px;flex-wrap:wrap}
+  .tblock{width:38px;height:28px;background:#1a1a2e;border:1px solid #444;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:.7rem;color:#888;transition:all .3s}
+  .tblock.scanned{background:#ff555544;border-color:#ff5555;color:#ff5555}
+  .tblock.hit{background:#50fa7b33;border-color:#50fa7b;color:#50fa7b}
+  .tblock.bitmap{background:#ffb86c33;border-color:#ffb86c;color:#ffb86c}
+  .tblock.active{box-shadow:0 0 10px #8be9fd88}
+  .flow-arrow{color:#555;font-size:1.4rem;margin:8px 16px;align-self:center}
+  .flow-row{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap}
+  .pipeline-step{background:#0f3460;border:1px solid #333;border-radius:8px;padding:14px;flex:1;min-width:200px}
+  .pipeline-step h3{font-size:.82rem;color:#bd93f9;margin-bottom:8px}
+  .pipeline-step.active{border-color:#8be9fd;box-shadow:0 0 12px #8be9fd44}
+  .pipeline-step.done{border-color:#50fa7b}
+  .join-nodes{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .join-node{padding:4px 10px;background:#1a1a2e;border:1px solid #444;border-radius:4px;font-size:.75rem;transition:all .3s}
+  .join-node.active{border-color:#8be9fd;color:#8be9fd;background:#8be9fd11}
+  .join-node.matched{border-color:#50fa7b;color:#50fa7b;background:#50fa7b11}
+  @media(max-width:800px){.bottom-panels{grid-template-columns:1fr}.top-bar{flex-direction:column}}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>Query Planner</h1>
+  <span class="badge">Module 06</span>
+  <span style="flex:1"></span>
+  <span style="font-size:.75rem;color:#888">Visualisation interactive PostgreSQL</span>
+</div>
+
+<div class="top-bar">
+  <div class="sql-area">
+    <label>Requête SQL</label>
+    <textarea id="sqlInput" spellcheck="false">SELECT * FROM employes WHERE id = 42;</textarea>
+  </div>
+  <div>
+    <label>Scénario</label>
+    <select id="scenarioSelect" onchange="selectScenario()">
+      <option value="seqscan">Simple SELECT (Seq Scan)</option>
+      <option value="indexscan">SELECT + WHERE index (Index Scan)</option>
+      <option value="bitmapscan">Range query (Bitmap Scan)</option>
+      <option value="nestedloop">JOIN — Nested Loop</option>
+      <option value="hashjoin">JOIN — Hash Join</option>
+      <option value="mergejoin">JOIN — Merge Join</option>
+    </select>
+  </div>
+  <div>
+    <label>Vitesse</label>
+    <input type="range" id="speedSlider" min="1" max="5" value="3">
+  </div>
+  <div class="btn-group" style="margin-top:18px">
+    <button class="btn btn-green" id="btnPlay" onclick="play()">&#9654; Play</button>
+    <button class="btn" id="btnPause" onclick="pause()">&#10074;&#10074; Pause</button>
+    <button class="btn btn-primary" onclick="step()">&#9654;| Pas-à-pas</button>
+    <button class="btn btn-red" onclick="reset()">&#8634; Reset</button>
+  </div>
+</div>
+
+<div class="main-grid">
+  <div class="viz-area" id="vizArea"></div>
+  <div class="bottom-panels">
+    <div class="panel" style="border-right:1px solid #333">
+      <h2>EXPLAIN Output</h2>
+      <div class="explain-output" id="explainOutput">-- Lancez un scénario pour voir le plan d'exécution</div>
+    </div>
+    <div class="panel">
+      <h2>Statistiques</h2>
+      <div class="stats-grid">
+        <div class="stat-box"><div class="val" id="statRows">-</div><div class="lbl">Lignes estimées</div></div>
+        <div class="stat-box"><div class="val" id="statCost">-</div><div class="lbl">Coût total</div></div>
+        <div class="stat-box"><div class="val" id="statBlocks">-</div><div class="lbl">Blocs lus</div></div>
+        <div class="stat-box"><div class="val" id="statTime">-</div><div class="lbl">Temps (ms)</div></div>
+      </div>
+      <div id="explainText" style="margin-top:14px;font-size:.85rem;color:#ccc;line-height:1.5"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const scenarios = {
+  seqscan: {
+    sql: "SELECT * FROM employes WHERE salaire > 50000;",
+    explain: `Seq Scan on employes  (cost=0.00..35.50 rows=150 width=64)
+  Filter: (salaire > 50000)
+  Rows Removed by Filter: 850`,
+    rows: 150, cost: 35.50, blocks: 20, time: 2.4,
+    description: `<strong>Seq Scan (Sequential Scan) :</strong> PostgreSQL lit chaque bloc de la table un par un, de gauche à droite. Chaque ligne est testée contre le filtre <code>salaire > 50000</code>. C'est le plan le plus simple mais le plus lent pour les grandes tables. Utilisé quand aucun index pertinent n'existe ou quand une grande partie de la table est retournée.`
+  },
+  indexscan: {
+    sql: "SELECT * FROM employes WHERE id = 42;",
+    explain: `Index Scan using employes_pkey on employes  (cost=0.29..8.31 rows=1 width=64)
+  Index Cond: (id = 42)`,
+    rows: 1, cost: 8.31, blocks: 3, time: 0.05,
+    description: `<strong>Index Scan :</strong> PostgreSQL parcourt l'index B-tree pour trouver directement la page contenant <code>id = 42</code>. Ensuite, il lit la page de données (heap) pour récupérer la ligne complète. Très efficace pour les recherches ponctuelles — seulement quelques pages lues au lieu de toute la table.`
+  },
+  bitmapscan: {
+    sql: "SELECT * FROM employes WHERE age BETWEEN 30 AND 40;",
+    explain: `Bitmap Heap Scan on employes  (cost=4.68..28.10 rows=85 width=64)
+  Recheck Cond: (age >= 30 AND age <= 40)
+  ->  Bitmap Index Scan on idx_employes_age  (cost=0.00..4.66 rows=85 width=0)
+        Index Cond: (age >= 30 AND age <= 40)`,
+    rows: 85, cost: 28.10, blocks: 12, time: 1.1,
+    description: `<strong>Bitmap Scan :</strong> Deux étapes — d'abord, un <em>Bitmap Index Scan</em> parcourt l'index et construit un bitmap des pages à lire. Ensuite, un <em>Bitmap Heap Scan</em> lit ces pages dans l'ordre physique. Plus efficace qu'un Index Scan pour les plages de valeurs car il évite les accès aléatoires au disque.`
+  },
+  nestedloop: {
+    sql: "SELECT * FROM employes e JOIN departements d ON e.dept_id = d.id;",
+    explain: `Nested Loop  (cost=0.29..120.50 rows=1000 width=128)
+  ->  Seq Scan on departements d  (cost=0.00..1.10 rows=10 width=64)
+  ->  Index Scan using idx_emp_dept on employes e  (cost=0.29..11.80 rows=100 width=64)
+        Index Cond: (dept_id = d.id)`,
+    rows: 1000, cost: 120.50, blocks: 35, time: 5.2,
+    description: `<strong>Nested Loop Join :</strong> Pour chaque ligne de la table externe (départements), PostgreSQL recherche les lignes correspondantes dans la table interne (employés) via l'index. Efficace quand la table externe est petite et qu'un index existe sur la colonne de jointure.`
+  },
+  hashjoin: {
+    sql: "SELECT * FROM commandes c JOIN clients cl ON c.client_id = cl.id;",
+    explain: `Hash Join  (cost=15.25..180.00 rows=5000 width=128)
+  Hash Cond: (c.client_id = cl.id)
+  ->  Seq Scan on commandes c  (cost=0.00..85.00 rows=5000 width=64)
+  ->  Hash  (cost=12.00..12.00 rows=200 width=64)
+        ->  Seq Scan on clients cl  (cost=0.00..12.00 rows=200 width=64)`,
+    rows: 5000, cost: 180.00, blocks: 50, time: 12.5,
+    description: `<strong>Hash Join :</strong> PostgreSQL construit d'abord une table de hachage en mémoire à partir de la plus petite table (clients). Ensuite, il parcourt la grande table (commandes) et cherche chaque correspondance dans la table de hachage en O(1). Très efficace pour les jointures de grandes tables sans index.`
+  },
+  mergejoin: {
+    sql: "SELECT * FROM t1 JOIN t2 ON t1.id = t2.id ORDER BY t1.id;",
+    explain: `Merge Join  (cost=200.00..350.00 rows=10000 width=128)
+  Merge Cond: (t1.id = t2.id)
+  ->  Sort  (cost=100.00..105.00 rows=10000 width=64)
+        Sort Key: t1.id
+        ->  Seq Scan on t1  (cost=0.00..50.00 rows=10000 width=64)
+  ->  Sort  (cost=100.00..105.00 rows=10000 width=64)
+        Sort Key: t2.id
+        ->  Seq Scan on t2  (cost=0.00..50.00 rows=10000 width=64)`,
+    rows: 10000, cost: 350.00, blocks: 80, time: 25.0,
+    description: `<strong>Merge Join :</strong> Les deux tables sont d'abord triées sur la colonne de jointure, puis fusionnées en un seul passage. Comme les deux flux sont ordonnés, chaque ligne n'est visitée qu'une fois. Idéal quand les données sont déjà triées ou quand un <code>ORDER BY</code> est demandé.`
+  }
+};
+
+let currentScenario = 'seqscan';
+let animState = { running: false, paused: false, step: 0, steps: [], timer: null };
+
+function selectScenario() {
+  currentScenario = document.getElementById('scenarioSelect').value;
+  const s = scenarios[currentScenario];
+  document.getElementById('sqlInput').value = s.sql;
+  reset();
+}
+
+function getSpeed() {
+  return [800, 500, 300, 150, 80][document.getElementById('speedSlider').value - 1];
+}
+
+function reset() {
+  animState.running = false;
+  animState.paused = false;
+  animState.step = 0;
+  animState.steps = [];
+  if (animState.timer) clearTimeout(animState.timer);
+  const s = scenarios[currentScenario];
+  document.getElementById('explainOutput').textContent = '-- Appuyez sur Play pour lancer l\'animation';
+  document.getElementById('statRows').textContent = '-';
+  document.getElementById('statCost').textContent = '-';
+  document.getElementById('statBlocks').textContent = '-';
+  document.getElementById('statTime').textContent = '-';
+  document.getElementById('explainText').innerHTML = '';
+  buildViz();
+}
+
+function play() {
+  if (animState.paused) { animState.paused = false; runNext(); return; }
+  reset();
+  const s = scenarios[currentScenario];
+  document.getElementById('explainOutput').textContent = s.explain;
+  document.getElementById('statRows').textContent = s.rows;
+  document.getElementById('statCost').textContent = s.cost;
+  document.getElementById('statBlocks').textContent = s.blocks;
+  document.getElementById('statTime').textContent = s.time + ' ms';
+  document.getElementById('explainText').innerHTML = s.description;
+  animState.running = true;
+  animState.step = 0;
+  buildSteps();
+  runNext();
+}
+
+function pause() {
+  animState.paused = true;
+  if (animState.timer) clearTimeout(animState.timer);
+}
+
+function step() {
+  if (!animState.running) { play(); pause(); return; }
+  if (animState.step < animState.steps.length) {
+    animState.steps[animState.step]();
+    animState.step++;
+  }
+}
+
+function runNext() {
+  if (animState.paused || !animState.running) return;
+  if (animState.step >= animState.steps.length) { animState.running = false; return; }
+  animState.steps[animState.step]();
+  animState.step++;
+  animState.timer = setTimeout(runNext, getSpeed());
+}
+
+// ── Build visualization HTML ──
+function buildViz() {
+  const area = document.getElementById('vizArea');
+  switch (currentScenario) {
+    case 'seqscan': buildSeqScan(area); break;
+    case 'indexscan': buildIndexScan(area); break;
+    case 'bitmapscan': buildBitmapScan(area); break;
+    case 'nestedloop': buildNestedLoop(area); break;
+    case 'hashjoin': buildHashJoin(area); break;
+    case 'mergejoin': buildMergeJoin(area); break;
+  }
+}
+
+function buildSeqScan(area) {
+  let html = `<div class="scan-container"><h3>Table : employes (20 blocs)</h3><div class="table-blocks" id="blocks">`;
+  for (let i = 0; i < 20; i++) html += `<div class="tblock" id="b${i}">B${i}</div>`;
+  html += `</div><div style="margin-top:12px;font-size:.8rem;color:#888" id="scanStatus">En attente...</div></div>`;
+  area.innerHTML = html;
+}
+
+function buildIndexScan(area) {
+  area.innerHTML = `
+    <div class="flow-row">
+      <div class="pipeline-step" id="step-index" style="max-width:250px">
+        <h3>Index B-tree (employes_pkey)</h3>
+        <div id="indexNodes" style="margin-top:8px">
+          <div class="join-node" id="in0">[1..50]</div>
+          <div style="display:flex;gap:6px;margin-top:6px;margin-left:16px">
+            <div class="join-node" id="in1">[1..25]</div>
+            <div class="join-node" id="in2">[26..50]</div>
+          </div>
+          <div style="display:flex;gap:6px;margin-top:6px;margin-left:32px">
+            <div class="join-node" id="in3">[26..37]</div>
+            <div class="join-node" id="in4" style="border-color:#50fa7b">[38..50] → id=42</div>
+          </div>
+        </div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="pipeline-step" id="step-heap" style="max-width:300px">
+        <h3>Table Heap (lecture directe)</h3>
+        <div class="table-blocks" id="heapBlocks" style="margin-top:8px">
+          ${Array.from({length:8},(_,i)=>`<div class="tblock" id="hb${i}">B${i}</div>`).join('')}
+        </div>
+        <div style="margin-top:10px;font-size:.8rem;color:#888" id="heapStatus">En attente...</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="pipeline-step" id="step-result" style="max-width:200px">
+        <h3>Résultat</h3>
+        <div id="resultArea" style="margin-top:8px;font-size:.82rem;color:#555">Aucun résultat</div>
+      </div>
+    </div>`;
+}
+
+function buildBitmapScan(area) {
+  area.innerHTML = `
+    <div class="flow-row">
+      <div class="pipeline-step" id="step-bindex">
+        <h3>1. Bitmap Index Scan</h3>
+        <div style="margin-top:8px;font-size:.8rem;color:#888">Index sur age — construction du bitmap</div>
+        <div class="table-blocks" id="bitmapBits" style="margin-top:8px">
+          ${Array.from({length:20},(_,i)=>`<div class="tblock" id="bb${i}" style="width:28px;height:24px;font-size:.65rem">${i}</div>`).join('')}
+        </div>
+        <div style="margin-top:6px;font-size:.75rem;color:#888" id="bitmapStatus">En attente...</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="pipeline-step" id="step-bheap">
+        <h3>2. Bitmap Heap Scan</h3>
+        <div style="margin-top:8px;font-size:.8rem;color:#888">Lecture des blocs marqués dans le bitmap</div>
+        <div class="table-blocks" id="bheapBlocks" style="margin-top:8px">
+          ${Array.from({length:20},(_,i)=>`<div class="tblock" id="bh${i}">B${i}</div>`).join('')}
+        </div>
+        <div style="margin-top:6px;font-size:.75rem;color:#888" id="bheapStatus">En attente...</div>
+      </div>
+    </div>`;
+}
+
+function buildNestedLoop(area) {
+  area.innerHTML = `
+    <div class="flow-row">
+      <div class="pipeline-step" id="step-outer">
+        <h3>Table externe : departements</h3>
+        <div class="join-nodes" id="outerRows">
+          ${['RH','IT','Finance','Marketing','Legal','Support','R&D','Ventes','Logistique','Direction'].map((d,i)=>`<div class="join-node" id="or${i}">${d}</div>`).join('')}
+        </div>
+      </div>
+      <div class="flow-arrow">⟳</div>
+      <div class="pipeline-step" id="step-inner">
+        <h3>Table interne : employes (via index)</h3>
+        <div id="innerStatus" style="margin-top:8px;font-size:.82rem;color:#888">En attente de la boucle...</div>
+        <div class="join-nodes" id="matchedRows" style="margin-top:8px"></div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="pipeline-step" id="step-result2">
+        <h3>Résultats joints</h3>
+        <div id="joinCount" style="font-size:1.2rem;font-weight:700;color:#8be9fd;margin-top:8px">0</div>
+        <div style="font-size:.75rem;color:#888">lignes produites</div>
+      </div>
+    </div>`;
+}
+
+function buildHashJoin(area) {
+  area.innerHTML = `
+    <div class="flow-row">
+      <div class="pipeline-step" id="step-build">
+        <h3>1. Build : Hash Table (clients)</h3>
+        <div style="margin-top:8px;font-size:.8rem;color:#888">Construction de la table de hachage</div>
+        <div id="hashBuckets" style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px;margin-top:8px">
+          ${Array.from({length:10},(_,i)=>`<div class="tblock" id="hk${i}" style="font-size:.65rem">H${i}</div>`).join('')}
+        </div>
+        <div style="margin-top:6px;font-size:.75rem;color:#888" id="buildStatus">En attente...</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="pipeline-step" id="step-probe">
+        <h3>2. Probe : Scan commandes</h3>
+        <div class="table-blocks" id="probeBlocks" style="margin-top:8px">
+          ${Array.from({length:15},(_,i)=>`<div class="tblock" id="pb${i}">C${i}</div>`).join('')}
+        </div>
+        <div style="margin-top:6px;font-size:.75rem;color:#888" id="probeStatus">En attente...</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="pipeline-step" id="step-hresult" style="max-width:160px">
+        <h3>Résultats</h3>
+        <div id="hjoinCount" style="font-size:1.2rem;font-weight:700;color:#8be9fd;margin-top:8px">0</div>
+        <div style="font-size:.75rem;color:#888">lignes jointes</div>
+      </div>
+    </div>`;
+}
+
+function buildMergeJoin(area) {
+  area.innerHTML = `
+    <div class="flow-row">
+      <div class="pipeline-step" id="step-sort1">
+        <h3>1. Sort t1</h3>
+        <div class="join-nodes" id="sort1Nodes">
+          ${[8,3,12,1,7,15,5,10,2,6].map((v,i)=>`<div class="join-node" id="s1n${i}">${v}</div>`).join('')}
+        </div>
+        <div style="margin-top:6px;font-size:.75rem;color:#888" id="sort1Status">Non trié</div>
+      </div>
+      <div class="pipeline-step" id="step-sort2">
+        <h3>2. Sort t2</h3>
+        <div class="join-nodes" id="sort2Nodes">
+          ${[5,14,2,9,7,1,11,8,3,13].map((v,i)=>`<div class="join-node" id="s2n${i}">${v}</div>`).join('')}
+        </div>
+        <div style="margin-top:6px;font-size:.75rem;color:#888" id="sort2Status">Non trié</div>
+      </div>
+      <div class="flow-arrow">⇉</div>
+      <div class="pipeline-step" id="step-merge">
+        <h3>3. Merge</h3>
+        <div id="mergeStatus" style="margin-top:8px;font-size:.82rem;color:#888">En attente du tri...</div>
+        <div class="join-nodes" id="mergeResults" style="margin-top:8px"></div>
+      </div>
+    </div>`;
+}
+
+// ── Build animation steps ──
+function buildSteps() {
+  animState.steps = [];
+  switch (currentScenario) {
+    case 'seqscan': buildSeqScanSteps(); break;
+    case 'indexscan': buildIndexScanSteps(); break;
+    case 'bitmapscan': buildBitmapScanSteps(); break;
+    case 'nestedloop': buildNestedLoopSteps(); break;
+    case 'hashjoin': buildHashJoinSteps(); break;
+    case 'mergejoin': buildMergeJoinSteps(); break;
+  }
+}
+
+function buildSeqScanSteps() {
+  const hitBlocks = [3, 7, 11, 14, 18]; // blocks that match filter
+  for (let i = 0; i < 20; i++) {
+    const idx = i;
+    animState.steps.push(() => {
+      const el = document.getElementById('b' + idx);
+      if (!el) return;
+      // remove active from previous
+      if (idx > 0) document.getElementById('b' + (idx - 1))?.classList.remove('active');
+      el.classList.add('active');
+      if (hitBlocks.includes(idx)) {
+        el.classList.add('hit');
+        el.textContent = '✓';
+      } else {
+        el.classList.add('scanned');
+      }
+      document.getElementById('scanStatus').textContent = `Bloc ${idx + 1}/20 scanné${hitBlocks.includes(idx) ? ' — correspondance trouvée !' : ''}`;
+    });
+  }
+  animState.steps.push(() => {
+    document.getElementById('b19')?.classList.remove('active');
+    document.getElementById('scanStatus').innerHTML = `<span style="color:#50fa7b">Terminé : 20 blocs lus, ${hitBlocks.length} blocs avec correspondances</span>`;
+  });
+}
+
+function buildIndexScanSteps() {
+  const indexSteps = ['in0', 'in2', 'in4'];
+  for (let i = 0; i < indexSteps.length; i++) {
+    const id = indexSteps[i];
+    animState.steps.push(() => {
+      document.getElementById(id).classList.add('active');
+      document.getElementById('step-index').classList.add('active');
+    });
+  }
+  animState.steps.push(() => {
+    document.getElementById('step-index').classList.remove('active');
+    document.getElementById('step-index').classList.add('done');
+    document.getElementById('step-heap').classList.add('active');
+    document.getElementById('hb5').classList.add('hit');
+    document.getElementById('hb5').textContent = '42';
+    document.getElementById('heapStatus').textContent = 'Page 5 lue directement — ligne id=42 trouvée';
+  });
+  animState.steps.push(() => {
+    document.getElementById('step-heap').classList.remove('active');
+    document.getElementById('step-heap').classList.add('done');
+    document.getElementById('step-result').classList.add('active');
+    document.getElementById('resultArea').innerHTML = '<span style="color:#50fa7b">{id:42, nom:"Dupont", salaire:55000}</span>';
+  });
+}
+
+function buildBitmapScanSteps() {
+  const matchBits = [2, 5, 8, 11, 14, 17];
+  // Phase 1: build bitmap
+  for (let i = 0; i < 20; i++) {
+    const idx = i;
+    animState.steps.push(() => {
+      const el = document.getElementById('bb' + idx);
+      if (matchBits.includes(idx)) {
+        el.classList.add('bitmap');
+        el.textContent = '1';
+      } else {
+        el.style.opacity = '0.4';
+        el.textContent = '0';
+      }
+      document.getElementById('bitmapStatus').textContent = `Index scan: entrée ${idx + 1}/20`;
+    });
+  }
+  animState.steps.push(() => {
+    document.getElementById('bitmapStatus').innerHTML = '<span style="color:#ffb86c">Bitmap construit : 6 pages marquées</span>';
+    document.getElementById('step-bindex').classList.add('done');
+  });
+  // Phase 2: heap scan using bitmap
+  for (const idx of matchBits) {
+    animState.steps.push(() => {
+      const el = document.getElementById('bh' + idx);
+      el.classList.add('hit');
+      el.textContent = '✓';
+      document.getElementById('bheapStatus').textContent = `Lecture bloc ${idx} (marqué dans le bitmap)`;
+    });
+  }
+  animState.steps.push(() => {
+    document.getElementById('bheapStatus').innerHTML = '<span style="color:#50fa7b">Terminé : 6 blocs lus (au lieu de 20)</span>';
+  });
+}
+
+function buildNestedLoopSteps() {
+  const depts = ['RH','IT','Finance','Marketing','Legal','Support','R&D','Ventes','Logistique','Direction'];
+  let count = 0;
+  for (let i = 0; i < depts.length; i++) {
+    const idx = i;
+    const matches = Math.floor(Math.random() * 3) + 1;
+    animState.steps.push(() => {
+      // highlight outer row
+      document.querySelectorAll('#outerRows .join-node').forEach(n => n.classList.remove('active'));
+      document.getElementById('or' + idx).classList.add('active');
+      document.getElementById('innerStatus').textContent = `Index Scan: dept_id = "${depts[idx]}"...`;
+    });
+    animState.steps.push(() => {
+      count += matches;
+      const area = document.getElementById('matchedRows');
+      for (let m = 0; m < matches; m++) {
+        const n = document.createElement('div');
+        n.className = 'join-node matched';
+        n.textContent = `${depts[idx]}-E${m + 1}`;
+        area.appendChild(n);
+      }
+      document.getElementById('joinCount').textContent = count;
+      document.getElementById('or' + idx).classList.add('matched');
+      document.getElementById('innerStatus').textContent = `${matches} employé(s) trouvé(s) pour "${depts[idx]}"`;
+    });
+  }
+}
+
+function buildHashJoinSteps() {
+  // Build phase
+  for (let i = 0; i < 10; i++) {
+    const idx = i;
+    animState.steps.push(() => {
+      document.getElementById('hk' + idx).classList.add('hit');
+      document.getElementById('hk' + idx).textContent = `C${idx}`;
+      document.getElementById('buildStatus').textContent = `Hachage client ${idx + 1}/10`;
+    });
+  }
+  animState.steps.push(() => {
+    document.getElementById('buildStatus').innerHTML = '<span style="color:#50fa7b">Table de hachage construite</span>';
+    document.getElementById('step-build').classList.add('done');
+  });
+  // Probe phase
+  let count = 0;
+  for (let i = 0; i < 15; i++) {
+    const idx = i;
+    animState.steps.push(() => {
+      if (idx > 0) document.getElementById('pb' + (idx - 1))?.classList.remove('active');
+      const el = document.getElementById('pb' + idx);
+      el.classList.add('active');
+      const match = Math.random() > 0.3;
+      if (match) {
+        el.classList.add('hit');
+        count++;
+        document.getElementById('hjoinCount').textContent = count;
+      } else {
+        el.classList.add('scanned');
+      }
+      document.getElementById('probeStatus').textContent = `Probe commande ${idx + 1}/15 — lookup hash O(1)`;
+    });
+  }
+  animState.steps.push(() => {
+    document.getElementById('pb14')?.classList.remove('active');
+    document.getElementById('probeStatus').innerHTML = '<span style="color:#50fa7b">Probe terminé</span>';
+  });
+}
+
+function buildMergeJoinSteps() {
+  const arr1 = [8,3,12,1,7,15,5,10,2,6];
+  const arr2 = [5,14,2,9,7,1,11,8,3,13];
+  const sorted1 = [...arr1].sort((a,b) => a-b);
+  const sorted2 = [...arr2].sort((a,b) => a-b);
+  // Sort phase 1
+  animState.steps.push(() => {
+    const container = document.getElementById('sort1Nodes');
+    container.innerHTML = sorted1.map((v,i) => `<div class="join-node" id="s1n${i}">${v}</div>`).join('');
+    document.getElementById('sort1Status').innerHTML = '<span style="color:#50fa7b">Trié !</span>';
+  });
+  // Sort phase 2
+  animState.steps.push(() => {
+    const container = document.getElementById('sort2Nodes');
+    container.innerHTML = sorted2.map((v,i) => `<div class="join-node" id="s2n${i}">${v}</div>`).join('');
+    document.getElementById('sort2Status').innerHTML = '<span style="color:#50fa7b">Trié !</span>';
+  });
+  // Merge phase
+  let i1 = 0, i2 = 0;
+  const common = sorted1.filter(v => sorted2.includes(v));
+  for (const val of common) {
+    animState.steps.push(() => {
+      // highlight matching values in both
+      document.querySelectorAll('#sort1Nodes .join-node').forEach(n => { n.classList.remove('active'); if (parseInt(n.textContent) === val) n.classList.add('matched'); });
+      document.querySelectorAll('#sort2Nodes .join-node').forEach(n => { n.classList.remove('active'); if (parseInt(n.textContent) === val) n.classList.add('matched'); });
+      const r = document.getElementById('mergeResults');
+      const d = document.createElement('div');
+      d.className = 'join-node matched';
+      d.textContent = val;
+      r.appendChild(d);
+      document.getElementById('mergeStatus').textContent = `Match : id=${val}`;
+    });
+  }
+  animState.steps.push(() => {
+    document.getElementById('mergeStatus').innerHTML = `<span style="color:#50fa7b">Fusion terminée : ${common.length} correspondances</span>`;
+  });
+}
+
+// init
+selectScenario();
+</script>
+</body>
+</html>

@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MVCC & Isolation — Visualisation PostgreSQL</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#1a1a2e;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-serif;overflow-x:hidden}
+  .header{background:#16213e;border-bottom:1px solid #333;padding:12px 24px;display:flex;align-items:center;gap:16px}
+  .header h1{font-size:1.3rem;color:#8be9fd}
+  .header .badge{background:#50fa7b22;color:#50fa7b;padding:2px 10px;border-radius:12px;font-size:.75rem}
+  .controls{background:#16213e;border-bottom:1px solid #333;padding:12px 24px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+  select{background:#0f3460;border:1px solid #333;color:#e0e0e0;padding:7px 12px;border-radius:6px;font-size:.85rem;cursor:pointer}
+  select:focus{outline:none;border-color:#8be9fd}
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border:1px solid #333;border-radius:6px;background:#0f3460;color:#e0e0e0;cursor:pointer;font-size:.82rem;transition:all .2s}
+  .btn:hover{border-color:#8be9fd;color:#8be9fd}
+  .btn-green{background:#50fa7b22;border-color:#50fa7b;color:#50fa7b}
+  .btn-primary{background:#8be9fd22;border-color:#8be9fd;color:#8be9fd}
+  .btn-red{background:#ff555522;border-color:#ff5555;color:#ff5555}
+  label{font-size:.82rem;color:#aaa;margin-right:6px}
+  .main-grid{display:grid;grid-template-columns:1fr 340px;grid-template-rows:1fr auto;height:calc(100vh - 106px)}
+  .timeline-area{padding:24px;overflow:auto}
+  .side-panel{background:#16213e;border-left:1px solid #333;padding:16px;overflow-y:auto}
+  .side-panel h2{font-size:.9rem;color:#bd93f9;margin-bottom:10px;text-transform:uppercase;letter-spacing:1px}
+  .explanation{grid-column:1/-1;background:#16213e;border-top:1px solid #333;padding:14px 24px;font-size:.85rem;color:#ccc;line-height:1.5}
+  .explanation strong{color:#8be9fd}
+  /* Timeline */
+  .timeline{position:relative;margin-top:20px}
+  .tl-lane{position:relative;height:80px;margin-bottom:24px;border-left:2px solid #333;padding-left:16px}
+  .tl-lane-label{position:absolute;left:-2px;top:-22px;font-size:.82rem;font-weight:700;padding:2px 10px;border-radius:4px}
+  .tl-lane:nth-child(1) .tl-lane-label{background:#8be9fd22;color:#8be9fd}
+  .tl-lane:nth-child(2) .tl-lane-label{background:#ffb86c22;color:#ffb86c}
+  .tl-track{position:relative;height:48px;margin-top:28px;background:#0f346033;border-radius:6px;overflow:visible}
+  .tl-op{position:absolute;height:48px;display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:600;border-radius:4px;white-space:nowrap;padding:0 8px;top:0;transition:all .4s;opacity:0.3;border:1px solid transparent}
+  .tl-op.active{opacity:1;box-shadow:0 0 12px rgba(139,233,253,.3)}
+  .tl-op.done{opacity:0.8}
+  .tl-op.t1{background:#8be9fd22;border-color:#8be9fd;color:#8be9fd}
+  .tl-op.t2{background:#ffb86c22;border-color:#ffb86c;color:#ffb86c}
+  .tl-op.error{background:#ff555533;border-color:#ff5555;color:#ff5555;animation:shake .3s}
+  .tl-marker{position:absolute;top:-8px;width:2px;height:64px;background:#555;opacity:0;transition:opacity .3s}
+  .tl-marker.visible{opacity:1}
+  .tl-marker span{position:absolute;top:-18px;left:50%;transform:translateX(-50%);font-size:.65rem;color:#888;white-space:nowrap}
+  .tl-time-axis{height:20px;position:relative;margin-top:8px;border-top:1px solid #333}
+  .tl-time-axis span{position:absolute;top:4px;font-size:.65rem;color:#555;transform:translateX(-50%)}
+  /* Table state */
+  .table-state{width:100%;border-collapse:collapse;font-size:.78rem;margin-top:8px}
+  .table-state th{background:#0f3460;padding:6px 8px;text-align:left;color:#bd93f9;border:1px solid #333}
+  .table-state td{padding:6px 8px;border:1px solid #333;transition:all .3s}
+  .table-state tr.visible td{background:#50fa7b11;color:#50fa7b}
+  .table-state tr.invisible td{background:#1a1a2e;color:#555}
+  .table-state tr.modified td{background:#ffb86c11;color:#ffb86c}
+  .table-state tr.new-version td{background:#8be9fd11;color:#8be9fd}
+  .table-state tr.error-row td{background:#ff555511;color:#ff5555}
+  .step-text{background:#0f3460;border:1px solid #333;border-radius:6px;padding:10px;margin-top:12px;font-size:.82rem;line-height:1.5;min-height:60px}
+  .snapshot-info{background:#0f3460;border:1px solid #333;border-radius:6px;padding:10px;margin-top:12px;font-size:.78rem;font-family:Consolas,monospace}
+  .snapshot-info .lbl{color:#888;font-size:.7rem}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+  @media(max-width:900px){.main-grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>MVCC & Niveaux d'Isolation</h1>
+  <span class="badge">Module 08</span>
+  <span style="flex:1"></span>
+  <span style="font-size:.75rem;color:#888">Visualisation interactive PostgreSQL</span>
+</div>
+
+<div class="controls">
+  <label>Niveau d'isolation :</label>
+  <select id="isolationSelect" onchange="reset()">
+    <option value="read_committed">Read Committed</option>
+    <option value="repeatable_read">Repeatable Read</option>
+    <option value="serializable">Serializable</option>
+  </select>
+  <button class="btn btn-green" onclick="play()">&#9654; Play</button>
+  <button class="btn" onclick="pause()">&#10074;&#10074; Pause</button>
+  <button class="btn btn-primary" onclick="doStep()">&#9654;| Pas-à-pas</button>
+  <button class="btn btn-red" onclick="reset()">&#8634; Reset</button>
+  <span style="flex:1"></span>
+  <span style="font-size:.78rem;color:#888" id="stepCounter">Étape 0/0</span>
+</div>
+
+<div class="main-grid">
+  <div class="timeline-area">
+    <div class="timeline" id="timeline"></div>
+  </div>
+
+  <div class="side-panel">
+    <h2>État de la table</h2>
+    <div style="font-size:.78rem;color:#888;margin-bottom:6px">Table : comptes (version courante)</div>
+    <table class="table-state" id="tableState">
+      <thead><tr><th>ctid</th><th>xmin</th><th>xmax</th><th>nom</th><th>solde</th></tr></thead>
+      <tbody id="tableBody"></tbody>
+    </table>
+
+    <h2 style="margin-top:20px">Snapshots</h2>
+    <div class="snapshot-info" id="snapshotInfo">
+      <div><span class="lbl">T1 snapshot :</span> <span id="snap1">—</span></div>
+      <div><span class="lbl">T2 snapshot :</span> <span id="snap2">—</span></div>
+      <div style="margin-top:6px"><span class="lbl">XID courant :</span> <span id="currentXid">100</span></div>
+    </div>
+
+    <h2 style="margin-top:20px">Explication</h2>
+    <div class="step-text" id="stepText">Sélectionnez un niveau d'isolation et appuyez sur Play.</div>
+  </div>
+
+  <div class="explanation" id="explanation">
+    <strong>MVCC (Multi-Version Concurrency Control) :</strong> PostgreSQL ne verrouille pas les lignes en lecture. Chaque transaction voit un <em>snapshot</em> cohérent de la base. Les champs <code>xmin</code> et <code>xmax</code> dans chaque tuple déterminent sa visibilité pour chaque transaction.
+  </div>
+</div>
+
+<script>
+const TRACK_W = 700;
+
+const scenarioData = {
+  read_committed: {
+    title: "Read Committed — Lecture non répétable",
+    t1ops: [
+      { label: "BEGIN", x: 0, w: 60, time: "t0" },
+      { label: "SELECT solde\nFROM comptes\nWHERE id=1", x: 70, w: 120, time: "t1", result: "solde = 1000" },
+      { label: "(attend...)", x: 200, w: 80, time: "t2", style: "opacity:0.4" },
+      { label: "SELECT solde\nFROM comptes\nWHERE id=1", x: 400, w: 120, time: "t4", result: "solde = 1500 !" },
+      { label: "COMMIT", x: 530, w: 60, time: "t5" }
+    ],
+    t2ops: [
+      { label: "BEGIN", x: 130, w: 60, time: "t1.5" },
+      { label: "UPDATE comptes\nSET solde=1500\nWHERE id=1", x: 200, w: 120, time: "t2" },
+      { label: "COMMIT", x: 330, w: 60, time: "t3" }
+    ],
+    steps: [
+      { t1: 0, t2: -1, table: [{ctid:"(0,1)",xmin:99,xmax:"-",nom:"Alice",solde:1000,cls:"visible"}], snap1:"xmin=99", snap2:"—", text:"T1 démarre (BEGIN). Elle obtient le XID 101." },
+      { t1: 1, t2: -1, table: [{ctid:"(0,1)",xmin:99,xmax:"-",nom:"Alice",solde:1000,cls:"visible"}], snap1:"voit xmin<=101, xmax=- ou >101", snap2:"—", text:"T1 lit le solde d'Alice : 1000€. La ligne (xmin=99, xmax=∞) est visible pour T1." },
+      { t1: 2, t2: 0, table: [{ctid:"(0,1)",xmin:99,xmax:"-",nom:"Alice",solde:1000,cls:"visible"}], snap1:"xmin<=101", snap2:"xmin=102", text:"T2 démarre (BEGIN, XID 102)." },
+      { t1: 2, t2: 1, table: [{ctid:"(0,1)",xmin:99,xmax:102,nom:"Alice",solde:1000,cls:"modified"},{ctid:"(0,2)",xmin:102,xmax:"-",nom:"Alice",solde:1500,cls:"new-version"}], snap1:"voit (0,1)", snap2:"voit (0,2)", text:"T2 met à jour le solde à 1500€. L'ancienne ligne reçoit xmax=102, une nouvelle version (0,2) est créée avec xmin=102." },
+      { t1: 2, t2: 2, table: [{ctid:"(0,1)",xmin:99,xmax:102,nom:"Alice",solde:1000,cls:"invisible"},{ctid:"(0,2)",xmin:102,xmax:"-",nom:"Alice",solde:1500,cls:"visible"}], snap1:"—", snap2:"committed", text:"T2 fait COMMIT. La nouvelle version (solde=1500) est maintenant visible par toute nouvelle lecture." },
+      { t1: 3, t2: 2, table: [{ctid:"(0,1)",xmin:99,xmax:102,nom:"Alice",solde:1000,cls:"invisible"},{ctid:"(0,2)",xmin:102,xmax:"-",nom:"Alice",solde:1500,cls:"visible"}], snap1:"re-lit → nouveau snapshot", snap2:"committed", text:"T1 relit le solde. En READ COMMITTED, chaque SELECT prend un nouveau snapshot. T2 ayant commité, T1 voit maintenant solde=1500 ! C'est une lecture non répétable (non-repeatable read)." },
+      { t1: 4, t2: 2, table: [{ctid:"(0,1)",xmin:99,xmax:102,nom:"Alice",solde:1000,cls:"invisible"},{ctid:"(0,2)",xmin:102,xmax:"-",nom:"Alice",solde:1500,cls:"visible"}], snap1:"committed", snap2:"committed", text:"T1 fait COMMIT. Scénario terminé : la même requête a retourné deux valeurs différentes dans la même transaction." }
+    ]
+  },
+  repeatable_read: {
+    title: "Repeatable Read — Snapshot figé",
+    t1ops: [
+      { label: "BEGIN ISOLATION\nLEVEL\nREPEATABLE READ", x: 0, w: 80, time: "t0" },
+      { label: "SELECT solde\nFROM comptes\nWHERE id=1", x: 90, w: 120, time: "t1", result: "solde = 1000" },
+      { label: "(attend...)", x: 220, w: 80, time: "t2" },
+      { label: "SELECT solde\nFROM comptes\nWHERE id=1", x: 400, w: 120, time: "t4", result: "solde = 1000 ✓" },
+      { label: "COMMIT", x: 530, w: 60, time: "t5" }
+    ],
+    t2ops: [
+      { label: "BEGIN", x: 150, w: 60, time: "t1.5" },
+      { label: "UPDATE comptes\nSET solde=1500\nWHERE id=1", x: 220, w: 120, time: "t2" },
+      { label: "COMMIT", x: 350, w: 60, time: "t3" }
+    ],
+    steps: [
+      { t1: 0, t2: -1, table: [{ctid:"(0,1)",xmin:99,xmax:"-",nom:"Alice",solde:1000,cls:"visible"}], snap1:"snapshot fixé au 1er SELECT", snap2:"—", text:"T1 démarre en REPEATABLE READ (XID 101). Le snapshot sera fixé au premier SELECT." },
+      { t1: 1, t2: -1, table: [{ctid:"(0,1)",xmin:99,xmax:"-",nom:"Alice",solde:1000,cls:"visible"}], snap1:"snapshot t1: voit xid < 101", snap2:"—", text:"T1 lit solde=1000. Le snapshot est maintenant figé : T1 ne verra que les données committées avant ce point." },
+      { t1: 2, t2: 0, table: [{ctid:"(0,1)",xmin:99,xmax:"-",nom:"Alice",solde:1000,cls:"visible"}], snap1:"figé", snap2:"xid=102", text:"T2 démarre (XID 102)." },
+      { t1: 2, t2: 1, table: [{ctid:"(0,1)",xmin:99,xmax:102,nom:"Alice",solde:1000,cls:"modified"},{ctid:"(0,2)",xmin:102,xmax:"-",nom:"Alice",solde:1500,cls:"new-version"}], snap1:"figé → ignore xid=102", snap2:"voit (0,2)", text:"T2 met à jour le solde à 1500€. Nouvelle version créée." },
+      { t1: 2, t2: 2, table: [{ctid:"(0,1)",xmin:99,xmax:102,nom:"Alice",solde:1000,cls:"invisible"},{ctid:"(0,2)",xmin:102,xmax:"-",nom:"Alice",solde:1500,cls:"visible"}], snap1:"figé → ignore xid=102", snap2:"committed", text:"T2 fait COMMIT." },
+      { t1: 3, t2: 2, table: [{ctid:"(0,1)",xmin:99,xmax:102,nom:"Alice",solde:1000,cls:"visible"},{ctid:"(0,2)",xmin:102,xmax:"-",nom:"Alice",solde:1500,cls:"invisible"}], snap1:"snapshot figé → solde=1000", snap2:"committed", text:"T1 relit le solde. En REPEATABLE READ, le snapshot est figé ! T1 ignore xid=102 (qui n'existait pas au moment du snapshot). T1 voit toujours solde=1000. Lecture répétable garantie !" },
+      { t1: 4, t2: 2, table: [{ctid:"(0,1)",xmin:99,xmax:102,nom:"Alice",solde:1000,cls:"invisible"},{ctid:"(0,2)",xmin:102,xmax:"-",nom:"Alice",solde:1500,cls:"visible"}], snap1:"committed", snap2:"committed", text:"T1 fait COMMIT. Le snapshot est libéré. La même requête a retourné la même valeur grâce au snapshot figé." }
+    ]
+  },
+  serializable: {
+    title: "Serializable — Détection de write skew",
+    t1ops: [
+      { label: "BEGIN ISOLATION\nLEVEL\nSERIALIZABLE", x: 0, w: 80, time: "t0" },
+      { label: "SELECT SUM(solde)\nFROM comptes\nWHERE type='epargne'", x: 90, w: 140, time: "t1", result: "total = 2000" },
+      { label: "UPDATE comptes\nSET solde = solde - 1500\nWHERE id=1", x: 400, w: 140, time: "t4" },
+      { label: "COMMIT", x: 550, w: 60, time: "t5" }
+    ],
+    t2ops: [
+      { label: "BEGIN\nSERIALIZABLE", x: 50, w: 70, time: "t0.5" },
+      { label: "SELECT SUM(solde)\nFROM comptes\nWHERE type='epargne'", x: 130, w: 140, time: "t1.5", result: "total = 2000" },
+      { label: "UPDATE comptes\nSET solde = solde - 1500\nWHERE id=2", x: 280, w: 140, time: "t3" },
+      { label: "COMMIT ✗", x: 430, w: 80, time: "t4.5", error: true }
+    ],
+    steps: [
+      { t1: 0, t2: -1, table: [{ctid:"(0,1)",xmin:99,xmax:"-",nom:"Compte 1",solde:1000,cls:"visible"},{ctid:"(0,2)",xmin:99,xmax:"-",nom:"Compte 2",solde:1000,cls:"visible"}], snap1:"SERIALIZABLE", snap2:"—", text:"T1 démarre en SERIALIZABLE. Règle métier : le total des comptes épargne doit rester >= 0." },
+      { t1: 1, t2: 0, table: [{ctid:"(0,1)",xmin:99,xmax:"-",nom:"Compte 1",solde:1000,cls:"visible"},{ctid:"(0,2)",xmin:99,xmax:"-",nom:"Compte 2",solde:1000,cls:"visible"}], snap1:"SUM=2000", snap2:"SERIALIZABLE", text:"T1 lit le total : 2000€. T2 démarre en SERIALIZABLE." },
+      { t1: 1, t2: 1, table: [{ctid:"(0,1)",xmin:99,xmax:"-",nom:"Compte 1",solde:1000,cls:"visible"},{ctid:"(0,2)",xmin:99,xmax:"-",nom:"Compte 2",solde:1000,cls:"visible"}], snap1:"SUM=2000", snap2:"SUM=2000", text:"T2 lit aussi le total : 2000€. Les deux transactions pensent qu'il y a assez d'argent pour retirer 1500€." },
+      { t1: 1, t2: 2, table: [{ctid:"(0,1)",xmin:99,xmax:"-",nom:"Compte 1",solde:1000,cls:"visible"},{ctid:"(0,2)",xmin:99,xmax:102,nom:"Compte 2",solde:1000,cls:"modified"},{ctid:"(0,3)",xmin:102,xmax:"-",nom:"Compte 2",solde:-500,cls:"new-version"}], snap1:"—", snap2:"UPDATE id=2 → -500", text:"T2 retire 1500€ du compte 2 (solde → -500). PostgreSQL détecte une dépendance de lecture-écriture (rw-dependency)." },
+      { t1: 2, t2: 2, table: [{ctid:"(0,1)",xmin:99,xmax:101,nom:"Compte 1",solde:1000,cls:"modified"},{ctid:"(0,2)",xmin:99,xmax:102,nom:"Compte 2",solde:1000,cls:"modified"},{ctid:"(0,3)",xmin:102,xmax:"-",nom:"Compte 2",solde:-500,cls:"new-version"},{ctid:"(0,4)",xmin:101,xmax:"-",nom:"Compte 1",solde:-500,cls:"new-version"}], snap1:"UPDATE id=1 → -500", snap2:"—", text:"T1 retire 1500€ du compte 1 (solde → -500). PostgreSQL détecte un cycle de dépendances rw (write skew)." },
+      { t1: 3, t2: 3, table: [{ctid:"(0,1)",xmin:99,xmax:101,nom:"Compte 1",solde:1000,cls:"visible"},{ctid:"(0,2)",xmin:99,xmax:"-",nom:"Compte 2",solde:1000,cls:"visible"},{ctid:"(0,4)",xmin:101,xmax:"-",nom:"Compte 1",solde:-500,cls:"new-version"}], snap1:"COMMIT OK", snap2:"ERROR: serialization_failure", text:"T1 fait COMMIT avec succès. T2 tente de COMMIT mais PostgreSQL détecte l'anomalie de sérialisation (write skew) et ANNULE T2 avec ERROR: could not serialize access. L'intégrité est préservée !" }
+    ]
+  }
+};
+
+let currentLevel = 'read_committed';
+let stepIdx = 0;
+let playing = false;
+let paused = false;
+let timer = null;
+
+function buildTimeline() {
+  const sc = scenarioData[currentLevel];
+  const area = document.getElementById('timeline');
+  let html = `<div style="font-size:.95rem;color:#ffb86c;margin-bottom:16px;font-weight:600">${sc.title}</div>`;
+
+  // T1 lane
+  html += `<div class="tl-lane"><div class="tl-lane-label">Transaction 1 (XID 101)</div><div class="tl-track" id="track1">`;
+  sc.t1ops.forEach((op, i) => {
+    html += `<div class="tl-op t1" id="t1op${i}" style="left:${op.x}px;width:${op.w}px">${op.label.split('\n')[0]}</div>`;
+  });
+  html += `</div></div>`;
+
+  // T2 lane
+  html += `<div class="tl-lane"><div class="tl-lane-label">Transaction 2 (XID 102)</div><div class="tl-track" id="track2">`;
+  sc.t2ops.forEach((op, i) => {
+    html += `<div class="tl-op t2${op.error ? ' error' : ''}" id="t2op${i}" style="left:${op.x}px;width:${op.w}px">${op.label.split('\n')[0]}</div>`;
+  });
+  html += `</div></div>`;
+
+  // Time axis
+  html += `<div class="tl-time-axis">`;
+  for (let t = 0; t <= 6; t++) {
+    html += `<span style="left:${t * 100}px">t${t}</span>`;
+  }
+  html += `</div>`;
+
+  area.innerHTML = html;
+}
+
+function updateUI(stepData) {
+  const sc = scenarioData[currentLevel];
+  // Highlight active ops
+  sc.t1ops.forEach((_, i) => {
+    const el = document.getElementById('t1op' + i);
+    if (!el) return;
+    el.classList.remove('active', 'done');
+    if (i === stepData.t1) el.classList.add('active');
+    else if (i < stepData.t1) el.classList.add('done');
+  });
+  sc.t2ops.forEach((_, i) => {
+    const el = document.getElementById('t2op' + i);
+    if (!el) return;
+    el.classList.remove('active', 'done');
+    if (i === stepData.t2) el.classList.add('active');
+    else if (i < stepData.t2 && stepData.t2 >= 0) el.classList.add('done');
+  });
+
+  // Table state
+  const tbody = document.getElementById('tableBody');
+  tbody.innerHTML = stepData.table.map(r =>
+    `<tr class="${r.cls}"><td>${r.ctid}</td><td>${r.xmin}</td><td>${r.xmax}</td><td>${r.nom}</td><td>${r.solde}</td></tr>`
+  ).join('');
+
+  // Snapshots
+  document.getElementById('snap1').textContent = stepData.snap1;
+  document.getElementById('snap2').textContent = stepData.snap2;
+  document.getElementById('stepText').innerHTML = stepData.text;
+  document.getElementById('stepCounter').textContent = `Étape ${stepIdx + 1}/${sc.steps.length}`;
+}
+
+function reset() {
+  currentLevel = document.getElementById('isolationSelect').value;
+  stepIdx = 0;
+  playing = false;
+  paused = false;
+  if (timer) clearTimeout(timer);
+  buildTimeline();
+  const sc = scenarioData[currentLevel];
+  if (sc.steps.length > 0) updateUI(sc.steps[0]);
+  document.getElementById('stepCounter').textContent = `Étape 0/${sc.steps.length}`;
+  document.getElementById('stepText').textContent = 'Appuyez sur Play ou Pas-à-pas pour commencer.';
+  document.getElementById('tableBody').innerHTML = '<tr class="visible"><td>(0,1)</td><td>99</td><td>-</td><td>Alice</td><td>1000</td></tr>';
+  if (currentLevel === 'serializable') {
+    document.getElementById('tableBody').innerHTML = '<tr class="visible"><td>(0,1)</td><td>99</td><td>-</td><td>Compte 1</td><td>1000</td></tr><tr class="visible"><td>(0,2)</td><td>99</td><td>-</td><td>Compte 2</td><td>1000</td></tr>';
+  }
+  document.getElementById('snap1').textContent = '—';
+  document.getElementById('snap2').textContent = '—';
+
+  // Set explanation
+  const explanations = {
+    read_committed: `<strong>Read Committed :</strong> Niveau par défaut de PostgreSQL. Chaque instruction SELECT prend un nouveau snapshot. Les modifications committées par d'autres transactions deviennent visibles entre deux SELECT. Phénomène possible : lecture non répétable.`,
+    repeatable_read: `<strong>Repeatable Read :</strong> Le snapshot est pris au début de la première requête et reste figé pour toute la transaction. Les modifications committées par d'autres transactions restent invisibles. Protège contre les lectures non répétables et les phantom reads.`,
+    serializable: `<strong>Serializable :</strong> Le niveau le plus strict. PostgreSQL utilise le SSI (Serializable Snapshot Isolation) pour détecter les anomalies de sérialisation comme le <em>write skew</em>. Si un cycle de dépendances rw est détecté, une transaction est annulée.`
+  };
+  document.getElementById('explanation').innerHTML = explanations[currentLevel];
+}
+
+function play() {
+  if (paused) { paused = false; runNext(); return; }
+  reset();
+  playing = true;
+  runNext();
+}
+
+function pause() {
+  paused = true;
+  if (timer) clearTimeout(timer);
+}
+
+function doStep() {
+  if (!playing) { reset(); playing = true; }
+  const sc = scenarioData[currentLevel];
+  if (stepIdx < sc.steps.length) {
+    updateUI(sc.steps[stepIdx]);
+    stepIdx++;
+  }
+}
+
+function runNext() {
+  if (paused || !playing) return;
+  const sc = scenarioData[currentLevel];
+  if (stepIdx >= sc.steps.length) { playing = false; return; }
+  updateUI(sc.steps[stepIdx]);
+  stepIdx++;
+  timer = setTimeout(runNext, 1500);
+}
+
+// init
+reset();
+</script>
+</body>
+</html>

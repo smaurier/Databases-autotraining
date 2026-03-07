@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lock Matrix — Visualisation PostgreSQL</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#1a1a2e;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-serif;overflow-x:hidden}
+  .header{background:#16213e;border-bottom:1px solid #333;padding:12px 24px;display:flex;align-items:center;gap:16px}
+  .header h1{font-size:1.3rem;color:#8be9fd}
+  .header .badge{background:#ff555522;color:#ff5555;padding:2px 10px;border-radius:12px;font-size:.75rem}
+  .controls{background:#16213e;border-bottom:1px solid #333;padding:12px 24px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+  select{background:#0f3460;border:1px solid #333;color:#e0e0e0;padding:7px 12px;border-radius:6px;font-size:.85rem;cursor:pointer}
+  select:focus{outline:none;border-color:#8be9fd}
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border:1px solid #333;border-radius:6px;background:#0f3460;color:#e0e0e0;cursor:pointer;font-size:.82rem;transition:all .2s}
+  .btn:hover{border-color:#8be9fd;color:#8be9fd}
+  .btn-green{background:#50fa7b22;border-color:#50fa7b;color:#50fa7b}
+  .btn-primary{background:#8be9fd22;border-color:#8be9fd;color:#8be9fd}
+  .btn-red{background:#ff555522;border-color:#ff5555;color:#ff5555}
+  label{font-size:.82rem;color:#aaa;margin-right:6px}
+  .main-layout{display:grid;grid-template-rows:auto 1fr auto;height:calc(100vh - 106px)}
+  .matrix-section{padding:20px 24px;overflow:auto}
+  .matrix-section h2{font-size:.95rem;color:#bd93f9;margin-bottom:12px;text-transform:uppercase;letter-spacing:1px}
+  .graph-section{padding:20px 24px;overflow:auto;border-top:1px solid #333}
+  .graph-section h2{font-size:.95rem;color:#bd93f9;margin-bottom:12px;text-transform:uppercase;letter-spacing:1px}
+  .explanation{background:#16213e;border-top:1px solid #333;padding:14px 24px;font-size:.85rem;color:#ccc;line-height:1.5}
+  .explanation strong{color:#8be9fd}
+  /* Lock Matrix */
+  .matrix-container{display:flex;gap:32px;flex-wrap:wrap;align-items:flex-start}
+  .lock-matrix{border-collapse:collapse;font-size:.7rem}
+  .lock-matrix th{background:#0f3460;padding:6px 4px;text-align:center;color:#bd93f9;border:1px solid #333;font-weight:600;white-space:nowrap;cursor:pointer;transition:background .2s}
+  .lock-matrix th:hover{background:#8be9fd22}
+  .lock-matrix th.highlighted{background:#8be9fd33;color:#8be9fd}
+  .lock-matrix td{padding:6px 8px;text-align:center;border:1px solid #333;cursor:pointer;transition:all .2s;font-weight:700;font-size:.75rem}
+  .lock-matrix td.compat{background:#50fa7b15;color:#50fa7b}
+  .lock-matrix td.conflict{background:#ff555515;color:#ff5555}
+  .lock-matrix td:hover{transform:scale(1.15);z-index:1;box-shadow:0 0 12px rgba(139,233,253,.4)}
+  .lock-matrix td.row-hl{background:#8be9fd11}
+  .lock-matrix td.col-hl{background:#8be9fd11}
+  .lock-matrix .corner{background:#16213e;cursor:default}
+  .tooltip{position:fixed;background:#0f3460;border:1px solid #8be9fd;border-radius:6px;padding:10px 14px;font-size:.8rem;color:#e0e0e0;max-width:300px;z-index:100;pointer-events:none;display:none;line-height:1.4}
+  .tooltip strong{color:#8be9fd}
+  /* Wait-for graph */
+  .wfg-container{display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap}
+  .wfg-canvas-wrap{position:relative}
+  canvas{border:1px solid #333;border-radius:8px;background:#0f346033}
+  .pg-locks{background:#0f3460;border:1px solid #333;border-radius:6px;padding:12px;font-family:Consolas,monospace;font-size:.72rem;color:#8be9fd;white-space:pre;overflow-x:auto;max-width:500px;line-height:1.5}
+  .pg-locks .header-row{color:#bd93f9;font-weight:700}
+  .deadlock-banner{display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#ff5555;color:#fff;font-size:1.1rem;font-weight:700;padding:10px 24px;border-radius:8px;animation:pulse 0.5s infinite alternate;z-index:10}
+  @keyframes pulse{from{opacity:1;transform:translate(-50%,-50%) scale(1)}to{opacity:.8;transform:translate(-50%,-50%) scale(1.05)}}
+  .row-lock-matrix{margin-top:16px}
+  .row-lock-matrix h3{font-size:.85rem;color:#ffb86c;margin-bottom:8px}
+  @media(max-width:800px){.matrix-container{flex-direction:column}.wfg-container{flex-direction:column}}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>Lock Matrix & Wait-for Graph</h1>
+  <span class="badge">Modules 09-10</span>
+  <span style="flex:1"></span>
+  <span style="font-size:.75rem;color:#888">Visualisation interactive PostgreSQL</span>
+</div>
+
+<div class="controls">
+  <label>Scénario deadlock :</label>
+  <select id="scenarioSelect" onchange="resetGraph()">
+    <option value="simple">Attente simple</option>
+    <option value="deadlock2">Deadlock (2 transactions)</option>
+    <option value="deadlock3">Deadlock (3 transactions)</option>
+  </select>
+  <button class="btn btn-green" onclick="playGraph()">&#9654; Play</button>
+  <button class="btn" onclick="pauseGraph()">&#10074;&#10074; Pause</button>
+  <button class="btn btn-primary" onclick="stepGraph()">&#9654;| Pas-à-pas</button>
+  <button class="btn btn-red" onclick="resetGraph()">&#8634; Reset</button>
+</div>
+
+<div class="main-layout">
+  <!-- Lock Matrix -->
+  <div class="matrix-section">
+    <div class="matrix-container">
+      <div>
+        <h2>Matrice de compatibilité — Verrous de table</h2>
+        <table class="lock-matrix" id="lockMatrix"></table>
+      </div>
+      <div class="row-lock-matrix">
+        <h3>Verrous de ligne</h3>
+        <table class="lock-matrix" id="rowLockMatrix"></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Wait-for Graph -->
+  <div class="graph-section">
+    <h2>Wait-for Graph</h2>
+    <div class="wfg-container">
+      <div class="wfg-canvas-wrap">
+        <canvas id="wfgCanvas" width="460" height="300"></canvas>
+        <div class="deadlock-banner" id="deadlockBanner">DEADLOCK DETECTED !</div>
+      </div>
+      <div>
+        <div style="font-size:.82rem;color:#888;margin-bottom:6px">Sortie pg_locks simulée</div>
+        <div class="pg-locks" id="pgLocks"><span class="header-row">  pid | locktype | relation |   mode          | granted</span>
+------+----------+----------+-----------------+---------
+ En attente du scénario...</div>
+        <div id="graphExplain" style="margin-top:12px;font-size:.82rem;color:#ccc;max-width:500px;line-height:1.5">Sélectionnez un scénario et appuyez sur Play.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="explanation" id="explanation">
+    <strong>Verrous PostgreSQL :</strong> PostgreSQL utilise un système de verrous multi-niveaux. Les verrous de table sont acquis automatiquement selon la commande SQL. La matrice de compatibilité détermine si deux verrous peuvent coexister. Quand un verrou est bloqué, un <strong>wait-for graph</strong> se forme. Si un cycle est détecté, PostgreSQL annule une transaction pour résoudre le deadlock.
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+// ── Table Lock Compatibility Matrix ──
+const tableLocks = [
+  'ACCESS SHARE', 'ROW SHARE', 'ROW EXCLUSIVE', 'SHARE UPDATE EXCL',
+  'SHARE', 'SHARE ROW EXCL', 'EXCLUSIVE', 'ACCESS EXCLUSIVE'
+];
+const shortNames = ['AccSh', 'RowSh', 'RowExcl', 'ShUpdExcl', 'Share', 'ShRowExcl', 'Excl', 'AccExcl'];
+
+// true = compatible, false = conflict
+const compat = [
+  [1,1,1,1,1,1,1,0], // ACCESS SHARE
+  [1,1,1,1,1,1,0,0], // ROW SHARE
+  [1,1,1,1,0,0,0,0], // ROW EXCLUSIVE
+  [1,1,1,0,0,0,0,0], // SHARE UPDATE EXCLUSIVE
+  [1,1,0,0,1,0,0,0], // SHARE
+  [1,1,0,0,0,0,0,0], // SHARE ROW EXCLUSIVE
+  [1,0,0,0,0,0,0,0], // EXCLUSIVE
+  [0,0,0,0,0,0,0,0], // ACCESS EXCLUSIVE
+];
+
+const lockDescriptions = {
+  'ACCESS SHARE': 'Acquis par SELECT. Le verrou le plus faible.',
+  'ROW SHARE': 'Acquis par SELECT FOR UPDATE/SHARE.',
+  'ROW EXCLUSIVE': 'Acquis par INSERT, UPDATE, DELETE.',
+  'SHARE UPDATE EXCL': 'Acquis par VACUUM, CREATE INDEX CONCURRENTLY.',
+  'SHARE': 'Acquis par CREATE INDEX (non concurrent).',
+  'SHARE ROW EXCL': 'Acquis par CREATE TRIGGER, certains ALTER TABLE.',
+  'EXCLUSIVE': 'Acquis par REFRESH MATERIALIZED VIEW CONCURRENTLY.',
+  'ACCESS EXCLUSIVE': 'Acquis par ALTER TABLE, DROP TABLE, VACUUM FULL, LOCK TABLE.'
+};
+
+function buildMatrix() {
+  const table = document.getElementById('lockMatrix');
+  let html = '<tr><th class="corner"></th>';
+  shortNames.forEach((n, i) => { html += `<th data-col="${i}" onclick="highlightCol(${i})">${n}</th>`; });
+  html += '</tr>';
+  for (let r = 0; r < 8; r++) {
+    html += `<tr><th data-row="${r}" onclick="highlightRow(${r})">${shortNames[r]}</th>`;
+    for (let c = 0; c < 8; c++) {
+      const ok = compat[r][c];
+      html += `<td class="${ok ? 'compat' : 'conflict'}" data-r="${r}" data-c="${c}" onmouseenter="showTip(event,${r},${c})" onmouseleave="hideTip()">${ok ? '✓' : '✗'}</td>`;
+    }
+    html += '</tr>';
+  }
+  table.innerHTML = html;
+}
+
+// Row-level locks
+const rowLocks = ['FOR KEY SHARE', 'FOR SHARE', 'FOR NO KEY UPDATE', 'FOR UPDATE'];
+const rowShort = ['KeySh', 'Share', 'NoKeyUpd', 'Update'];
+const rowCompat = [
+  [1,1,1,0],
+  [1,1,0,0],
+  [1,0,0,0],
+  [0,0,0,0],
+];
+
+function buildRowMatrix() {
+  const table = document.getElementById('rowLockMatrix');
+  let html = '<tr><th class="corner"></th>';
+  rowShort.forEach(n => { html += `<th>${n}</th>`; });
+  html += '</tr>';
+  for (let r = 0; r < 4; r++) {
+    html += `<tr><th>${rowShort[r]}</th>`;
+    for (let c = 0; c < 4; c++) {
+      const ok = rowCompat[r][c];
+      html += `<td class="${ok ? 'compat' : 'conflict'}">${ok ? '✓' : '✗'}</td>`;
+    }
+    html += '</tr>';
+  }
+  table.innerHTML = html;
+}
+
+let highlightedRow = -1, highlightedCol = -1;
+
+function highlightRow(r) {
+  highlightedRow = highlightedRow === r ? -1 : r;
+  highlightedCol = -1;
+  applyHighlights();
+}
+
+function highlightCol(c) {
+  highlightedCol = highlightedCol === c ? -1 : c;
+  highlightedRow = -1;
+  applyHighlights();
+}
+
+function applyHighlights() {
+  document.querySelectorAll('#lockMatrix th').forEach(th => th.classList.remove('highlighted'));
+  document.querySelectorAll('#lockMatrix td').forEach(td => {
+    td.classList.remove('row-hl', 'col-hl');
+    const r = parseInt(td.dataset.r), c = parseInt(td.dataset.c);
+    if (r === highlightedRow) td.classList.add('row-hl');
+    if (c === highlightedCol) td.classList.add('col-hl');
+  });
+  if (highlightedRow >= 0) {
+    document.querySelector(`#lockMatrix th[data-row="${highlightedRow}"]`)?.classList.add('highlighted');
+  }
+  if (highlightedCol >= 0) {
+    document.querySelector(`#lockMatrix th[data-col="${highlightedCol}"]`)?.classList.add('highlighted');
+  }
+}
+
+const tooltip = document.getElementById('tooltip');
+function showTip(e, r, c) {
+  const ok = compat[r][c];
+  tooltip.innerHTML = `<strong>${tableLocks[r]}</strong> vs <strong>${tableLocks[c]}</strong><br><br>${ok ? '<span style="color:#50fa7b">Compatible ✓</span>' : '<span style="color:#ff5555">Conflit ✗</span> — la seconde transaction doit attendre'}<br><br><em>${lockDescriptions[tableLocks[r]]}</em>`;
+  tooltip.style.display = 'block';
+  tooltip.style.left = (e.clientX + 16) + 'px';
+  tooltip.style.top = (e.clientY + 16) + 'px';
+}
+function hideTip() { tooltip.style.display = 'none'; }
+
+// ── Wait-for Graph ──
+const wfgCanvas = document.getElementById('wfgCanvas');
+const gctx = wfgCanvas.getContext('2d');
+
+const graphScenarios = {
+  simple: {
+    nodes: [
+      { id: 'T1', type: 'tx', x: 80, y: 100, label: 'T1 (pid 1234)' },
+      { id: 'T2', type: 'tx', x: 350, y: 100, label: 'T2 (pid 5678)' },
+      { id: 'L1', type: 'lock', x: 215, y: 200, label: 'ROW EXCL\ncommandes' }
+    ],
+    steps: [
+      { edges: [{ from: 'T1', to: 'L1', label: 'détient', color: '#50fa7b' }],
+        locks: `  1234 | relation | commandes | RowExclusiveLock | t
+  5678 | relation | commandes | RowExclusiveLock | t`,
+        text: 'T1 et T2 ont chacun un verrou ROW EXCLUSIVE sur la table commandes (compatible).', deadlock: false },
+      { edges: [{ from: 'T1', to: 'L1', label: 'détient', color: '#50fa7b' }, { from: 'T2', to: 'L1', label: 'attend EXCL', color: '#ff5555', dashed: true }],
+        locks: `  1234 | relation | commandes | RowExclusiveLock | t
+  5678 | relation | commandes | ExclusiveLock    | f  ← ATTEND`,
+        text: 'T2 demande un verrou EXCLUSIVE (ex: ALTER TABLE). Il doit attendre que T1 libère son verrou. Pas de deadlock — T2 attend simplement.', deadlock: false },
+      { edges: [{ from: 'T2', to: 'T1', label: 'attend', color: '#ffb86c', dashed: true }],
+        locks: `  1234 | relation | commandes | RowExclusiveLock | t
+  5678 | relation | commandes | ExclusiveLock    | f  ← ATTEND`,
+        text: 'Le wait-for graph montre T2 → T1. Pas de cycle = pas de deadlock. T2 sera débloqué quand T1 fera COMMIT.', deadlock: false }
+    ]
+  },
+  deadlock2: {
+    nodes: [
+      { id: 'T1', type: 'tx', x: 80, y: 80, label: 'T1 (pid 1234)' },
+      { id: 'T2', type: 'tx', x: 350, y: 80, label: 'T2 (pid 5678)' },
+      { id: 'LA', type: 'lock', x: 120, y: 220, label: 'Ligne A\n(row lock)' },
+      { id: 'LB', type: 'lock', x: 310, y: 220, label: 'Ligne B\n(row lock)' }
+    ],
+    steps: [
+      { edges: [{ from: 'T1', to: 'LA', label: 'détient', color: '#50fa7b' }],
+        locks: `  1234 | tuple    | ligne_A   | ExclusiveLock    | t`,
+        text: 'T1 verrouille la ligne A (UPDATE comptes SET solde=500 WHERE id=1).', deadlock: false },
+      { edges: [{ from: 'T1', to: 'LA', label: 'détient', color: '#50fa7b' }, { from: 'T2', to: 'LB', label: 'détient', color: '#50fa7b' }],
+        locks: `  1234 | tuple    | ligne_A   | ExclusiveLock    | t
+  5678 | tuple    | ligne_B   | ExclusiveLock    | t`,
+        text: 'T2 verrouille la ligne B (UPDATE comptes SET solde=300 WHERE id=2).', deadlock: false },
+      { edges: [{ from: 'T1', to: 'LA', label: 'détient', color: '#50fa7b' }, { from: 'T2', to: 'LB', label: 'détient', color: '#50fa7b' }, { from: 'T1', to: 'LB', label: 'attend', color: '#ffb86c', dashed: true }],
+        locks: `  1234 | tuple    | ligne_A   | ExclusiveLock    | t
+  1234 | tuple    | ligne_B   | ExclusiveLock    | f  ← ATTEND
+  5678 | tuple    | ligne_B   | ExclusiveLock    | t`,
+        text: 'T1 tente de verrouiller la ligne B → bloqué par T2. Wait-for : T1 → T2.', deadlock: false },
+      { edges: [{ from: 'T1', to: 'LA', label: 'détient', color: '#50fa7b' }, { from: 'T2', to: 'LB', label: 'détient', color: '#50fa7b' }, { from: 'T1', to: 'LB', label: 'attend', color: '#ff5555', dashed: true }, { from: 'T2', to: 'LA', label: 'attend', color: '#ff5555', dashed: true }],
+        locks: `  1234 | tuple    | ligne_A   | ExclusiveLock    | t
+  1234 | tuple    | ligne_B   | ExclusiveLock    | f  ← ATTEND
+  5678 | tuple    | ligne_A   | ExclusiveLock    | f  ← ATTEND
+  5678 | tuple    | ligne_B   | ExclusiveLock    | t
+
+  ERROR: deadlock detected
+  DETAIL: Process 5678 waits for ExclusiveLock on tuple ligne_A;
+          blocked by process 1234.
+  Process 1234 waits for ExclusiveLock on tuple ligne_B;
+          blocked by process 5678.`,
+        text: 'T2 tente de verrouiller la ligne A → bloqué par T1. CYCLE DÉTECTÉ : T1 → T2 → T1. PostgreSQL annule T2 (le plus récent) pour résoudre le deadlock.', deadlock: true }
+    ]
+  },
+  deadlock3: {
+    nodes: [
+      { id: 'T1', type: 'tx', x: 215, y: 50, label: 'T1' },
+      { id: 'T2', type: 'tx', x: 380, y: 220, label: 'T2' },
+      { id: 'T3', type: 'tx', x: 60, y: 220, label: 'T3' },
+      { id: 'LA', type: 'lock', x: 310, y: 120, label: 'Ligne A' },
+      { id: 'LB', type: 'lock', x: 320, y: 260, label: 'Ligne B' },
+      { id: 'LC', type: 'lock', x: 100, y: 120, label: 'Ligne C' }
+    ],
+    steps: [
+      { edges: [{ from: 'T1', to: 'LA', label: 'détient', color: '#50fa7b' }, { from: 'T2', to: 'LB', label: 'détient', color: '#50fa7b' }, { from: 'T3', to: 'LC', label: 'détient', color: '#50fa7b' }],
+        locks: `  T1 | ExclusiveLock | ligne_A | t
+  T2 | ExclusiveLock | ligne_B | t
+  T3 | ExclusiveLock | ligne_C | t`,
+        text: 'Trois transactions, chacune détenant un verrou exclusif sur une ligne différente.', deadlock: false },
+      { edges: [{ from: 'T1', to: 'LA', label: 'détient', color: '#50fa7b' }, { from: 'T2', to: 'LB', label: 'détient', color: '#50fa7b' }, { from: 'T3', to: 'LC', label: 'détient', color: '#50fa7b' }, { from: 'T1', to: 'LB', label: 'attend', color: '#ffb86c', dashed: true }],
+        locks: `  T1 | ExclusiveLock | ligne_A | t
+  T1 | ExclusiveLock | ligne_B | f ← ATTEND
+  T2 | ExclusiveLock | ligne_B | t
+  T3 | ExclusiveLock | ligne_C | t`,
+        text: 'T1 veut la ligne B → bloqué par T2.', deadlock: false },
+      { edges: [{ from: 'T1', to: 'LA', label: 'détient', color: '#50fa7b' }, { from: 'T2', to: 'LB', label: 'détient', color: '#50fa7b' }, { from: 'T3', to: 'LC', label: 'détient', color: '#50fa7b' }, { from: 'T1', to: 'LB', label: 'attend', color: '#ffb86c', dashed: true }, { from: 'T2', to: 'LC', label: 'attend', color: '#ffb86c', dashed: true }],
+        locks: `  T1 | ExclusiveLock | ligne_A | t
+  T1 | ExclusiveLock | ligne_B | f ← ATTEND
+  T2 | ExclusiveLock | ligne_B | t
+  T2 | ExclusiveLock | ligne_C | f ← ATTEND
+  T3 | ExclusiveLock | ligne_C | t`,
+        text: 'T2 veut la ligne C → bloqué par T3. Chaîne : T1 → T2 → T3.', deadlock: false },
+      { edges: [{ from: 'T1', to: 'LA', label: 'détient', color: '#50fa7b' }, { from: 'T2', to: 'LB', label: 'détient', color: '#50fa7b' }, { from: 'T3', to: 'LC', label: 'détient', color: '#50fa7b' }, { from: 'T1', to: 'LB', label: 'attend', color: '#ff5555', dashed: true }, { from: 'T2', to: 'LC', label: 'attend', color: '#ff5555', dashed: true }, { from: 'T3', to: 'LA', label: 'attend', color: '#ff5555', dashed: true }],
+        locks: `  ERROR: deadlock detected
+  DETAIL: Cycle T1 → T2 → T3 → T1
+  Process T3 annulé pour résoudre le deadlock.`,
+        text: 'T3 veut la ligne A → bloqué par T1. CYCLE DÉTECTÉ : T1 → T2 → T3 → T1 ! PostgreSQL annule T3 pour briser le cycle.', deadlock: true }
+    ]
+  }
+};
+
+let gScenario = 'simple';
+let gStepIdx = 0;
+let gPlaying = false;
+let gPaused = false;
+let gTimer = null;
+
+function drawGraph(stepData) {
+  const sc = graphScenarios[gScenario];
+  const nodes = sc.nodes;
+  gctx.clearRect(0, 0, wfgCanvas.width, wfgCanvas.height);
+
+  // Draw edges
+  if (stepData && stepData.edges) {
+    for (const edge of stepData.edges) {
+      const from = nodes.find(n => n.id === edge.from);
+      const to = nodes.find(n => n.id === edge.to);
+      if (!from || !to) continue;
+      gctx.beginPath();
+      gctx.moveTo(from.x, from.y);
+      gctx.lineTo(to.x, to.y);
+      gctx.strokeStyle = edge.color;
+      gctx.lineWidth = 2;
+      if (edge.dashed) gctx.setLineDash([6, 4]); else gctx.setLineDash([]);
+      gctx.stroke();
+      gctx.setLineDash([]);
+      // Arrowhead
+      const angle = Math.atan2(to.y - from.y, to.x - from.x);
+      const ax = to.x - 20 * Math.cos(angle), ay = to.y - 20 * Math.sin(angle);
+      gctx.beginPath();
+      gctx.moveTo(ax, ay);
+      gctx.lineTo(ax - 10 * Math.cos(angle - 0.4), ay - 10 * Math.sin(angle - 0.4));
+      gctx.lineTo(ax - 10 * Math.cos(angle + 0.4), ay - 10 * Math.sin(angle + 0.4));
+      gctx.closePath();
+      gctx.fillStyle = edge.color;
+      gctx.fill();
+      // Label
+      const mx = (from.x + to.x) / 2, my = (from.y + to.y) / 2 - 8;
+      gctx.fillStyle = edge.color;
+      gctx.font = '11px Segoe UI';
+      gctx.textAlign = 'center';
+      gctx.fillText(edge.label, mx, my);
+    }
+  }
+
+  // Draw nodes
+  for (const node of nodes) {
+    if (node.type === 'tx') {
+      gctx.beginPath();
+      gctx.arc(node.x, node.y, 24, 0, Math.PI * 2);
+      gctx.fillStyle = '#8be9fd22';
+      gctx.fill();
+      gctx.strokeStyle = '#8be9fd';
+      gctx.lineWidth = 2;
+      gctx.stroke();
+      gctx.fillStyle = '#8be9fd';
+      gctx.font = 'bold 12px Consolas';
+      gctx.textAlign = 'center';
+      gctx.textBaseline = 'middle';
+      gctx.fillText(node.label.split(' ')[0], node.x, node.y);
+    } else {
+      const w = 80, h = 36;
+      gctx.fillStyle = '#ffb86c22';
+      gctx.strokeStyle = '#ffb86c';
+      gctx.lineWidth = 1.5;
+      gctx.beginPath();
+      gctx.roundRect(node.x - w/2, node.y - h/2, w, h, 6);
+      gctx.fill();
+      gctx.stroke();
+      gctx.fillStyle = '#ffb86c';
+      gctx.font = '10px Consolas';
+      gctx.textAlign = 'center';
+      gctx.textBaseline = 'middle';
+      const lines = node.label.split('\n');
+      lines.forEach((line, i) => {
+        gctx.fillText(line, node.x, node.y - (lines.length - 1) * 6 + i * 12);
+      });
+    }
+  }
+
+  // Deadlock banner
+  document.getElementById('deadlockBanner').style.display = (stepData && stepData.deadlock) ? 'block' : 'none';
+
+  // pg_locks
+  if (stepData) {
+    document.getElementById('pgLocks').innerHTML = `<span class="header-row">  pid | locktype | relation  |      mode        | granted</span>\n------+----------+-----------+------------------+---------\n${stepData.locks}`;
+    document.getElementById('graphExplain').innerHTML = stepData.text;
+  }
+}
+
+function resetGraph() {
+  gScenario = document.getElementById('scenarioSelect').value;
+  gStepIdx = 0;
+  gPlaying = false;
+  gPaused = false;
+  if (gTimer) clearTimeout(gTimer);
+  drawGraph(null);
+  document.getElementById('pgLocks').innerHTML = `<span class="header-row">  pid | locktype | relation  |      mode        | granted</span>\n------+----------+-----------+------------------+---------\n En attente du scénario...`;
+  document.getElementById('graphExplain').textContent = 'Appuyez sur Play pour lancer l\'animation.';
+  document.getElementById('deadlockBanner').style.display = 'none';
+}
+
+function playGraph() {
+  if (gPaused) { gPaused = false; runGraphNext(); return; }
+  resetGraph();
+  gPlaying = true;
+  runGraphNext();
+}
+
+function pauseGraph() {
+  gPaused = true;
+  if (gTimer) clearTimeout(gTimer);
+}
+
+function stepGraph() {
+  if (!gPlaying) { resetGraph(); gPlaying = true; }
+  const sc = graphScenarios[gScenario];
+  if (gStepIdx < sc.steps.length) {
+    drawGraph(sc.steps[gStepIdx]);
+    gStepIdx++;
+  }
+}
+
+function runGraphNext() {
+  if (gPaused || !gPlaying) return;
+  const sc = graphScenarios[gScenario];
+  if (gStepIdx >= sc.steps.length) { gPlaying = false; return; }
+  drawGraph(sc.steps[gStepIdx]);
+  gStepIdx++;
+  gTimer = setTimeout(runGraphNext, 1800);
+}
+
+// roundRect polyfill for older browsers
+if (!CanvasRenderingContext2D.prototype.roundRect) {
+  CanvasRenderingContext2D.prototype.roundRect = function(x, y, w, h, r) {
+    this.moveTo(x + r, y);
+    this.lineTo(x + w - r, y);
+    this.quadraticCurveTo(x + w, y, x + w, y + r);
+    this.lineTo(x + w, y + h - r);
+    this.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    this.lineTo(x + r, y + h);
+    this.quadraticCurveTo(x, y + h, x, y + h - r);
+    this.lineTo(x, y + r);
+    this.quadraticCurveTo(x, y, x + r, y);
+  };
+}
+
+// init
+buildMatrix();
+buildRowMatrix();
+resetGraph();
+</script>
+</body>
+</html>

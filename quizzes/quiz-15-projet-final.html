@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quiz 15 — Projet final</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1a1a2e; color: #e0e0e0; min-height: 100vh; padding: 2rem 1rem; }
+    .container { max-width: 800px; margin: 0 auto; }
+    h1 { text-align: center; margin-bottom: 0.5rem; font-size: 1.8rem; color: #ffffff; }
+    .subtitle { text-align: center; color: #8892b0; margin-bottom: 2rem; font-size: 1rem; }
+    .progress-bar-container { background: #0d1117; border-radius: 10px; height: 14px; margin-bottom: 2rem; overflow: hidden; }
+    .progress-bar { background: linear-gradient(90deg, #0d6efd, #4dabf7); height: 100%; width: 0%; border-radius: 10px; transition: width 0.4s ease; }
+    .progress-text { text-align: center; color: #8892b0; margin-bottom: 1rem; font-size: 0.9rem; }
+    .card { background: #16213e; border-radius: 12px; padding: 2rem; margin-bottom: 1.5rem; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+    .question-label { font-size: 0.85rem; color: #4dabf7; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem; }
+    .question-text { font-size: 1.15rem; margin-bottom: 1.2rem; line-height: 1.5; color: #ffffff; }
+    pre { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 1rem; margin-bottom: 1.2rem; overflow-x: auto; font-size: 0.95rem; }
+    code { font-family: 'Consolas', 'Fira Code', 'Courier New', monospace; color: #c9d1d9; }
+    .options { list-style: none; }
+    .options li { margin-bottom: 0.5rem; }
+    .options label { display: flex; align-items: center; gap: 0.75rem; padding: 0.8rem 1rem; background: #0d1117; border: 2px solid #30363d; border-radius: 8px; cursor: pointer; transition: border-color 0.2s, background 0.2s; font-size: 1rem; }
+    .options label:hover { border-color: #4dabf7; background: #1c2a4a; }
+    .options input[type="radio"] { accent-color: #0d6efd; width: 18px; height: 18px; flex-shrink: 0; }
+    .btn { display: inline-block; padding: 0.7rem 2rem; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: background 0.2s, transform 0.1s; }
+    .btn-primary { background: #0d6efd; color: #fff; }
+    .btn-primary:hover { background: #3b82f6; }
+    .btn-primary:disabled { background: #374151; cursor: not-allowed; }
+    .btn-restart { background: #238636; color: #fff; margin-top: 1rem; padding: 0.7rem 2rem; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; }
+    .btn-restart:hover { background: #2ea043; }
+    .feedback { margin-top: 1rem; padding: 1rem 1.2rem; border-radius: 8px; font-size: 0.95rem; line-height: 1.5; display: none; }
+    .feedback.correct { background: #0f5132; border: 1px solid #198754; color: #d1fae5; display: block; }
+    .feedback.wrong { background: #842029; border: 1px solid #dc3545; color: #fdd; display: block; }
+    .score-card { text-align: center; padding: 3rem 2rem; }
+    .score-card .score { font-size: 3rem; font-weight: 700; color: #4dabf7; margin-bottom: 0.5rem; }
+    .score-card .score-label { font-size: 1.2rem; color: #8892b0; margin-bottom: 1.5rem; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Quiz 15 — Projet final</h1>
+    <p class="subtitle">Architecture complète, debugging, design decisions</p>
+    <div class="progress-bar-container"><div class="progress-bar" id="progressBar"></div></div>
+    <p class="progress-text" id="progressText">Question 1 / 5</p>
+    <div id="quizContainer"></div>
+    <div id="scoreContainer" class="card score-card hidden"></div>
+  </div>
+  <script>
+    const questions = [
+      {
+        label: "Pourquoi ?",
+        text: "Pourquoi utiliser une contrainte EXCLUDE plutôt qu'un simple CHECK pour empêcher les chevauchements de réservations ?",
+        code: "-- Approche EXCLUDE\nEXCLUDE USING GIST (room_id WITH =, during WITH &&)\n\n-- Pourquoi pas un simple CHECK ?\n-- CHECK (during IS NOT NULL)",
+        options: [
+          "CHECK est plus lent que EXCLUDE",
+          "CHECK ne peut valider que la ligne courante individuellement, EXCLUDE peut comparer entre les lignes de la table pour détecter les conflits",
+          "CHECK ne fonctionne pas avec les types range",
+          "EXCLUDE est obligatoire pour les tables partitionnées"
+        ],
+        answer: 1,
+        explanation: "Une contrainte CHECK ne peut évaluer que les valeurs de la ligne en cours d'insertion/modification. Elle ne peut pas vérifier si une autre ligne de la table entre en conflit. EXCLUDE est une contrainte inter-lignes : elle compare la nouvelle ligne avec les lignes existantes en utilisant les opérateurs spécifiés (= pour l'égalité, && pour le chevauchement). C'est essentiel pour les contraintes de non-chevauchement comme les réservations."
+      },
+      {
+        label: "Concept",
+        text: "Quel est le trade-off principal de l'isolation Serializable pour un système de réservation ?",
+        code: "BEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT * FROM reservations\n  WHERE room_id = 1 AND during && '[2025-03-01, 2025-03-05)';\n-- Si pas de conflit :\nINSERT INTO reservations (room_id, during)\n  VALUES (1, '[2025-03-01, 2025-03-05)');\nCOMMIT;",
+        options: [
+          "L'isolation Serializable est plus lente que Read Committed pour toutes les opérations",
+          "L'isolation Serializable peut rejeter des transactions (serialization failure) nécessitant un mécanisme de retry, mais offre la garantie la plus forte de cohérence",
+          "L'isolation Serializable empêche les SELECT concurrents",
+          "L'isolation Serializable nécessite plus d'espace disque"
+        ],
+        answer: 1,
+        explanation: "L'isolation Serializable garantit que le résultat est identique à une exécution séquentielle des transactions, éliminant tous les anomalies de concurrence. Le trade-off est que PostgreSQL peut rejeter des transactions avec une serialization failure quand il détecte un conflit potentiel. L'application DOIT implémenter une boucle de retry. C'est la garantie la plus forte mais avec un coût : plus de rollbacks sous forte charge concurrente."
+      },
+      {
+        label: "Concept",
+        text: "Pourquoi un index GiST sur tsrange est-il essentiel pour la détection de chevauchements (overlap) ?",
+        code: "CREATE INDEX idx_reservations_during\n  ON reservations USING GIST (during);",
+        options: [
+          "GiST compresse les données de type range",
+          "GiST supporte l'opérateur de chevauchement (&&) que B-tree ne supporte pas, permettant une recherche efficace des intervalles qui se chevauchent",
+          "GiST est plus petit qu'un B-tree pour les ranges",
+          "GiST est le seul type d'index disponible pour les timestamps"
+        ],
+        answer: 1,
+        explanation: "L'opérateur && (overlap) vérifie si deux ranges se chevauchent. B-tree ne supporte que les comparaisons d'ordre (<, =, >), pas les relations spatiales comme le chevauchement. GiST (Generalized Search Tree) est conçu pour les données avec des relations multidimensionnelles : il organise les ranges dans un arbre qui permet de trouver efficacement tous les intervalles chevauchant un intervalle donné, en O(log n) au lieu de O(n) pour un scan séquentiel."
+      },
+      {
+        label: "Concept",
+        text: "Quel est le meilleur pattern pour implémenter un audit trail (historique des modifications) ?",
+        code: null,
+        options: [
+          "Ajouter une colonne 'last_modified_by' sur chaque table",
+          "Logger les modifications dans les fichiers de log de l'application",
+          "Un trigger AFTER INSERT/UPDATE/DELETE qui écrit les anciennes et nouvelles valeurs dans une table d'audit dédiée",
+          "Utiliser LISTEN/NOTIFY pour envoyer les changements"
+        ],
+        answer: 2,
+        explanation: "Un trigger AFTER sur INSERT/UPDATE/DELETE capture automatiquement chaque modification au niveau base de données, garantissant qu'aucune modification ne peut échapper à l'audit (même les modifications directes en SQL). La table d'audit stocke l'ancienne valeur (OLD), la nouvelle (NEW), l'opération (INSERT/UPDATE/DELETE), le timestamp et l'utilisateur. Ce pattern est fiable car il est impossible de contourner un trigger (contrairement au logging applicatif)."
+      },
+      {
+        label: "Concept",
+        text: "Comment identifier une slow query en production dans PostgreSQL ?",
+        code: null,
+        options: [
+          "Regarder les fichiers de données PostgreSQL sur le disque",
+          "Utiliser pg_stat_statements pour trouver les requêtes les plus lentes, puis EXPLAIN ANALYZE pour comprendre le plan d'exécution",
+          "Augmenter la mémoire du serveur et réessayer",
+          "Compter le nombre d'index sur chaque table"
+        ],
+        answer: 1,
+        explanation: "La démarche standard est : (1) pg_stat_statements identifie les requêtes les plus consommatrices en temps (total_exec_time) et en fréquence (calls). (2) EXPLAIN ANALYZE sur la requête suspecte révèle le plan d'exécution réel : Seq Scan vs Index Scan, estimation vs réalité, noeuds les plus coûteux. (3) On optimise ensuite : ajout d'index, réécriture de la requête, ANALYZE pour mettre à jour les statistiques, ou ajustement de la configuration."
+      }
+    ];
+
+    let currentQuestion = 0, score = 0, answered = false;
+
+    function renderQuestion() {
+      if (currentQuestion >= questions.length) { showScore(); return; }
+      const q = questions[currentQuestion];
+      const pct = (currentQuestion / questions.length) * 100;
+      document.getElementById('progressBar').style.width = pct + '%';
+      document.getElementById('progressText').textContent = 'Question ' + (currentQuestion + 1) + ' / ' + questions.length;
+      let html = '<div class="card">';
+      html += '<div class="question-label">' + q.label + '</div>';
+      html += '<div class="question-text">' + q.text + '</div>';
+      if (q.code) html += '<pre><code>' + q.code + '</code></pre>';
+      html += '<ul class="options">';
+      q.options.forEach(function(opt, i) {
+        html += '<li><label><input type="radio" name="q" value="' + i + '"> ' + opt + '</label></li>';
+      });
+      html += '</ul>';
+      html += '<button class="btn btn-primary" id="validateBtn" onclick="validate()" disabled>Valider</button>';
+      html += '<div class="feedback" id="feedback"></div>';
+      html += '</div>';
+      document.getElementById('quizContainer').innerHTML = html;
+      document.getElementById('scoreContainer').classList.add('hidden');
+      answered = false;
+      document.querySelectorAll('input[name="q"]').forEach(function(input) {
+        input.addEventListener('change', function() {
+          document.getElementById('validateBtn').disabled = false;
+        });
+      });
+    }
+
+    function validate() {
+      if (answered) return;
+      answered = true;
+      const selected = document.querySelector('input[name="q"]:checked');
+      if (!selected) return;
+      const val = parseInt(selected.value);
+      const q = questions[currentQuestion];
+      const fb = document.getElementById('feedback');
+      if (val === q.answer) {
+        score++;
+        fb.className = 'feedback correct';
+        fb.innerHTML = '<strong>Correct !</strong> ' + q.explanation;
+      } else {
+        fb.className = 'feedback wrong';
+        fb.innerHTML = '<strong>Incorrect.</strong> ' + q.explanation;
+      }
+      document.getElementById('validateBtn').disabled = true;
+      setTimeout(function() {
+        currentQuestion++;
+        renderQuestion();
+      }, 3000);
+    }
+
+    function showScore() {
+      document.getElementById('quizContainer').innerHTML = '';
+      document.getElementById('progressBar').style.width = '100%';
+      document.getElementById('progressText').textContent = 'Terminé !';
+      const sc = document.getElementById('scoreContainer');
+      sc.classList.remove('hidden');
+      const pct = Math.round((score / questions.length) * 100);
+      let msg = pct >= 80 ? 'Excellent travail !' : pct >= 60 ? 'Bon travail, quelques points à revoir.' : 'Continuez à étudier, vous progresserez !';
+      sc.innerHTML = '<div class="score">' + score + ' / ' + questions.length + '</div><div class="score-label">' + pct + '% — ' + msg + '</div><button class="btn-restart" onclick="restart()">Recommencer</button>';
+    }
+
+    function restart() {
+      currentQuestion = 0; score = 0; answered = false;
+      renderQuestion();
+    }
+
+    renderQuestion();
+  </script>
+</body>
+</html>

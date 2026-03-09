@@ -996,12 +996,14 @@ COMMIT;
 
 ## 12. Node.js : requetes sur tables partitionnees, routing multi-shard
 
-```javascript
+```typescript
 // ============================================================
 // Module Node.js pour tables partitionnees et sharding
 // ============================================================
 
-const { Pool } = require('pg');
+import pg from 'pg';
+import type { PoolClient, PoolConfig, QueryResult } from 'pg';
+const { Pool } = pg;
 
 // ────────────────────────────────────────────────────────────
 // 1. Requetes sur tables partitionnees (transparent !)
@@ -1014,10 +1016,17 @@ const pool = new Pool({
     password: 'secret',
 });
 
+interface EventRow {
+    id: number;
+    event_type: string;
+    payload: Record<string, unknown>;
+    created_at: string;
+}
+
 // Les requetes sur une table partitionnee sont identiques
 // a celles sur une table normale — PostgreSQL gere le pruning
-async function getRecentEvents(tenantId, days = 7) {
-    const { rows } = await pool.query(`
+async function getRecentEvents(tenantId: number, days: number = 7): Promise<EventRow[]> {
+    const { rows } = await pool.query<EventRow>(`
         SELECT id, event_type, payload, created_at
         FROM events
         WHERE tenant_id = $1
@@ -1030,8 +1039,17 @@ async function getRecentEvents(tenantId, days = 7) {
 }
 
 // L'insertion est aussi transparente
-async function insertEvent(tenantId, eventType, payload) {
-    const { rows } = await pool.query(`
+interface InsertedEvent {
+    id: number;
+    created_at: string;
+}
+
+async function insertEvent(
+    tenantId: number,
+    eventType: string,
+    payload: Record<string, unknown>
+): Promise<InsertedEvent> {
+    const { rows } = await pool.query<InsertedEvent>(`
         INSERT INTO events (tenant_id, event_type, payload)
         VALUES ($1, $2, $3)
         RETURNING id, created_at
@@ -1043,8 +1061,8 @@ async function insertEvent(tenantId, eventType, payload) {
 // ────────────────────────────────────────────────────────────
 // 2. Maintenance : creer les partitions futures
 // ────────────────────────────────────────────────────────────
-async function ensureFuturePartitions(monthsAhead = 3) {
-    const client = await pool.connect();
+async function ensureFuturePartitions(monthsAhead: number = 3): Promise<void> {
+    const client: PoolClient = await pool.connect();
     try {
         for (let i = 1; i <= monthsAhead; i++) {
             const startDate = new Date();
@@ -1054,12 +1072,12 @@ async function ensureFuturePartitions(monthsAhead = 3) {
             const endDate = new Date(startDate);
             endDate.setMonth(endDate.getMonth() + 1);
 
-            const partName = `events_${startDate.getFullYear()}_${
+            const partName: string = `events_${startDate.getFullYear()}_${
                 String(startDate.getMonth() + 1).padStart(2, '0')
             }`;
 
-            const startStr = startDate.toISOString().split('T')[0];
-            const endStr = endDate.toISOString().split('T')[0];
+            const startStr: string = startDate.toISOString().split('T')[0];
+            const endStr: string = endDate.toISOString().split('T')[0];
 
             try {
                 await client.query(`
@@ -1069,7 +1087,7 @@ async function ensureFuturePartitions(monthsAhead = 3) {
                 `);
                 console.log(`Partition ${partName} creee ou existante`);
             } catch (err) {
-                if (err.code === '42P07') {
+                if ((err as { code?: string }).code === '42P07') {
                     // relation already exists — OK
                     console.log(`Partition ${partName} existe deja`);
                 } else {
@@ -1086,7 +1104,10 @@ async function ensureFuturePartitions(monthsAhead = 3) {
 // 3. Sharding applicatif (multi-database)
 // ────────────────────────────────────────────────────────────
 class ShardRouter {
-    constructor(shardConfigs) {
+    shards: InstanceType<typeof Pool>[];
+    numShards: number;
+
+    constructor(shardConfigs: PoolConfig[]) {
         // shardConfigs = [{ host, port, database, ... }, ...]
         this.shards = shardConfigs.map(config => new Pool({
             ...config,
@@ -1096,45 +1117,45 @@ class ShardRouter {
     }
 
     // Determiner le shard pour un tenant
-    _getShardIndex(tenantId) {
+    private _getShardIndex(tenantId: number): number {
         // Hash simple pour distribuer uniformement
         return tenantId % this.numShards;
     }
 
-    _getPool(tenantId) {
+    private _getPool(tenantId: number): InstanceType<typeof Pool> {
         return this.shards[this._getShardIndex(tenantId)];
     }
 
     // Requete sur UN shard (tenant-scoped)
-    async queryTenant(tenantId, sql, params) {
-        const pool = this._getPool(tenantId);
-        return pool.query(sql, params);
+    async queryTenant(tenantId: number, sql: string, params: unknown[]): Promise<QueryResult> {
+        const shardPool = this._getPool(tenantId);
+        return shardPool.query(sql, params);
     }
 
     // Requete sur TOUS les shards (scatter-gather)
-    async queryAll(sql, params) {
-        const results = await Promise.all(
-            this.shards.map(pool => pool.query(sql, params))
+    async queryAll(sql: string, params: unknown[]): Promise<Record<string, unknown>[]> {
+        const results: QueryResult[] = await Promise.all(
+            this.shards.map(shardPool => shardPool.query(sql, params))
         );
         // Combiner les resultats
         return results.flatMap(r => r.rows);
     }
 
     // Aggregation sur tous les shards
-    async countAll(table, where = '', params = []) {
-        const sql = `SELECT count(*) AS cnt FROM ${table} ${
+    async countAll(table: string, where: string = '', params: unknown[] = []): Promise<number> {
+        const sql: string = `SELECT count(*) AS cnt FROM ${table} ${
             where ? 'WHERE ' + where : ''
         }`;
-        const results = await Promise.all(
-            this.shards.map(pool => pool.query(sql, params))
+        const results: QueryResult[] = await Promise.all(
+            this.shards.map(shardPool => shardPool.query(sql, params))
         );
         return results.reduce(
-            (sum, r) => sum + parseInt(r.rows[0].cnt),
+            (sum: number, r: QueryResult) => sum + parseInt(r.rows[0].cnt),
             0
         );
     }
 
-    async close() {
+    async close(): Promise<void> {
         await Promise.all(this.shards.map(s => s.end()));
     }
 }
@@ -1150,20 +1171,27 @@ const router = new ShardRouter([
 ]);
 
 // Requete pour un tenant specifique → 1 seul shard
-const orders = await router.queryTenant(42,
+const orders: QueryResult = await router.queryTenant(42,
     'SELECT * FROM orders WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 10',
     [42]
 );
 
 // Comptage global → tous les shards en parallele
-const totalOrders = await router.countAll('orders');
+const totalOrders: number = await router.countAll('orders');
 console.log(`Total commandes sur tous les shards : ${totalOrders}`);
 
 // ────────────────────────────────────────────────────────────
 // 4. Monitoring des partitions
 // ────────────────────────────────────────────────────────────
-async function getPartitionStats() {
-    const { rows } = await pool.query(`
+interface PartitionRow {
+    partition_name: string;
+    total_size: string;
+    live_rows: number;
+    dead_rows: number;
+}
+
+async function getPartitionStats(): Promise<PartitionRow[]> {
+    const { rows } = await pool.query<PartitionRow>(`
         SELECT
             inhrelid::regclass AS partition_name,
             pg_size_pretty(
@@ -1178,7 +1206,7 @@ async function getPartitionStats() {
 
     console.log('\n=== Partition Stats ===');
     for (const row of rows) {
-        const deadPct = row.live_rows > 0
+        const deadPct: string = row.live_rows > 0
             ? (100 * row.dead_rows / (row.live_rows + row.dead_rows)).toFixed(1)
             : '0.0';
         console.log(

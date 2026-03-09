@@ -837,7 +837,7 @@ JOIN projets_actifs p ON ep.projet_id = p.id;
 
 ### 10.1 Le danger de l'injection SQL
 
-```javascript
+```typescript
 // MAUVAIS : injection SQL possible !!!
 const nom = "'; DROP TABLE utilisateur; --";
 const query = `SELECT * FROM utilisateur WHERE nom = '${nom}'`;
@@ -849,7 +849,7 @@ const query = `SELECT * FROM utilisateur WHERE nom = '${nom}'`;
 
 ### 10.2 Requetes parametrees avec pg
 
-```javascript
+```typescript
 // fichier : securise.mjs
 // Demonstration de requetes parametrees securisees
 
@@ -933,7 +933,7 @@ main();
 
 ### 10.3 Pattern d'acces aux donnees (DAO)
 
-```javascript
+```typescript
 // fichier : dao/produit-dao.mjs
 // Data Access Object pour la table produit
 
@@ -1050,7 +1050,7 @@ WITH (
 
 ### 11.3 Bulk insert depuis Node.js
 
-```javascript
+```typescript
 // fichier : bulk-insert.mjs
 // Insertion massive avec pg-copy-streams ou multi-VALUES
 

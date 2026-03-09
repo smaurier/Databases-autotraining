@@ -279,8 +279,9 @@ T2: ─────────────────── BEGIN ──► UP
 
 ## 6. Reproduire un deadlock en Node.js
 
-```javascript
+```typescript
 import pg from 'pg';
+import type { PoolClient } from 'pg';
 const { Pool } = pg;
 
 const pool = new Pool({
@@ -292,9 +293,9 @@ const pool = new Pool({
 /**
  * Demonstration d'un deadlock avec deux clients concurrents.
  */
-async function provoquerDeadlock() {
-    const clientA = await pool.connect();
-    const clientB = await pool.connect();
+async function provoquerDeadlock(): Promise<void> {
+    const clientA: PoolClient = await pool.connect();
+    const clientB: PoolClient = await pool.connect();
 
     try {
         // Les deux transactions commencent
@@ -326,7 +327,7 @@ async function provoquerDeadlock() {
         ]);
 
         for (const [index, result] of results.entries()) {
-            const name = index === 0 ? 'A' : 'B';
+            const name: string = index === 0 ? 'A' : 'B';
             if (result.status === 'fulfilled') {
                 console.log(`${name}: UPDATE reussi`);
             } else {
@@ -385,10 +386,14 @@ Demo terminee
 
 > **Analogie** : Dans un escalier etroit, si tout le monde monte a droite et descend a gauche, personne ne se bloque. Les deadlocks arrivent quand les gens montent et descendent du meme cote.
 
-```javascript
+```typescript
+import pg from 'pg';
+import type { PoolClient } from 'pg';
+const { Pool } = pg;
+
 // Node.js : trier les IDs avant de les verrouiller
-async function transfert(fromId, toId, montant) {
-    const client = await pool.connect();
+async function transfert(fromId: number, toId: number, montant: number): Promise<void> {
+    const client: PoolClient = await pool.connect();
 
     try {
         await client.query('BEGIN');
@@ -632,21 +637,26 @@ ORDER BY query_start;
 
 ### 9.4 Alerting sur les deadlocks
 
-```javascript
+```typescript
 import pg from 'pg';
+import type { QueryResult } from 'pg';
 const { Pool } = pg;
 
 const pool = new Pool({ /* ... */ });
 
+interface DeadlockRow {
+    deadlocks: string;
+}
+
 // Verifier periodiquement les deadlocks
-async function checkDeadlocks() {
-    const { rows } = await pool.query(`
+async function checkDeadlocks(): Promise<void> {
+    const { rows }: QueryResult<DeadlockRow> = await pool.query(`
         SELECT deadlocks
         FROM pg_stat_database
         WHERE datname = current_database()
     `);
 
-    const count = rows[0].deadlocks;
+    const count: number = parseInt(rows[0].deadlocks);
     console.log(`Deadlocks detectes : ${count}`);
 
     // Alerter si > seuil
@@ -773,10 +783,10 @@ ALTER TABLE customers                 SELECT * FROM customers
 
 Quand vous traitez des lots de lignes, les deadlocks sont frequents si les lots se chevauchent.
 
-```javascript
+```typescript
 // MAUVAIS : deadlock probable entre workers
-async function processBatch(ids) {
-    const client = await pool.connect();
+async function processBatch(ids: number[]): Promise<void> {
+    const client: PoolClient = await pool.connect();
     try {
         await client.query('BEGIN');
         for (const id of ids) {
@@ -801,12 +811,12 @@ async function processBatch(ids) {
 
 ### 12.2 Solution 1 : Trier les IDs
 
-```javascript
+```typescript
 // BON : trier les IDs pour un lock ordering coherent
-async function processBatchSafe(ids) {
-    const sortedIds = [...ids].sort((a, b) => a - b);
+async function processBatchSafe(ids: number[]): Promise<void> {
+    const sortedIds: number[] = [...ids].sort((a, b) => a - b);
 
-    const client = await pool.connect();
+    const client: PoolClient = await pool.connect();
     try {
         await client.query('BEGIN');
         for (const id of sortedIds) {
@@ -827,9 +837,9 @@ async function processBatchSafe(ids) {
 
 ### 12.3 Solution 2 : Une seule requete
 
-```javascript
-async function processBatchOneQuery(ids) {
-    const client = await pool.connect();
+```typescript
+async function processBatchOneQuery(ids: number[]): Promise<void> {
+    const client: PoolClient = await pool.connect();
     try {
         await client.query('BEGIN');
 
@@ -853,14 +863,19 @@ async function processBatchOneQuery(ids) {
 
 ### 12.4 Solution 3 : SKIP LOCKED pour le partitionnement
 
-```javascript
-async function processNextBatch(batchSize) {
-    const client = await pool.connect();
+```typescript
+interface Item {
+    id: number;
+    processed: boolean;
+}
+
+async function processNextBatch(batchSize: number): Promise<Item[]> {
+    const client: PoolClient = await pool.connect();
     try {
         await client.query('BEGIN');
 
         // Chaque worker prend un lot NON-VERROUILLE
-        const { rows } = await client.query(
+        const { rows } = await client.query<Item>(
             `WITH batch AS (
                 SELECT id
                 FROM items
@@ -890,17 +905,22 @@ async function processNextBatch(batchSize) {
 
 ### 12.5 Solution 4 : Retry pattern avec backoff
 
-```javascript
-async function withDeadlockRetry(fn, maxRetries = 3) {
+```typescript
+interface DatabaseError extends Error {
+    code?: string;
+}
+
+async function withDeadlockRetry<T>(fn: () => Promise<T>, maxRetries: number = 3): Promise<T | undefined> {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
             return await fn();
         } catch (error) {
-            const isDeadlock = error.code === '40P01';
-            const isSerializationFailure = error.code === '40001';
+            const dbError = error as DatabaseError;
+            const isDeadlock: boolean = dbError.code === '40P01';
+            const isSerializationFailure: boolean = dbError.code === '40001';
 
             if ((isDeadlock || isSerializationFailure) && attempt < maxRetries) {
-                const delay = Math.random() * 100 * Math.pow(2, attempt);
+                const delay: number = Math.random() * 100 * Math.pow(2, attempt);
                 console.warn(
                     `Deadlock/serialization failure, attempt ${attempt}/${maxRetries}, ` +
                     `retrying in ${Math.round(delay)}ms`

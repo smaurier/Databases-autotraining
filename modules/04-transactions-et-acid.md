@@ -526,7 +526,7 @@ END $$;
 
 ### 8.1 Pattern de base : BEGIN / COMMIT / ROLLBACK
 
-```javascript
+```typescript
 // fichier : transaction-basique.mjs
 // Pattern de transaction avec le driver pg
 
@@ -602,7 +602,7 @@ main();
 
 ### 8.2 Helper generique : withTransaction()
 
-```javascript
+```typescript
 // fichier : helpers/transaction.mjs
 // Helper reutilisable pour les transactions
 

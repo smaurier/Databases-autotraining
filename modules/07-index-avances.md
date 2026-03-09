@@ -711,7 +711,7 @@ WHERE status_code >= 500
 
 ## 8. Node.js : utiliser les index avances
 
-```javascript
+```typescript
 // fichier : index-avances.mjs
 // Demonstration des index avances avec pg
 

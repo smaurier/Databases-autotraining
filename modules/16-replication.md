@@ -746,9 +746,10 @@ Architecture avec read replicas :
 
 **Option 1 : Routing au niveau applicatif**
 
-```javascript
-// Node.js — deux pools de connexion
-const { Pool } = require('pg');
+```typescript
+import pg from 'pg';
+import type { QueryResult } from 'pg';
+const { Pool } = pg;
 
 // Pool pour les ecritures (primary)
 const primaryPool = new Pool({
@@ -761,28 +762,15 @@ const primaryPool = new Pool({
 });
 
 // Pool pour les lectures (replicas en round-robin)
-const replicaHosts = [
+const replicaHosts: string[] = [
     'replica1.example.com',
     'replica2.example.com',
     'replica3.example.com',
 ];
 let currentReplica = 0;
 
-function getReplicaPool() {
-    const host = replicaHosts[currentReplica % replicaHosts.length];
-    currentReplica++;
-    return new Pool({
-        host,
-        port: 5432,
-        database: 'mydb',
-        user: 'app_readonly',
-        password: 'secret',
-        max: 10,
-    });
-}
-
 // Pools pre-crees pour les replicas
-const replicaPools = replicaHosts.map(host => new Pool({
+const replicaPools: InstanceType<typeof Pool>[] = replicaHosts.map(host => new Pool({
     host,
     port: 5432,
     database: 'mydb',
@@ -791,8 +779,12 @@ const replicaPools = replicaHosts.map(host => new Pool({
     max: 10,
 }));
 
+interface QueryOptions {
+    readonly?: boolean;
+}
+
 // Fonction utilitaire
-async function query(sql, params, { readonly = false } = {}) {
+async function query(sql: string, params: unknown[], { readonly = false }: QueryOptions = {}): Promise<QueryResult> {
     if (readonly) {
         // Round-robin sur les replicas
         const pool = replicaPools[currentReplica % replicaPools.length];
@@ -858,9 +850,9 @@ Le probleme du "read-your-own-write" :
 
 Solutions :
 
-```javascript
+```typescript
 // Solution 1 : Lire sur le primary apres une ecriture
-async function createOrder(data) {
+async function createOrder(data: Record<string, unknown>): Promise<Record<string, unknown>> {
     // Ecriture sur le primary
     const { rows } = await primaryPool.query(
         'INSERT INTO orders (...) VALUES (...) RETURNING *',
@@ -872,11 +864,16 @@ async function createOrder(data) {
 
 // Solution 2 : "Sticky reads" — lire sur le primary pendant N secondes
 const STICKY_DURATION_MS = 5000; // 5 secondes
-const userLastWrite = new Map(); // userId → timestamp
+const userLastWrite = new Map<number, number>(); // userId → timestamp
 
-async function queryWithSticky(sql, params, userId, readonly = false) {
-    const lastWrite = userLastWrite.get(userId) || 0;
-    const isSticky = Date.now() - lastWrite < STICKY_DURATION_MS;
+async function queryWithSticky(
+    sql: string,
+    params: unknown[],
+    userId: number,
+    readonly: boolean = false
+): Promise<QueryResult> {
+    const lastWrite: number = userLastWrite.get(userId) || 0;
+    const isSticky: boolean = Date.now() - lastWrite < STICKY_DURATION_MS;
 
     if (readonly && !isSticky) {
         return replicaPool.query(sql, params);
@@ -1169,15 +1166,40 @@ Arbre de decision :
 
 ## 9. Node.js : connection routing read/write
 
-```javascript
+```typescript
 // ============================================================
 // Module de routage read/write complet pour Node.js
 // ============================================================
 
-const { Pool } = require('pg');
+import pg from 'pg';
+import type { PoolClient, QueryResult } from 'pg';
+const { Pool } = pg;
+
+interface RouterConfig {
+    primaryHost: string;
+    replicaHosts: string[];
+    port?: number;
+    database: string;
+    user: string;
+    password: string;
+    readonlyUser?: string;
+    readonlyPassword?: string;
+    primaryMaxConnections?: number;
+    replicaMaxConnections?: number;
+}
+
+interface ReadWriteOptions {
+    userId?: number;
+}
 
 class DatabaseRouter {
-    constructor(config) {
+    primary: InstanceType<typeof Pool>;
+    replicas: InstanceType<typeof Pool>[];
+    private _replicaIndex: number;
+    private _stickyReads: Map<number, number>;
+    private _healthyReplicas: Set<number>;
+
+    constructor(config: RouterConfig) {
         // Pool primary (read-write)
         this.primary = new Pool({
             host: config.primaryHost,
@@ -1203,24 +1225,24 @@ class DatabaseRouter {
         }));
 
         this._replicaIndex = 0;
-        this._stickyReads = new Map(); // userId → timestamp
+        this._stickyReads = new Map<number, number>();
 
         // Health check
-        this._healthyReplicas = new Set(
+        this._healthyReplicas = new Set<number>(
             config.replicaHosts.map((_, i) => i)
         );
         this._startHealthCheck();
     }
 
     // Round-robin sur les replicas sains
-    _getReplicaPool() {
+    private _getReplicaPool(): InstanceType<typeof Pool> {
         if (this._healthyReplicas.size === 0) {
             console.warn('Aucun replica sain, fallback sur le primary');
             return this.primary;
         }
 
-        const healthyIndexes = [...this._healthyReplicas];
-        const idx = healthyIndexes[
+        const healthyIndexes: number[] = [...this._healthyReplicas];
+        const idx: number = healthyIndexes[
             this._replicaIndex % healthyIndexes.length
         ];
         this._replicaIndex++;
@@ -1228,7 +1250,7 @@ class DatabaseRouter {
     }
 
     // Health check periodique des replicas
-    _startHealthCheck() {
+    private _startHealthCheck(): void {
         setInterval(async () => {
             for (let i = 0; i < this.replicas.length; i++) {
                 try {
@@ -1240,7 +1262,7 @@ class DatabaseRouter {
                     }
                 } catch (err) {
                     console.error(
-                        `Replica ${i} en panne :`, err.message
+                        `Replica ${i} en panne :`, (err as Error).message
                     );
                     this._healthyReplicas.delete(i);
                 }
@@ -1249,16 +1271,16 @@ class DatabaseRouter {
     }
 
     // Marquer un utilisateur comme "sticky" apres une ecriture
-    markWrite(userId) {
+    markWrite(userId: number): void {
         this._stickyReads.set(userId, Date.now());
     }
 
     // Determiner si l'utilisateur doit lire sur le primary
-    _isSticky(userId) {
+    private _isSticky(userId?: number): boolean {
         if (!userId) return false;
-        const lastWrite = this._stickyReads.get(userId);
+        const lastWrite: number | undefined = this._stickyReads.get(userId);
         if (!lastWrite) return false;
-        const elapsed = Date.now() - lastWrite;
+        const elapsed: number = Date.now() - lastWrite;
         if (elapsed > 5000) {
             this._stickyReads.delete(userId);
             return false;
@@ -1267,7 +1289,7 @@ class DatabaseRouter {
     }
 
     // Requete en lecture
-    async read(sql, params, { userId } = {}) {
+    async read(sql: string, params: unknown[], { userId }: ReadWriteOptions = {}): Promise<QueryResult> {
         if (this._isSticky(userId)) {
             // Lire sur le primary pour eviter le stale read
             return this.primary.query(sql, params);
@@ -1276,8 +1298,8 @@ class DatabaseRouter {
     }
 
     // Requete en ecriture
-    async write(sql, params, { userId } = {}) {
-        const result = await this.primary.query(sql, params);
+    async write(sql: string, params: unknown[], { userId }: ReadWriteOptions = {}): Promise<QueryResult> {
+        const result: QueryResult = await this.primary.query(sql, params);
         if (userId) {
             this.markWrite(userId);
         }
@@ -1285,11 +1307,11 @@ class DatabaseRouter {
     }
 
     // Transaction (toujours sur le primary)
-    async transaction(fn) {
-        const client = await this.primary.connect();
+    async transaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+        const client: PoolClient = await this.primary.connect();
         try {
             await client.query('BEGIN');
-            const result = await fn(client);
+            const result: T = await fn(client);
             await client.query('COMMIT');
             return result;
         } catch (err) {
@@ -1301,7 +1323,7 @@ class DatabaseRouter {
     }
 
     // Fermer toutes les connexions
-    async close() {
+    async close(): Promise<void> {
         await this.primary.end();
         await Promise.all(this.replicas.map(r => r.end()));
     }
@@ -1347,7 +1369,7 @@ const user = await db.read(
 );
 
 // Transaction → toujours sur le primary
-await db.transaction(async (client) => {
+await db.transaction(async (client: PoolClient) => {
     await client.query(
         'UPDATE comptes SET solde = solde - 100 WHERE id = $1', [1]
     );

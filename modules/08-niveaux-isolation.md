@@ -797,7 +797,7 @@ WHERE relname = 'test_mvcc';
 
 ### 11.1 Implementation de base
 
-```javascript
+```typescript
 import pg from 'pg';
 const { Pool } = pg;
 
@@ -869,7 +869,7 @@ async function withTransaction(txFn, options = {}) {
 
 ### 11.2 Utilisation
 
-```javascript
+```typescript
 // Transfert d'argent avec isolation Serializable
 async function transfert(fromId, toId, montant) {
     return withTransaction(async (client) => {

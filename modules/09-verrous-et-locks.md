@@ -426,7 +426,7 @@ SET statement_timeout = '30s'; -- Max 30s pour la requete entiere
 
 ### 7.3 Node.js : gerer NOWAIT
 
-```javascript
+```typescript
 import pg from 'pg';
 const { Pool } = pg;
 
@@ -550,7 +550,7 @@ RETURNING jobs.*;
 
 ### 8.4 Node.js : Worker de jobs
 
-```javascript
+```typescript
 import pg from 'pg';
 const { Pool } = pg;
 
@@ -668,7 +668,7 @@ SELECT pg_advisory_xact_lock(1, 42);
 
 ### 9.5 Node.js : advisory lock pattern
 
-```javascript
+```typescript
 import pg from 'pg';
 const { Pool } = pg;
 
@@ -802,7 +802,7 @@ Nous verrons les details et les strategies de prevention dans le module 10.
 
 ### 11.1 Pattern check-then-act
 
-```javascript
+```typescript
 import pg from 'pg';
 const { Pool } = pg;
 
@@ -856,7 +856,7 @@ async function decrementerStock(produitId, quantite) {
 
 ### 11.2 Pattern avec lock_timeout
 
-```javascript
+```typescript
 async function modificationAvecTimeout(userId, data) {
     const client = await pool.connect();
 

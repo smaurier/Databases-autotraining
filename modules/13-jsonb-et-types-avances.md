@@ -291,15 +291,22 @@ SELECT * FROM produits WHERE (metadata->>'note')::numeric > 4.5;
 
 ### 3.4 Node.js : requetes JSONB
 
-```javascript
+```typescript
 import pg from 'pg';
 const { Pool } = pg;
 
 const pool = new Pool({ max: 10 });
 
+interface Produit {
+    id: number;
+    nom: string;
+    prix: number;
+    metadata: Record<string, unknown>;
+}
+
 // Rechercher par contenance (@>)
-async function rechercherProduits(criteres) {
-    const { rows } = await pool.query(
+async function rechercherProduits(criteres: Record<string, unknown>): Promise<Produit[]> {
+    const { rows } = await pool.query<Produit>(
         `SELECT id, nom, prix, metadata
          FROM produits
          WHERE metadata @> $1::jsonb`,
@@ -314,7 +321,7 @@ await rechercherProduits({ marque: 'TechCorp' });
 await rechercherProduits({ specs: { ram: 16 } });
 
 // Modifier du JSONB
-async function ajouterTag(produitId, tag) {
+async function ajouterTag(produitId: number, tag: string): Promise<void> {
     await pool.query(
         `UPDATE produits
          SET metadata = jsonb_set(
@@ -730,16 +737,33 @@ WHERE search_vector @@ websearch_to_tsquery('french', 'node OR react');
 
 ### 6.9 Node.js : Full-Text Search
 
-```javascript
+```typescript
 import pg from 'pg';
 const { Pool } = pg;
 
 const pool = new Pool({ max: 10 });
 
-async function rechercherEvenements(termeRecherche, options = {}) {
+interface SearchOptions {
+    limit?: number;
+    offset?: number;
+}
+
+interface EvenementResult {
+    id: number;
+    titre: string;
+    extrait: string;
+    lieu: string;
+    date_event: string;
+    score: number;
+}
+
+async function rechercherEvenements(
+    termeRecherche: string,
+    options: SearchOptions = {}
+): Promise<EvenementResult[]> {
     const { limit = 20, offset = 0 } = options;
 
-    const { rows } = await pool.query(
+    const { rows } = await pool.query<EvenementResult>(
         `SELECT
             id,
             titre,
@@ -761,7 +785,7 @@ async function rechercherEvenements(termeRecherche, options = {}) {
 }
 
 // Utilisation
-const resultats = await rechercherEvenements('PostgreSQL production');
+const resultats: EvenementResult[] = await rechercherEvenements('PostgreSQL production');
 console.log(resultats);
 ```
 

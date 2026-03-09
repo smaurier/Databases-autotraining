@@ -302,7 +302,7 @@ REVOKE CONNECT ON DATABASE mydb FROM some_role;
 
 ### 4.6 Node.js : configuration par role
 
-```javascript
+```typescript
 import pg from 'pg';
 const { Pool } = pg;
 
@@ -408,8 +408,9 @@ CREATE POLICY tenant_delete ON documents
 
 ### 5.5 Utiliser RLS avec Node.js
 
-```javascript
+```typescript
 import pg from 'pg';
+import type { PoolClient } from 'pg';
 const { Pool } = pg;
 
 const pool = new Pool({
@@ -422,8 +423,12 @@ const pool = new Pool({
  * Execute une requete dans le contexte d'un tenant.
  * RLS filtre automatiquement les lignes.
  */
-async function queryAsTenant(tenantId, sql, params = []) {
-    const client = await pool.connect();
+async function queryAsTenant<T extends Record<string, unknown>>(
+    tenantId: number,
+    sql: string,
+    params: unknown[] = []
+): Promise<T[]> {
+    const client: PoolClient = await pool.connect();
 
     try {
         // Definir le tenant pour cette session
@@ -433,7 +438,7 @@ async function queryAsTenant(tenantId, sql, params = []) {
         );
         // Le 3eme parametre `true` = local a la transaction
 
-        const result = await client.query(sql, params);
+        const result = await client.query<T>(sql, params);
         return result.rows;
     } finally {
         client.release();
@@ -766,7 +771,7 @@ LIMIT 20;
 
 ### 8.5 Dashboard Node.js de monitoring
 
-```javascript
+```typescript
 import pg from 'pg';
 const { Pool } = pg;
 
@@ -776,11 +781,38 @@ const pool = new Pool({
     max: 2,
 });
 
-async function getDatabaseHealth() {
-    const results = {};
+interface ConnectionState {
+    state: string;
+    count: string;
+}
 
+interface CacheRow {
+    hit_ratio: string;
+}
+
+interface TransactionRow {
+    total_txn: string;
+    commits: string;
+    rollbacks: string;
+    deadlocks: string;
+}
+
+interface TableRow {
+    relname: string;
+    size: string;
+    dead_tuples: string;
+}
+
+interface DatabaseHealth {
+    connections: ConnectionState[];
+    cacheHitRatio: string;
+    transactions: TransactionRow;
+    topTables: TableRow[];
+}
+
+async function getDatabaseHealth(): Promise<DatabaseHealth> {
     // 1. Connexions actives
-    const { rows: connections } = await pool.query(`
+    const { rows: connections } = await pool.query<ConnectionState>(`
         SELECT
             state,
             COUNT(*) AS count
@@ -788,20 +820,18 @@ async function getDatabaseHealth() {
         WHERE datname = current_database()
         GROUP BY state
     `);
-    results.connections = connections;
 
     // 2. Cache hit ratio
-    const { rows: cache } = await pool.query(`
+    const { rows: cache } = await pool.query<CacheRow>(`
         SELECT
             ROUND(100.0 * SUM(blks_hit) /
                 NULLIF(SUM(blks_hit) + SUM(blks_read), 0), 2) AS hit_ratio
         FROM pg_stat_database
         WHERE datname = current_database()
     `);
-    results.cacheHitRatio = cache[0].hit_ratio;
 
     // 3. Transactions par seconde
-    const { rows: txn } = await pool.query(`
+    const { rows: txn } = await pool.query<TransactionRow>(`
         SELECT
             xact_commit + xact_rollback AS total_txn,
             xact_commit AS commits,
@@ -810,10 +840,9 @@ async function getDatabaseHealth() {
         FROM pg_stat_database
         WHERE datname = current_database()
     `);
-    results.transactions = txn[0];
 
     // 4. Tables les plus volumineuses
-    const { rows: tables } = await pool.query(`
+    const { rows: tables } = await pool.query<TableRow>(`
         SELECT
             relname,
             pg_size_pretty(pg_total_relation_size(relid)) AS size,
@@ -822,14 +851,18 @@ async function getDatabaseHealth() {
         ORDER BY pg_total_relation_size(relid) DESC
         LIMIT 5
     `);
-    results.topTables = tables;
 
-    return results;
+    return {
+        connections,
+        cacheHitRatio: cache[0].hit_ratio,
+        transactions: txn[0],
+        topTables: tables,
+    };
 }
 
 // Appel periodique
 setInterval(async () => {
-    const health = await getDatabaseHealth();
+    const health: DatabaseHealth = await getDatabaseHealth();
     console.log(JSON.stringify(health, null, 2));
 }, 60_000); // Toutes les minutes
 ```

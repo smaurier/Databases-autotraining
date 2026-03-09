@@ -388,7 +388,7 @@ npm install pg
 
 ### 7.2 Premier script complet
 
-```javascript
+```typescript
 // fichier : index.mjs
 // Premier contact avec PostgreSQL depuis Node.js
 
@@ -411,12 +411,12 @@ const pool = new Pool({
 });
 
 // Gestion des erreurs du pool
-pool.on('error', (err) => {
+pool.on('error', (err: Error) => {
   console.error('Erreur inattendue sur le pool :', err.message);
   process.exit(1);
 });
 
-async function main() {
+async function main(): Promise<void> {
   try {
     // Test de connexion
     const resultat = await pool.query('SELECT version()');
@@ -496,7 +496,7 @@ Pool ferme. Au revoir !
 
 > **Piege classique** : Ne fais JAMAIS `BEGIN` directement sur un `Pool` avec `pool.query('BEGIN')`. Les requetes suivantes pourraient etre executees sur une AUTRE connexion du pool. Utilise `pool.connect()` pour obtenir un `Client` dedie, puis fais ta transaction sur ce client.
 
-```javascript
+```typescript
 // MAUVAIS : transaction sur un pool
 await pool.query('BEGIN');          // connexion A
 await pool.query('INSERT ...');     // connexion B (!!!)

@@ -87,7 +87,7 @@ Avec pooling (100 requetes/s) :
 
 ### 2.3 Node.js pg.Pool : configuration optimale
 
-```javascript
+```typescript
 import pg from 'pg';
 const { Pool } = pg;
 
@@ -108,7 +108,7 @@ const pool = new Pool({
 });
 
 // Gestion des erreurs du pool
-pool.on('error', (err) => {
+pool.on('error', (err: Error) => {
     console.error('Erreur inattendue du pool :', err.message);
 });
 
@@ -178,15 +178,21 @@ DEALLOCATE get_user;
 
 ### 3.3 Node.js : prepared statements avec pg
 
-```javascript
+```typescript
 import pg from 'pg';
 const { Pool } = pg;
 
 const pool = new Pool({ max: 10 });
 
+interface User {
+    id: number;
+    nom: string;
+    email: string;
+}
+
 // SANS prepared statement (re-planning a chaque fois)
-async function getUserSlow(id) {
-    const { rows } = await pool.query(
+async function getUserSlow(id: number): Promise<User | undefined> {
+    const { rows } = await pool.query<User>(
         'SELECT id, nom, email FROM users WHERE id = $1',
         [id]
     );
@@ -194,8 +200,8 @@ async function getUserSlow(id) {
 }
 
 // AVEC prepared statement (plan reutilise)
-async function getUserFast(id) {
-    const { rows } = await pool.query({
+async function getUserFast(id: number): Promise<User | undefined> {
+    const { rows } = await pool.query<User>({
         name: 'get-user-by-id',  // ← Nom du prepared statement
         text: 'SELECT id, nom, email FROM users WHERE id = $1',
         values: [id],
@@ -219,7 +225,12 @@ async function getUserFast(id) {
 
 ### 4.1 INSERT multi-valeurs vs INSERT en boucle
 
-```javascript
+```typescript
+interface UserInput {
+    nom: string;
+    email: string;
+}
+
 // LENT : 1000 INSERTs individuels (1000 allers-retours reseau)
 for (const user of users) {
     await pool.query(
@@ -230,11 +241,11 @@ for (const user of users) {
 // Temps : ~5 secondes pour 1000 lignes
 
 // RAPIDE : 1 INSERT multi-valeurs
-const values = users.map((u, i) =>
+const values: string = users.map((u: UserInput, i: number) =>
     `($${i * 2 + 1}, $${i * 2 + 2})`
 ).join(', ');
 
-const params = users.flatMap((u) => [u.nom, u.email]);
+const params: string[] = users.flatMap((u: UserInput) => [u.nom, u.email]);
 
 await pool.query(
     `INSERT INTO users (nom, email) VALUES ${values}`,
@@ -245,10 +256,10 @@ await pool.query(
 
 ### 4.2 unnest() pour les batch inserts parametres
 
-```javascript
+```typescript
 // ENCORE MIEUX : unnest() avec arrays
-const noms = users.map((u) => u.nom);
-const emails = users.map((u) => u.email);
+const noms: string[] = users.map((u: UserInput) => u.nom);
+const emails: string[] = users.map((u: UserInput) => u.email);
 
 await pool.query(
     `INSERT INTO users (nom, email)
@@ -277,8 +288,9 @@ Bob,bob@test.com
 
 ### 4.4 COPY depuis Node.js
 
-```javascript
+```typescript
 import pg from 'pg';
+import type { PoolClient } from 'pg';
 import { pipeline } from 'stream/promises';
 import { Readable } from 'stream';
 import copyFrom from 'pg-copy-streams';
@@ -286,15 +298,15 @@ import copyFrom from 'pg-copy-streams';
 const { Pool } = pg;
 const pool = new Pool({ max: 5 });
 
-async function bulkInsertUsers(users) {
-    const client = await pool.connect();
+async function bulkInsertUsers(users: UserInput[]): Promise<void> {
+    const client: PoolClient = await pool.connect();
 
     try {
         const stream = client.query(
             copyFrom.from('COPY users (nom, email) FROM STDIN WITH (FORMAT csv)')
         );
 
-        const data = users.map((u) => `${u.nom},${u.email}\n`).join('');
+        const data: string = users.map((u: UserInput) => `${u.nom},${u.email}\n`).join('');
         const readable = Readable.from(data);
 
         await pipeline(readable, stream);

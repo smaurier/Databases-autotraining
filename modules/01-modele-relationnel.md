@@ -547,7 +547,7 @@ CREATE TABLE "OrderLine" (
 
 ### 8.1 Script de migration basique
 
-```javascript
+```typescript
 // fichier : migrations/001_create_tables.mjs
 // Script de creation des tables pour le module 01
 
@@ -648,7 +648,7 @@ main();
 
 ### 8.2 Verifier le schema depuis Node.js
 
-```javascript
+```typescript
 // fichier : check-schema.mjs
 // Verifier que les tables existent et afficher leur structure
 

@@ -687,7 +687,7 @@ C'est **VACUUM** qui met a jour la Visibility Map. Apres un VACUUM, les pages do
 
 ## 13. Node.js : creer et verifier des index
 
-```javascript
+```typescript
 // fichier : index-management.mjs
 // Creer et verifier des index depuis Node.js
 

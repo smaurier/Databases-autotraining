@@ -1135,12 +1135,16 @@ ORDER BY query_start;
 
 ## 9. Node.js : monitoring des connexions et query timing
 
-```javascript
+```typescript
 // ============================================================
 // Middleware de monitoring PostgreSQL pour Node.js
 // ============================================================
 
-const { Pool } = require('pg');
+import pg from 'pg';
+import type { PoolClient, QueryResult } from 'pg';
+import express from 'express';
+import type { Request, Response } from 'express';
+const { Pool } = pg;
 
 // ────────────────────────────────────────────────────────────
 // 1. Pool avec monitoring des connexions
@@ -1157,7 +1161,17 @@ const pool = new Pool({
 });
 
 // Compteurs
-const metrics = {
+interface DbMetrics {
+    totalQueries: number;
+    totalErrors: number;
+    totalDuration: number;
+    slowQueries: number;
+    poolWaiting: number;
+    poolActive: number;
+    poolIdle: number;
+}
+
+const metrics: DbMetrics = {
     totalQueries: 0,
     totalErrors: 0,
     totalDuration: 0,
@@ -1168,22 +1182,22 @@ const metrics = {
 };
 
 // Evenements du pool
-pool.on('connect', (client) => {
+pool.on('connect', () => {
     console.log('Nouvelle connexion au pool');
 });
 
-pool.on('acquire', (client) => {
+pool.on('acquire', () => {
     metrics.poolActive++;
     metrics.poolIdle = pool.idleCount;
     metrics.poolWaiting = pool.waitingCount;
 });
 
-pool.on('release', (client) => {
+pool.on('release', () => {
     metrics.poolActive--;
     metrics.poolIdle = pool.idleCount;
 });
 
-pool.on('error', (err, client) => {
+pool.on('error', (err: Error) => {
     console.error('Erreur inattendue du pool :', err.message);
     metrics.totalErrors++;
 });
@@ -1193,11 +1207,11 @@ pool.on('error', (err, client) => {
 // ────────────────────────────────────────────────────────────
 const SLOW_QUERY_THRESHOLD_MS = 200;
 
-async function monitoredQuery(sql, params, label = 'query') {
-    const start = process.hrtime.bigint();
+async function monitoredQuery(sql: string, params: unknown[], label: string = 'query'): Promise<QueryResult> {
+    const start: bigint = process.hrtime.bigint();
     try {
-        const result = await pool.query(sql, params);
-        const durationMs = Number(
+        const result: QueryResult = await pool.query(sql, params);
+        const durationMs: number = Number(
             (process.hrtime.bigint() - start) / 1_000_000n
         );
 
@@ -1214,13 +1228,13 @@ async function monitoredQuery(sql, params, label = 'query') {
 
         return result;
     } catch (err) {
-        const durationMs = Number(
+        const durationMs: number = Number(
             (process.hrtime.bigint() - start) / 1_000_000n
         );
         metrics.totalErrors++;
         console.error(
             `[QUERY ERROR] ${label} — ${durationMs}ms — ` +
-            `${err.message} — ${sql.substring(0, 100)}`
+            `${(err as Error).message} — ${sql.substring(0, 100)}`
         );
         throw err;
     }
@@ -1229,10 +1243,9 @@ async function monitoredQuery(sql, params, label = 'query') {
 // ────────────────────────────────────────────────────────────
 // 3. Endpoint de metriques (Express)
 // ────────────────────────────────────────────────────────────
-const express = require('express');
 const app = express();
 
-app.get('/metrics/db', (req, res) => {
+app.get('/metrics/db', (_req: Request, res: Response) => {
     res.json({
         pool: {
             total: pool.totalCount,
@@ -1254,14 +1267,17 @@ app.get('/metrics/db', (req, res) => {
 // ────────────────────────────────────────────────────────────
 // 4. Health check endpoint
 // ────────────────────────────────────────────────────────────
-app.get('/health/db', async (req, res) => {
-    const start = Date.now();
+interface ConnRow { current: string; max: string; }
+interface CacheRow { hit_ratio: string; }
+
+app.get('/health/db', async (_req: Request, res: Response) => {
+    const start: number = Date.now();
     try {
         // Verifier la connexion
         const { rows: ping } = await pool.query('SELECT 1 AS ok');
 
         // Verifier le nombre de connexions
-        const { rows: conn } = await pool.query(`
+        const { rows: conn } = await pool.query<ConnRow>(`
             SELECT
                 count(*) AS current,
                 current_setting('max_connections')::int AS max
@@ -1269,7 +1285,7 @@ app.get('/health/db', async (req, res) => {
         `);
 
         // Verifier le cache hit ratio
-        const { rows: cache } = await pool.query(`
+        const { rows: cache } = await pool.query<CacheRow>(`
             SELECT
                 round(100.0 * blks_hit / nullif(blks_hit + blks_read, 0), 2)
                     AS hit_ratio
@@ -1277,13 +1293,13 @@ app.get('/health/db', async (req, res) => {
             WHERE datname = current_database()
         `);
 
-        const durationMs = Date.now() - start;
-        const connectionUsage = (
-            100 * conn[0].current / conn[0].max
+        const durationMs: number = Date.now() - start;
+        const connectionUsage: string = (
+            100 * parseInt(conn[0].current) / parseInt(conn[0].max)
         ).toFixed(1);
 
-        const status =
-            durationMs > 1000 || connectionUsage > 90
+        const status: string =
+            durationMs > 1000 || parseFloat(connectionUsage) > 90
                 ? 'degraded'
                 : 'healthy';
 
@@ -1305,7 +1321,7 @@ app.get('/health/db', async (req, res) => {
     } catch (err) {
         res.status(503).json({
             status: 'unhealthy',
-            error: err.message,
+            error: (err as Error).message,
             responseTimeMs: Date.now() - start,
         });
     }
@@ -1314,7 +1330,7 @@ app.get('/health/db', async (req, res) => {
 // ────────────────────────────────────────────────────────────
 // 5. Surveillance periodique automatique
 // ────────────────────────────────────────────────────────────
-async function periodicHealthCheck() {
+async function periodicHealthCheck(): Promise<void> {
     try {
         // Requetes longues
         const { rows: longQueries } = await pool.query(`
@@ -1356,7 +1372,7 @@ async function periodicHealthCheck() {
             );
         }
     } catch (err) {
-        console.error('[HEALTH CHECK ERROR]', err.message);
+        console.error('[HEALTH CHECK ERROR]', (err as Error).message);
     }
 }
 
@@ -1366,9 +1382,9 @@ setInterval(periodicHealthCheck, 30_000);
 // ────────────────────────────────────────────────────────────
 // Utilisation dans l'application
 // ────────────────────────────────────────────────────────────
-app.get('/api/users', async (req, res) => {
+app.get('/api/users', async (_req: Request, res: Response) => {
     try {
-        const result = await monitoredQuery(
+        const result: QueryResult = await monitoredQuery(
             'SELECT id, name, email FROM users WHERE active = true',
             [],
             'get-active-users'

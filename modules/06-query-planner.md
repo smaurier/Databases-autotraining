@@ -787,7 +787,7 @@ SELECT * FROM employe_it WHERE salaire > 50000;
 
 ## 11. Node.js : analyser les plans depuis l'application
 
-```javascript
+```typescript
 // fichier : analyze-query.mjs
 // Analyser les plans d'execution depuis Node.js
 

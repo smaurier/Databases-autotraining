@@ -427,8 +427,9 @@ $$;
 
 ### 4.3 Node.js : reservation avec retry
 
-```javascript
+```typescript
 import pg from 'pg';
+import type { PoolClient } from 'pg';
 const { Pool } = pg;
 
 const pool = new Pool({
@@ -439,6 +440,30 @@ const pool = new Pool({
     max: 20,
     idleTimeoutMillis: 30_000,
 });
+
+interface ReservationInput {
+    tenantId: number;
+    roomId: number;
+    userId: number;
+    start: string;
+    end: string;
+    title: string;
+    description?: string | null;
+    eventType?: string;
+    metadata?: Record<string, unknown>;
+}
+
+interface ReservationResult {
+    success: boolean;
+    reservationId?: number;
+    eventId?: number;
+    error?: string;
+    message?: string;
+}
+
+interface DatabaseError extends Error {
+    code?: string;
+}
 
 /**
  * Creer une reservation avec retry automatique
@@ -454,11 +479,11 @@ async function createReservation({
     description = null,
     eventType = 'meeting',
     metadata = {},
-}) {
+}: ReservationInput): Promise<ReservationResult> {
     const maxRetries = 5;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        const client = await pool.connect();
+        const client: PoolClient = await pool.connect();
 
         try {
             await client.query(
@@ -493,26 +518,27 @@ async function createReservation({
             };
         } catch (error) {
             await client.query('ROLLBACK');
+            const dbError = error as DatabaseError;
 
             // Serialization failure (40001) ou deadlock (40P01) → retry
             if (
-                (error.code === '40001' || error.code === '40P01') &&
+                (dbError.code === '40001' || dbError.code === '40P01') &&
                 attempt < maxRetries
             ) {
-                const delay = Math.min(
+                const delay: number = Math.min(
                     50 * Math.pow(2, attempt) + Math.random() * 50,
                     3000
                 );
                 console.warn(
                     `Reservation retry ${attempt}/${maxRetries} ` +
-                    `(${error.code}), waiting ${Math.round(delay)}ms`
+                    `(${dbError.code}), waiting ${Math.round(delay)}ms`
                 );
                 await new Promise((r) => setTimeout(r, delay));
                 continue;
             }
 
             // Exclusion constraint violation (23P01) → double booking
-            if (error.code === '23P01') {
+            if (dbError.code === '23P01') {
                 return {
                     success: false,
                     error: 'DOUBLE_BOOKING',
@@ -521,11 +547,11 @@ async function createReservation({
             }
 
             // Check constraint violation (23514)
-            if (error.code === '23514') {
+            if (dbError.code === '23514') {
                 return {
                     success: false,
                     error: 'CONSTRAINT_VIOLATION',
-                    message: error.message,
+                    message: dbError.message,
                 };
             }
 
@@ -545,14 +571,34 @@ async function createReservation({
 
 ### 4.4 FOR UPDATE NOWAIT pour le lock optimiste
 
-```javascript
+```typescript
+interface CancelResult {
+    success: boolean;
+    error?: string;
+    message?: string;
+}
+
+interface ReservationRow {
+    id: number;
+    user_id: number;
+    status: string;
+}
+
+interface UserRow {
+    role: string;
+}
+
 /**
  * Annuler une reservation.
  * Utilise FOR UPDATE NOWAIT pour echouer vite
  * si la reservation est deja en cours de modification.
  */
-async function cancelReservation(tenantId, reservationId, userId) {
-    const client = await pool.connect();
+async function cancelReservation(
+    tenantId: number,
+    reservationId: number,
+    userId: number
+): Promise<CancelResult> {
+    const client: PoolClient = await pool.connect();
 
     try {
         await client.query('BEGIN');
@@ -562,7 +608,7 @@ async function cancelReservation(tenantId, reservationId, userId) {
         );
 
         // Verrouiller la reservation immediatement ou echouer
-        const { rows } = await client.query(
+        const { rows } = await client.query<ReservationRow>(
             `SELECT id, user_id, status
              FROM reservations
              WHERE id = $1
@@ -582,7 +628,7 @@ async function cancelReservation(tenantId, reservationId, userId) {
         }
 
         // Verifier les droits (admin ou proprietaire)
-        const { rows: userRows } = await client.query(
+        const { rows: userRows } = await client.query<UserRow>(
             'SELECT role FROM users WHERE id = $1 AND tenant_id = $2',
             [userId, tenantId]
         );
@@ -607,8 +653,9 @@ async function cancelReservation(tenantId, reservationId, userId) {
         return { success: true };
     } catch (error) {
         await client.query('ROLLBACK');
+        const dbError = error as DatabaseError;
 
-        if (error.code === '55P03') {
+        if (dbError.code === '55P03') {
             return {
                 success: false,
                 error: 'LOCKED',
@@ -975,7 +1022,7 @@ WHERE blocked.state != 'idle';
 
 ### 7.4 Script Node.js de monitoring complet
 
-```javascript
+```typescript
 import pg from 'pg';
 const { Pool } = pg;
 
@@ -985,38 +1032,69 @@ const monitorPool = new Pool({
     max: 2,
 });
 
-async function collectMetrics() {
-    const metrics = {};
+interface ConnRow {
+    state: string | null;
+    count: string;
+}
 
+interface CacheRatioRow {
+    ratio: string | null;
+}
+
+interface DeadlockRow {
+    deadlocks: string;
+}
+
+interface TableSizeRow {
+    relname: string;
+    size: string;
+    dead_tuples: string;
+}
+
+interface TodayRow {
+    confirmed: string;
+    tentative: string;
+    cancelled: string;
+}
+
+interface Metrics {
+    connections: Record<string, number>;
+    cacheHitRatio: number;
+    deadlocks: number;
+    topTables: TableSizeRow[];
+    todayReservations: TodayRow;
+}
+
+async function collectMetrics(): Promise<Metrics> {
     // 1. Connexions
-    const { rows: connRows } = await monitorPool.query(`
+    const { rows: connRows } = await monitorPool.query<ConnRow>(`
         SELECT state, COUNT(*) AS count
         FROM pg_stat_activity
         WHERE datname = current_database()
         GROUP BY state
     `);
-    metrics.connections = Object.fromEntries(
+    const connections: Record<string, number> = Object.fromEntries(
         connRows.map((r) => [r.state || 'null', parseInt(r.count)])
     );
 
     // 2. Cache hit ratio
-    const { rows: cacheRows } = await monitorPool.query(`
+    const { rows: cacheRows } = await monitorPool.query<CacheRatioRow>(`
         SELECT ROUND(100.0 * SUM(blks_hit) /
             NULLIF(SUM(blks_hit) + SUM(blks_read), 0), 2) AS ratio
         FROM pg_stat_database
         WHERE datname = current_database()
     `);
-    metrics.cacheHitRatio = parseFloat(cacheRows[0].ratio || '0');
+    const cacheHitRatio: number = parseFloat(cacheRows[0].ratio || '0');
 
     // 3. Deadlocks
-    const { rows: dlRows } = await monitorPool.query(`
+    const { rows: dlRows } = await monitorPool.query<DeadlockRow>(`
         SELECT deadlocks FROM pg_stat_database
         WHERE datname = current_database()
     `);
-    metrics.deadlocks = parseInt(dlRows[0].deadlocks);
+    const deadlocks: number = parseInt(dlRows[0].deadlocks);
 
     // 4. Table sizes
-    const { rows: sizeRows } = await monitorPool.query(`
+    const { rows: sizeRows } = await monitorPool.query<TableSizeRow>(`
         SELECT relname,
                pg_size_pretty(pg_total_relation_size(relid)) AS size,
                n_dead_tup AS dead_tuples
@@ -1024,10 +1102,9 @@ async function collectMetrics() {
         ORDER BY pg_total_relation_size(relid) DESC
         LIMIT 5
     `);
-    metrics.topTables = sizeRows;
 
     // 5. Reservations du jour
-    const { rows: todayRows } = await monitorPool.query(`
+    const { rows: todayRows } = await monitorPool.query<TodayRow>(`
         SELECT
             COUNT(*) FILTER (WHERE status = 'confirmed') AS confirmed,
             COUNT(*) FILTER (WHERE status = 'tentative') AS tentative,
@@ -1038,16 +1115,21 @@ async function collectMetrics() {
             date_trunc('day', now()) + interval '1 day'
         )
     `);
-    metrics.todayReservations = todayRows[0];
 
-    return metrics;
+    return {
+        connections,
+        cacheHitRatio,
+        deadlocks,
+        topTables: sizeRows,
+        todayReservations: todayRows[0],
+    };
 }
 
 // Boucle de collecte
-async function monitorLoop() {
+async function monitorLoop(): Promise<void> {
     while (true) {
         try {
-            const metrics = await collectMetrics();
+            const metrics: Metrics = await collectMetrics();
             console.log(
                 `[${new Date().toISOString()}] Metrics:`,
                 JSON.stringify(metrics, null, 2)
@@ -1061,7 +1143,7 @@ async function monitorLoop() {
                 console.warn('ALERTE : Trop de transactions idle !');
             }
         } catch (error) {
-            console.error('Erreur monitoring :', error.message);
+            console.error('Erreur monitoring :', (error as Error).message);
         }
 
         await new Promise((r) => setTimeout(r, 30_000)); // 30s
@@ -1100,7 +1182,7 @@ WHERE r.room_id = 1
 
 ### 8.2 Connection pooling
 
-```javascript
+```typescript
 // Configuration optimale pour le systeme de reservation
 const pool = new Pool({
     max: 20,                       // 20 connexions max
@@ -1155,8 +1237,9 @@ FROM generate_series(0, 5) AS n;
 
 ## 9. Script de test de charge
 
-```javascript
+```typescript
 import pg from 'pg';
+import type { PoolClient } from 'pg';
 const { Pool } = pg;
 
 const pool = new Pool({
@@ -1165,7 +1248,7 @@ const pool = new Pool({
     max: 50,
 });
 
-const TENANTS = [1, 2, 3];
+const TENANTS: number[] = [1, 2, 3];
 const ROOMS_PER_TENANT = 5;
 const CONCURRENT_USERS = 20;
 const OPERATIONS = 200;
@@ -1175,14 +1258,32 @@ let failureCount = 0;
 let doubleBookingCount = 0;
 let retryCount = 0;
 
-async function simulateUser(userId) {
+interface LoadTestParams {
+    tenantId: number;
+    roomId: number;
+    userId: number;
+    start: string;
+    end: string;
+    title: string;
+}
+
+interface LoadTestResult {
+    success: boolean;
+    error?: string;
+}
+
+interface DatabaseError extends Error {
+    code?: string;
+}
+
+async function simulateUser(userId: number): Promise<void> {
     for (let i = 0; i < OPERATIONS / CONCURRENT_USERS; i++) {
-        const tenantId = TENANTS[Math.floor(Math.random() * TENANTS.length)];
-        const roomId = Math.floor(Math.random() * ROOMS_PER_TENANT) + 1;
+        const tenantId: number = TENANTS[Math.floor(Math.random() * TENANTS.length)];
+        const roomId: number = Math.floor(Math.random() * ROOMS_PER_TENANT) + 1;
 
         // Generer un creneau aleatoire dans les 7 prochains jours
-        const dayOffset = Math.floor(Math.random() * 7);
-        const hourOffset = 8 + Math.floor(Math.random() * 10); // 8h-18h
+        const dayOffset: number = Math.floor(Math.random() * 7);
+        const hourOffset: number = 8 + Math.floor(Math.random() * 10); // 8h-18h
         const start = new Date();
         start.setDate(start.getDate() + dayOffset + 1);
         start.setHours(hourOffset, 0, 0, 0);
@@ -1191,7 +1292,7 @@ async function simulateUser(userId) {
         end.setHours(start.getHours() + 1); // 1 heure
 
         try {
-            const result = await createReservationWithRetry({
+            const result: LoadTestResult = await createReservationWithRetry({
                 tenantId,
                 roomId,
                 userId,
@@ -1209,16 +1310,16 @@ async function simulateUser(userId) {
             }
         } catch (error) {
             failureCount++;
-            console.error(`User ${userId}, op ${i}: ${error.message}`);
+            console.error(`User ${userId}, op ${i}: ${(error as Error).message}`);
         }
     }
 }
 
-async function createReservationWithRetry(params) {
+async function createReservationWithRetry(params: LoadTestParams): Promise<LoadTestResult> {
     const maxRetries = 5;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        const client = await pool.connect();
+        const client: PoolClient = await pool.connect();
         try {
             await client.query('BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE');
             await client.query(
@@ -1242,14 +1343,15 @@ async function createReservationWithRetry(params) {
             return { success: true };
         } catch (error) {
             await client.query('ROLLBACK');
+            const dbError = error as DatabaseError;
 
-            if ((error.code === '40001' || error.code === '40P01') && attempt < maxRetries) {
+            if ((dbError.code === '40001' || dbError.code === '40P01') && attempt < maxRetries) {
                 retryCount++;
                 await new Promise((r) => setTimeout(r, Math.random() * 100 * attempt));
                 continue;
             }
 
-            if (error.code === '23P01') {
+            if (dbError.code === '23P01') {
                 return { success: false, error: 'DOUBLE_BOOKING' };
             }
 
@@ -1262,21 +1364,21 @@ async function createReservationWithRetry(params) {
     return { success: false, error: 'MAX_RETRIES' };
 }
 
-async function runLoadTest() {
+async function runLoadTest(): Promise<void> {
     console.log(`Demarrage du test de charge...`);
     console.log(`${CONCURRENT_USERS} utilisateurs, ${OPERATIONS} operations`);
     console.log(`---`);
 
-    const startTime = Date.now();
+    const startTime: number = Date.now();
 
     // Lancer les utilisateurs en parallele
-    const promises = Array.from({ length: CONCURRENT_USERS }, (_, i) =>
+    const promises: Promise<void>[] = Array.from({ length: CONCURRENT_USERS }, (_, i) =>
         simulateUser(i + 1)
     );
 
     await Promise.all(promises);
 
-    const duration = (Date.now() - startTime) / 1000;
+    const duration: number = (Date.now() - startTime) / 1000;
 
     console.log(`\n=== RESULTATS ===`);
     console.log(`Duree : ${duration.toFixed(1)}s`);

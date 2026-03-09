@@ -790,7 +790,7 @@ CREATE INDEX idx_employe_actif ON employe(est_actif) WHERE est_actif = true;
 
 ## 12. Node.js : executer des jointures complexes avec pg
 
-```javascript
+```typescript
 // fichier : jointures.mjs
 // Exemples de requetes avec jointures en Node.js
 

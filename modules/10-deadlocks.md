@@ -1,6 +1,6 @@
 # Module 10 — Deadlocks
 
-> **Objectif** : Comprendre comment les deadlocks se produisent, comment PostgreSQL les detecte et les resout, et surtout comment les **prevenir** dans vos applications.
+> **Objectif** : Comprendre comment les deadlocks se produisent, comment PostgreSQL les détecté et les resout, et surtout comment les **prévenir** dans vos applications.
 >
 > **Difficulte** : ⭐⭐⭐⭐
 
@@ -10,7 +10,7 @@
 
 Un **deadlock** (verrou mortel, interblocage) survient quand deux ou plusieurs transactions s'attendent mutuellement, formant un cycle d'attente dont aucune ne peut sortir.
 
-> **Analogie** : Le carrefour bloque. Quatre voitures arrivent en meme temps a un carrefour sans feux. Chacune attend que celle a sa droite passe. Personne ne bouge. C'est le blocage total. La seule solution : qu'une voiture recule (= ROLLBACK).
+> **Analogie** : Le carrefour bloque. Quatre voitures arrivent en même temps à un carrefour sans feux. Chacune attend que celle a sa droite passe. Personne ne bouge. C'est le blocage total. La seule solution : qu'une voiture recule (= ROLLBACK).
 
 ```
       ┌─────┐
@@ -29,13 +29,13 @@ Un **deadlock** (verrou mortel, interblocage) survient quand deux ou plusieurs t
 
 ### Deadlock vs Simple attente
 
-| Situation | Issue | Probleme ? |
+| Situation | Issue | Problème ? |
 |---|---|---|
 | A attend B | B finit → A continue | Non, normal |
 | A attend B, B attend A | Personne ne finit | **OUI = Deadlock** |
 | A attend B, B attend C, C attend A | Cycle a 3 | **OUI = Deadlock** |
 
-> **Point cle** : Un deadlock implique toujours un **cycle** dans le graphe d'attente. Une simple attente (sans cycle) n'est PAS un deadlock.
+> **Point clé** : Un deadlock implique toujours un **cycle** dans le graphe d'attente. Une simple attente (sans cycle) n'est PAS un deadlock.
 
 ---
 
@@ -159,14 +159,14 @@ PostgreSQL utilise un algorithme de **detection de cycle** dans ce graphe :
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### 3.3 Pourquoi attendre avant de detecter ?
+### 3.3 Pourquoi attendre avant de détecter ?
 
 | Approche | Avantage | Inconvenient |
 |---|---|---|
 | Detecter immediatement | Deadlocks resolus vite | Surcout CPU constant |
 | Attendre deadlock_timeout | Pas de surcout si pas de deadlock | Delai de detection |
 
-> **Point cle** : La plupart des attentes ne sont PAS des deadlocks (juste une transaction qui attend un lock normal). Attendre `deadlock_timeout` evite de lancer la detection couteuse a chaque attente.
+> **Point clé** : La plupart des attentes ne sont PAS des deadlocks (juste une transaction qui attend un lock normal). Attendre `deadlock_timeout` evite de lancer la detection couteuse à chaque attente.
 
 ---
 
@@ -174,9 +174,9 @@ PostgreSQL utilise un algorithme de **detection de cycle** dans ce graphe :
 
 ### 4.1 Choix de la victime
 
-Quand PostgreSQL detecte un deadlock, il doit choisir **quelle transaction tuer**. Le choix est base sur des criteres internes (generalement la transaction qui a declenche la detection, c'est-a-dire celle qui a attendu le plus longtemps sans succes).
+Quand PostgreSQL détecté un deadlock, il doit choisir **quelle transaction tuer**. Le choix est base sur des criteres internes (généralement la transaction qui a declenche la detection, c'est-a-dire celle qui a attendu le plus longtemps sans succes).
 
-> **Piege classique** : Vous ne pouvez PAS controler quelle transaction sera tuee. Ne comptez jamais sur un comportement specifique du choix de victime.
+> **Piege classique** : Vous ne pouvez PAS controler quelle transaction sera tuee. Ne comptez jamais sur un comportement spécifique du choix de victime.
 
 ### 4.2 Le message d'erreur
 
@@ -202,7 +202,7 @@ LOG: process 12345 still waiting for ShareLock on transaction 67890
      after 1000.123 ms
 ```
 
-### 4.4 Que se passe-t-il apres ?
+### 4.4 Que se passe-t-il après ?
 
 ```
                      Deadlock detecte
@@ -225,7 +225,7 @@ LOG: process 12345 still waiting for ShareLock on transaction 67890
 
 ## 5. Reproduire un deadlock en SQL
 
-Voici un script pas-a-pas pour reproduire un deadlock. Vous aurez besoin de **deux terminaux** connectes a la meme base.
+Voici un script pas-a-pas pour reproduire un deadlock. Vous aurez besoin de **deux terminaux** connectes à la même base.
 
 ### Terminal 1
 
@@ -366,11 +366,11 @@ Demo terminee
 
 ---
 
-## 7. Strategies de prevention
+## 7. Stratégies de prevention
 
 ### 7.1 Lock ordering — La regle d'or
 
-> **Regle d'or** : Toujours acquérir les locks dans le **meme ordre**. Si tout le monde verrouille d'abord id=1, puis id=2, il n'y a JAMAIS de cycle.
+> **Regle d'or** : Toujours acquérir les locks dans le **même ordre**. Si tout le monde verrouille d'abord id=1, puis id=2, il n'y a JAMAIS de cycle.
 
 ```sql
 -- MAUVAIS : ordre different selon la transaction
@@ -384,7 +384,7 @@ Demo terminee
 -- → Jamais de deadlock !
 ```
 
-> **Analogie** : Dans un escalier etroit, si tout le monde monte a droite et descend a gauche, personne ne se bloque. Les deadlocks arrivent quand les gens montent et descendent du meme cote.
+> **Analogie** : Dans un escalier etroit, si tout le monde monte a droite et descend a gauche, personne ne se bloque. Les deadlocks arrivent quand les gens montent et descendent du même cote.
 
 ```typescript
 import pg from 'pg';
@@ -470,7 +470,7 @@ SELECT * FROM comptes WHERE id = 1 FOR UPDATE NOWAIT;
 -- ERROR: could not obtain lock on row (si verrouille)
 ```
 
-### 7.4 SKIP LOCKED pour eviter l'attente
+### 7.4 SKIP LOCKED pour éviter l'attente
 
 ```sql
 -- Au lieu de verrouiller une ligne specifique
@@ -501,7 +501,7 @@ SELECT pg_advisory_unlock(1);
 -- Pas de deadlock si l'ordre est respecte
 ```
 
-### 7.6 Utiliser une seule requete au lieu de deux
+### 7.6 Utiliser une seule requête au lieu de deux
 
 ```sql
 -- RISQUE DE DEADLOCK : deux operations separees
@@ -525,7 +525,7 @@ WHERE id IN (1, 2);
 
 ## 8. deadlock_timeout — Configuration
 
-### 8.1 Le parametre
+### 8.1 Le paramètre
 
 ```sql
 -- Voir la valeur actuelle
@@ -546,7 +546,7 @@ SELECT pg_reload_conf();
 |--------|----------|-------------|
 | 100ms | Detection rapide | CPU utilise pour des attentes normales |
 | 1s (defaut) | Bon compromis | 1s d'attente avant detection |
-| 5s | Moins de fausses alertes | 5s de blocage avant resolution |
+| 5s | Moins de fausses alertes | 5s de blocage avant résolution |
 
 > **Recommandation** : Gardez la valeur par defaut (1s) sauf si vous avez des benchmarks prouvant qu'une autre valeur est meilleure pour votre workload.
 
@@ -617,7 +617,7 @@ CONTEXT: while updating tuple (0,1) in relation "comptes"
 STATEMENT: UPDATE comptes SET solde = solde + 50 WHERE id = 1
 ```
 
-### 9.3 Requete de monitoring en temps reel
+### 9.3 Requête de monitoring en temps réel
 
 ```sql
 -- Voir les processus en attente de lock
@@ -713,7 +713,7 @@ CREATE TABLE enfants (
 );
 ```
 
-L'INSERT dans `enfants` acquiert un `FOR KEY SHARE` sur la ligne parente. Si deux transactions inserent des enfants pour des parents differents et que les parents sont aussi modifies, un deadlock est possible.
+L'INSERT dans `enfants` acquiert un `FOR KEY SHARE` sur la ligne parente. Si deux transactions inserent des enfants pour des parents différents et que les parents sont aussi modifies, un deadlock est possible.
 
 ### 10.3 Prevention pour les INSERTs
 
@@ -779,7 +779,7 @@ ALTER TABLE customers                 SELECT * FROM customers
 
 ## 12. Patterns avances : batch processing sans deadlocks
 
-### 12.1 Le probleme du batch
+### 12.1 Le problème du batch
 
 Quand vous traitez des lots de lignes, les deadlocks sont frequents si les lots se chevauchent.
 
@@ -835,7 +835,7 @@ async function processBatchSafe(ids: number[]): Promise<void> {
 }
 ```
 
-### 12.3 Solution 2 : Une seule requete
+### 12.3 Solution 2 : Une seule requête
 
 ```typescript
 async function processBatchOneQuery(ids: number[]): Promise<void> {
@@ -943,7 +943,7 @@ await withDeadlockRetry(() => processBatch([1, 2, 3]));
 | Solution | Complexite | Performance | Garantie no-deadlock |
 |----------|-----------|-------------|---------------------|
 | Lock ordering (tri) | Faible | Bonne | Oui (si tout le monde trie) |
-| Single query | Faible | Tres bonne | Ameliore mais pas garanti |
+| Single query | Faible | Très bonne | Ameliore mais pas garanti |
 | SKIP LOCKED | Moyenne | Excellente | Oui |
 | Retry pattern | Faible | Variable | Non (mais resilient) |
 | Advisory locks | Moyenne | Bonne | Oui |
@@ -952,7 +952,7 @@ await withDeadlockRetry(() => processBatch([1, 2, 3]));
 
 ## 13. Exercice mental
 
-> **Exercice mental** : Trois transactions A, B et C operent sur les lignes 1, 2 et 3. A verrouille 1 puis veut 2. B verrouille 2 puis veut 3. C verrouille 3 puis veut 1. Y a-t-il un deadlock ? PostgreSQL peut-il le detecter ?
+> **Exercice mental** : Trois transactions A, B et C operent sur les lignes 1, 2 et 3. A verrouille 1 puis veut 2. B verrouille 2 puis veut 3. C verrouille 3 puis veut 1. Y a-t-il un deadlock ? PostgreSQL peut-il le détecter ?
 
 <details>
 <summary>Reponse</summary>
@@ -963,7 +963,7 @@ await withDeadlockRetry(() => processBatch([1, 2, 3]));
 - C attend A (pour la ligne 1)
 - Cycle : A → B → C → A
 
-PostgreSQL **detecte** les cycles de toute longueur dans le wait-for graph. Il choisira une victime parmi les trois et fera ROLLBACK de cette transaction. Les deux autres pourront continuer.
+PostgreSQL **détecté** les cycles de toute longueur dans le wait-for graph. Il choisira une victime parmi les trois et fera ROLLBACK de cette transaction. Les deux autres pourront continuer.
 
 **Prevention** : Si les trois transactions triaient leurs IDs (1, 2, 3), elles essaieraient toutes de verrouiller 1 en premier. Seule une y parviendrait, les autres attendraient. Pas de cycle possible.
 </details>
@@ -1001,12 +1001,23 @@ PostgreSQL **detecte** les cycles de toute longueur dans le wait-for graph. Il c
 
 ## Navigation
 
-| Precedent | Suivant |
+| Précédent | Suivant |
 |---|---|
 | [Module 09 — Verrous & Locks](./09-verrous-et-locks.md) | [Module 11 — Performances & Optimisation](./11-performances-et-optimisation.md) |
 
-**Travaux pratiques** : [Lab 10 — Provoquer et resoudre des deadlocks](../labs/lab-10-deadlocks.md)
+**Travaux pratiques** : [Lab 10 — Provoquer et résoudre des deadlocks](../labs/lab-10-deadlocks.md)
 
 ---
 
-> *"Le meilleur deadlock est celui qui ne se produit jamais. Le deuxieme meilleur est celui qui est detecte et retente automatiquement."*
+> *"Le meilleur deadlock est celui qui ne se produit jamais. Le deuxieme meilleur est celui qui est détecté et retente automatiquement."*
+
+---
+
+<!-- parcours-recommande -->
+
+::: tip Parcours recommandé
+1. **Screencast** : [screencast 10 deadlocks](../screencasts/screencast-10-deadlocks.md)
+2. **Lab** : [lab-10-deadlocks](../labs/lab-10-deadlocks/README)
+3. **Visualisation** : [Lock Matrix](../visualizations/lock-matrix.html)
+4. **Quiz** : [quiz 10 deadlocks](../quizzes/quiz-10-deadlocks.html)
+:::

@@ -162,7 +162,7 @@ WHERE user_id = 4242 OR event_type = 'purchase';
 
 **Action** : Montrer le plan avec BitmapOr si le planificateur le choisit.
 
-### [13:00-16:00] JOIN strategies
+### [13:00-16:00] JOIN stratégies
 
 > Pour les jointures, le planificateur a trois stratégies : Nested Loop, Hash Join et Merge Join.
 

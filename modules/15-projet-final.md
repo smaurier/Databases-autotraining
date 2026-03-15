@@ -1,6 +1,6 @@
-# Module 15 — Projet final : Systeme de reservation
+# Module 15 — Projet final : Système de reservation
 
-> **Objectif** : Mettre en pratique TOUS les concepts des modules precedents en construisant un systeme de reservation de salles complet — modelisation, contraintes, concurrence, securite, performance et monitoring.
+> **Objectif** : Mettre en pratique TOUS les concepts des modules précédents en construisant un système de reservation de salles complet — modelisation, contraintes, concurrence, sécurité, performance et monitoring.
 >
 > **Difficulte** : ⭐⭐⭐⭐⭐
 
@@ -8,21 +8,21 @@
 
 ## 1. Cahier des charges
 
-### 1.1 Description du systeme
+### 1.1 Description du système
 
-Vous construisez un systeme de reservation de salles pour une entreprise multi-sites. Les utilisateurs peuvent reserver des salles pour des evenements (reunions, conferences, formations).
+Vous construisez un système de reservation de salles pour une entreprise multi-sites. Les utilisateurs peuvent reserver des salles pour des événements (reunions, conferences, formations).
 
 ### 1.2 Exigences fonctionnelles
 
 | Exigence | Description | Modules mobilises |
 |----------|-------------|-------------------|
-| Reservation | Creer, modifier, annuler des reservations | Transactions, MVCC |
-| Anti-double-booking | Impossible de reserver un creneau deja pris | Range types, EXCLUDE |
+| Reservation | Créer, modifier, annuler des reservations | Transactions, MVCC |
+| Anti-double-booking | Impossible de reserver un creneau déjà pris | Range types, EXCLUDE |
 | Multi-tenant | Chaque entreprise voit ses propres donnees | RLS, schemas |
-| Recherche | Trouver des evenements par mots-cles | Full-Text Search |
+| Recherche | Trouver des événements par mots-clés | Full-Text Search |
 | Statistiques | Tableaux de bord d'utilisation | Window Functions, CTEs |
 | Audit | Historique de toutes les modifications | Triggers, JSONB |
-| Performance | < 100ms pour les requetes principales | Index, pooling |
+| Performance | < 100ms pour les requêtes principales | Index, pooling |
 
 ### 1.3 Contraintes techniques
 
@@ -102,7 +102,7 @@ Vous construisez un systeme de reservation de salles pour une entreprise multi-s
                           └────────────────┘
 ```
 
-### 2.2 Script de creation complet
+### 2.2 Script de création complet
 
 ```sql
 -- ============================================================
@@ -335,7 +335,7 @@ CREATE INDEX idx_users_active
     WHERE is_active = true;
 ```
 
-### 3.6 Strategie resumee
+### 3.6 Stratégie resumee
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -357,11 +357,11 @@ CREATE INDEX idx_users_active
 
 ### 4.1 La reservation : operation critique
 
-La creation d'une reservation est l'operation la plus critique du systeme. Elle doit :
-1. Verifier que la salle existe et est active
-2. Verifier que l'utilisateur a le droit de reserver
-3. Verifier qu'il n'y a pas de chevauchement
-4. Creer la reservation ET l'evenement atomiquement
+La création d'une reservation est l'operation la plus critique du système. Elle doit :
+1. Vérifier que la salle existe et est active
+2. Vérifier que l'utilisateur a le droit de reserver
+3. Vérifier qu'il n'y a pas de chevauchement
+4. Créer la reservation ET l'événement atomiquement
 
 ### 4.2 Isolation Serializable pour les reservations
 
@@ -674,7 +674,7 @@ async function cancelReservation(
 
 ## 5. Requetes complexes
 
-### 5.1 Disponibilite avec LATERAL joins
+### 5.1 Disponibilité avec LATERAL joins
 
 ```sql
 -- Trouver les creneaux disponibles pour une salle donnee
@@ -748,7 +748,7 @@ FROM weekly_stats
 ORDER BY semaine DESC, classement_semaine;
 ```
 
-### 5.3 Recherche Full-Text sur evenements
+### 5.3 Recherche Full-Text sur événements
 
 ```sql
 -- Recherche d'evenements avec scoring et highlighting
@@ -834,7 +834,7 @@ ORDER BY mr.mois DESC;
 
 ---
 
-## 6. Securite
+## 6. Sécurité
 
 ### 6.1 Roles
 
@@ -974,7 +974,7 @@ ORDER BY total_exec_time DESC
 LIMIT 10;
 ```
 
-### 7.2 Detection des requetes lentes
+### 7.2 Detection des requêtes lentes
 
 ```sql
 -- Requetes actives depuis plus de 5 secondes
@@ -1155,7 +1155,7 @@ async function monitorLoop(): Promise<void> {
 
 ## 8. Optimisation
 
-### 8.1 EXPLAIN ANALYZE sur les requetes critiques
+### 8.1 EXPLAIN ANALYZE sur les requêtes critiques
 
 ```sql
 -- Verifier le plan de la requete de disponibilite
@@ -1414,7 +1414,7 @@ runLoadTest()
 - [ ] GIN sur JSONB (metadata, equipment)
 - [ ] GIN sur tsvector (Full-Text Search)
 - [ ] Partial indexes sur les statuts actifs
-- [ ] EXPLAIN ANALYZE sur les requetes critiques (< 10ms)
+- [ ] EXPLAIN ANALYZE sur les requêtes critiques (< 10ms)
 
 ### 10.3 Concurrence
 
@@ -1424,7 +1424,7 @@ runLoadTest()
 - [ ] FOR UPDATE NOWAIT pour les modifications
 - [ ] SKIP LOCKED si pattern de queue
 
-### 10.4 Securite
+### 10.4 Sécurité
 
 - [ ] Roles avec principe du moindre privilege
 - [ ] pg_hba.conf avec scram-sha-256
@@ -1435,7 +1435,7 @@ runLoadTest()
 ### 10.5 Performance
 
 - [ ] Connection pooling (pg.Pool max: 20)
-- [ ] Prepared statements pour les requetes frequentes
+- [ ] Prepared statements pour les requêtes frequentes
 - [ ] Autovacuum tune pour les tables actives
 - [ ] Cache hit ratio > 99%
 - [ ] Requetes critiques < 100ms
@@ -1460,32 +1460,32 @@ runLoadTest()
 
 ## Exercice mental final
 
-> **Exercice mental** : Votre systeme de reservation est en production depuis 6 mois. Un matin, les utilisateurs signalent que les reservations prennent 5 secondes au lieu de 100ms. Quelles etapes suivriez-vous pour diagnostiquer et resoudre le probleme ?
+> **Exercice mental** : Votre système de reservation est en production depuis 6 mois. Un matin, les utilisateurs signalent que les reservations prennent 5 secondes au lieu de 100ms. Quelles étapes suivriez-vous pour diagnostiquer et résoudre le problème ?
 
 <details>
 <summary>Reponse</summary>
 
-**Etape 1 : Observation**
-- `SELECT * FROM pg_stat_activity WHERE state = 'active'` → requetes en cours
+**Étape 1 : Observation**
+- `SELECT * FROM pg_stat_activity WHERE state = 'active'` → requêtes en cours
 - `SELECT * FROM lock_monitor` → locks en attente ?
-- `SELECT * FROM slow_queries` → requetes lentes
+- `SELECT * FROM slow_queries` → requêtes lentes
 
-**Etape 2 : Diagnostic**
-- `pg_stat_statements` → requetes les plus lentes (avg_ms)
+**Étape 2 : Diagnostic**
+- `pg_stat_statements` → requêtes les plus lentes (avg_ms)
 - `pg_stat_user_tables` → `n_dead_tup` sur la table reservations (bloat ?)
 - `last_autovacuum` → l'autovacuum tourne-t-il ?
 - Cache hit ratio → est-il tombe sous 99% ?
 
-**Etape 3 : Actions**
+**Étape 3 : Actions**
 - Si bloat : `VACUUM ANALYZE reservations;`
 - Si statistiques obsoletes : `ANALYZE reservations;`
-- Si lock contention : verifier les transactions idle-in-transaction
-- Si index manquant : `EXPLAIN ANALYZE` sur la requete lente
-- Si connexions saturees : verifier `max_connections` vs pool size
+- Si lock contention : vérifier les transactions idle-in-transaction
+- Si index manquant : `EXPLAIN ANALYZE` sur la requête lente
+- Si connexions saturees : vérifier `max_connections` vs pool size
 
-**Etape 4 : Prevention**
+**Étape 4 : Prevention**
 - Tuner l'autovacuum : `autovacuum_vacuum_scale_factor = 0.01`
-- Alerter si `n_dead_tup` depasse un seuil
+- Alerter si `n_dead_tup` dépasse un seuil
 - Mettre un `statement_timeout` et `idle_in_transaction_session_timeout`
 </details>
 
@@ -1518,12 +1518,22 @@ runLoadTest()
 
 ## Navigation
 
-| Precedent | Suivant |
+| Précédent | Suivant |
 |---|---|
-| [Module 14 — Securite & Administration](./14-securite-et-administration.md) | Fin du cours |
+| [Module 14 — Sécurité & Administration](./14-securite-et-administration.md) | Fin du cours |
 
-**Travaux pratiques** : [Lab 15 — Construire le systeme de reservation complet](../labs/lab-15-projet-final.md)
+**Travaux pratiques** : [Lab 15 — Construire le système de reservation complet](../labs/lab-15-projet-final.md)
 
 ---
 
-> *"La theorie sans la pratique est sterile. La pratique sans la theorie est aveugle. Ce projet final est le pont entre les deux."*
+> *"La théorie sans la pratique est sterile. La pratique sans la théorie est aveugle. Ce projet final est le pont entre les deux."*
+
+---
+
+<!-- parcours-recommande -->
+
+::: tip Parcours recommandé
+1. **Screencast** : [screencast 15 projet final](../screencasts/screencast-15-projet-final.md)
+2. **Lab** : [lab-15-système-reservation](../labs/lab-15-systeme-reservation/README)
+3. **Quiz** : [quiz 15 projet final](../quizzes/quiz-15-projet-final.html)
+:::

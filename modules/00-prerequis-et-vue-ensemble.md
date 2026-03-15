@@ -1,33 +1,37 @@
-# Module 00 — Prerequis & Vue d'ensemble
+# Module 00 — Prérequis & Vue d'ensemble
 
-> **Objectif** : Comprendre ce qu'est un SGBDR, pourquoi PostgreSQL est le choix de reference, installer un environnement de travail complet et etablir un premier contact avec la base de donnees via `psql` et Node.js.
+<!-- nav-cours-précédent -->
+> **Cours précédent** : [NestJS](../../05-nestjs/modules/26-graphql-nestjs.md). Si tu arrives ici sans avoir fait les cours précédents, consulte le [guide de démarrage](../../GUIDE-DEMARRAGE.md).
+
+
+> **Objectif** : Comprendre ce qu'est un SGBDR, pourquoi PostgreSQL est le choix de référence, installer un environnement de travail complet et etablir un premier contact avec la base de donnees via `psql` et Node.js.
 >
-> **Difficulte** : ⭐ (debutant)
+> **Difficulte** : ⭐ (débutant)
 
 ---
 
 ## 1. Ce que ce cours va t'apprendre
 
-Ce cours est un parcours complet a travers PostgreSQL, de la premiere requete `SELECT` jusqu'aux mecanismes internes du moteur. Voici les grandes competences que tu vas acquerir :
+Ce cours est un parcours complet a travers PostgreSQL, de la première requête `SELECT` jusqu'aux mécanismes internes du moteur. Voici les grandes compétences que tu vas acquerir :
 
 | Domaine | Ce que tu sauras faire |
 |---|---|
-| **SQL fondamental** | Ecrire des requetes CRUD, des jointures, des sous-requetes, des agregations |
+| **SQL fondamental** | Écrire des requêtes CRUD, des jointures, des sous-requêtes, des agregations |
 | **Modelisation** | Concevoir un schema relationnel normalise avec les bonnes contraintes |
-| **Transactions** | Gerer la concurrence, comprendre ACID, eviter les anomalies |
-| **Performance** | Lire un plan d'execution, creer les bons index, optimiser des requetes lentes |
+| **Transactions** | Gérer la concurrence, comprendre ACID, éviter les anomalies |
+| **Performance** | Lire un plan d'exécution, créer les bons index, optimiser des requêtes lentes |
 | **Index avances** | Utiliser GIN, GiST, BRIN selon le cas d'usage |
-| **PostgreSQL internals** | Comprendre le WAL, le VACUUM, le query planner, les mecanismes MVCC |
-| **Node.js + pg** | Integrer PostgreSQL dans une application backend JavaScript moderne |
-| **Administration** | Gerer les roles, les permissions, les backups, la surveillance |
+| **PostgreSQL internals** | Comprendre le WAL, le VACUUM, le query planner, les mécanismes MVCC |
+| **Node.js + pg** | Intégrer PostgreSQL dans une application backend JavaScript moderne |
+| **Administration** | Gérer les roles, les permissions, les backups, la surveillance |
 
-> **Analogie** : Imagine que PostgreSQL est une voiture de course. Ce cours t'apprend d'abord a conduire (SQL), puis a comprendre le moteur (internals), et enfin a regler les performances (tuning). Tu ne seras pas juste un conducteur, tu seras un mecanicien capable de diagnostiquer et optimiser.
+> **Analogie** : Imagine que PostgreSQL est une voiture de course. Ce cours t'apprend d'abord a conduire (SQL), puis à comprendre le moteur (internals), et enfin a regler les performances (tuning). Tu ne seras pas juste un conducteur, tu seras un mecanicien capable de diagnostiquer et optimiser.
 
 ### Ce que ce cours n'est PAS
 
-- Ce n'est pas un cours de theorie pure : chaque concept est accompagne de code executable.
+- Ce n'est pas un cours de théorie pure : chaque concept est accompagne de code executable.
 - Ce n'est pas un cours Node.js : on suppose que tu connais les bases de JavaScript et les modules ES.
-- Ce n'est pas un cours d'administration systeme : on utilise Docker pour simplifier l'installation.
+- Ce n'est pas un cours d'administration système : on utilise Docker pour simplifier l'installation.
 
 ---
 
@@ -35,14 +39,14 @@ Ce cours est un parcours complet a travers PostgreSQL, de la premiere requete `S
 
 ### 2.1 Definition
 
-Un **SGBDR** (Systeme de Gestion de Base de Donnees Relationnelles) est un logiciel qui :
+Un **SGBDR** (Système de Gestion de Base de Donnees Relationnelles) est un logiciel qui :
 
 1. **Stocke** des donnees structurees dans des tables (lignes et colonnes)
 2. **Garantit** l'integrite des donnees via des contraintes et des transactions
 3. **Permet** d'interroger les donnees via un langage standardise : **SQL**
 4. **Gere** les acces concurrents de multiples utilisateurs
 
-> **Analogie** : Un SGBDR, c'est comme une bibliotheque tres bien organisee. Chaque livre (ligne) est range dans une etagere precise (table), avec un systeme de classification (index). Le bibliothecaire (le moteur) sait exactement ou trouver chaque livre et gere les emprunts simultanement sans conflit.
+> **Analogie** : Un SGBDR, c'est comme une bibliotheque très bien organisee. Chaque livre (ligne) est range dans une etagere précisé (table), avec un système de classification (index). Le bibliothecaire (le moteur) sait exactement ou trouver chaque livre et géré les emprunts simultanement sans conflit.
 
 ### 2.2 Comparaison avec d'autres approches de stockage
 
@@ -57,7 +61,7 @@ Un **SGBDR** (Systeme de Gestion de Base de Donnees Relationnelles) est un logic
 | **Scalabilite** | Limite (~MB) | Limite (~1M lignes) | Horizontale (sharding) | Verticale + extensions |
 | **Cas d'usage** | Logs simples, config | Rapports, prototypage | Documents, real-time | Applications metier, finance |
 
-> **Piege classique** : Beaucoup de debutants pensent que NoSQL est "mieux" que SQL parce que c'est "plus moderne". En realite, les bases relationnelles restent le choix dominant pour toute application qui a besoin de coherence des donnees, de transactions fiables et de requetes complexes. PostgreSQL supporte aussi le JSON (JSONB), ce qui offre le meilleur des deux mondes.
+> **Piege classique** : Beaucoup de débutants pensent que NoSQL est "mieux" que SQL parce que c'est "plus moderne". En realite, les bases relationnelles restent le choix dominant pour toute application qui a besoin de coherence des donnees, de transactions fiables et de requêtes complexes. PostgreSQL supporte aussi le JSON (JSONB), ce qui offre le meilleur des deux mondes.
 
 ### 2.3 Le langage SQL
 
@@ -75,16 +79,16 @@ ORDER BY nom;
 -- verifie si ville = Paris ET actif = true, trie par nom..."
 ```
 
-> **Analogie** : SQL, c'est comme commander au restaurant. Tu dis "je veux le plat du jour avec une salade". Tu ne dis pas au chef comment couper les legumes, a quelle temperature cuire, etc. Le SGBDR (le chef) decide de la meilleure facon d'executer ta demande.
+> **Analogie** : SQL, c'est comme commander au restaurant. Tu dis "je veux le plat du jour avec une salade". Tu ne dis pas au chef comment couper les legumes, a quelle temperature cuire, etc. Le SGBDR (le chef) decide de la meilleure façon d'exécuter ta demandé.
 
 SQL se divise en plusieurs sous-langages :
 
 | Sous-langage | Acronyme | Exemples | Role |
 |---|---|---|---|
-| Data Definition Language | **DDL** | `CREATE`, `ALTER`, `DROP` | Definir la structure |
+| Data Definition Language | **DDL** | `CREATE`, `ALTER`, `DROP` | Définir la structure |
 | Data Manipulation Language | **DML** | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | Manipuler les donnees |
-| Data Control Language | **DCL** | `GRANT`, `REVOKE` | Gerer les permissions |
-| Transaction Control Language | **TCL** | `BEGIN`, `COMMIT`, `ROLLBACK` | Gerer les transactions |
+| Data Control Language | **DCL** | `GRANT`, `REVOKE` | Gérer les permissions |
+| Transaction Control Language | **TCL** | `BEGIN`, `COMMIT`, `ROLLBACK` | Gérer les transactions |
 
 ---
 
@@ -92,9 +96,9 @@ SQL se divise en plusieurs sous-langages :
 
 ### 3.1 Un peu d'histoire
 
-PostgreSQL a une histoire remarquable qui explique sa robustesse :
+PostgreSQL à une histoire remarquable qui explique sa robustesse :
 
-| Annee | Evenement |
+| Annee | Événement |
 |---|---|
 | 1973 | Ingres, ancetre de PostgreSQL, nait a UC Berkeley |
 | 1986 | Le projet **POSTGRES** (Post-Ingres) demarre sous Michael Stonebraker |
@@ -111,8 +115,8 @@ PostgreSQL a une histoire remarquable qui explique sa robustesse :
 | Critere | PostgreSQL | MySQL | SQLite | SQL Server |
 |---|---|---|---|---|
 | **Licence** | PostgreSQL (MIT-like) | GPL / Commercial | Domaine public | Commercial |
-| **Conformite SQL** | Tres elevee | Moyenne | Limitee | Elevee |
-| **Types de donnees** | Tres riche (JSONB, arrays, ranges, hstore, geometric) | Standard | Standard | Riche |
+| **Conformite SQL** | Très elevee | Moyenne | Limitee | Elevee |
+| **Types de donnees** | Très riche (JSONB, arrays, ranges, hstore, geometric) | Standard | Standard | Riche |
 | **Extensions** | Oui (PostGIS, pg_trgm, pgvector...) | Limitees | Non | Limitees |
 | **MVCC** | Natif, complet | Depend du moteur (InnoDB) | WAL-mode | Oui |
 | **Full-text search** | Integre (tsvector, tsquery) | Basique | FTS5 (extension) | Integre |
@@ -134,7 +138,7 @@ PostgreSQL est utilise en production par des geants du web et de la finance :
 - **Spotify** : metadata des chansons et playlists
 - **Reddit** : base de donnees principale
 - **GitLab** : stockage de tous les repositories et metadata
-- **Banques** : Goldman Sachs, JP Morgan pour les systemes transactionnels
+- **Banques** : Goldman Sachs, JP Morgan pour les systèmes transactionnels
 
 ---
 
@@ -142,7 +146,7 @@ PostgreSQL est utilise en production par des geants du web et de la finance :
 
 ### 4.1 Vue d'ensemble
 
-PostgreSQL utilise un modele **client-serveur** avec une architecture **multi-processus** (pas multi-thread).
+PostgreSQL utilise un modèle **client-serveur** avec une architecture **multi-processus** (pas multi-thread).
 
 ```
                      Architecture PostgreSQL
@@ -183,15 +187,15 @@ PostgreSQL utilise un modele **client-serveur** avec une architecture **multi-pr
 | Composant | Role | Analogie |
 |---|---|---|
 | **Postmaster** | Processus principal qui ecoute les connexions entrantes et fork un backend par client | Le maitre d'hotel qui accueille les clients et assigne un serveur a chacun |
-| **Backend process** | Un processus dedie par connexion client, execute les requetes | Le serveur qui s'occupe exclusivement de ta table |
-| **Shared Buffers** | Cache memoire partage entre tous les backends, stocke les pages de donnees | Le plan de travail commun en cuisine |
+| **Backend process** | Un processus dedie par connexion client, exécuté les requêtes | Le serveur qui s'occupe exclusivement de ta table |
+| **Shared Buffers** | Cache mémoire partage entre tous les backends, stocke les pages de donnees | Le plan de travail commun en cuisine |
 | **WAL Writer** | Ecrit les journaux de transactions (Write-Ahead Log) sur disque | Le scribe qui note chaque operation AVANT qu'elle soit effectuee |
 | **Checkpointer** | Ecrit periodiquement les pages modifiees (dirty pages) du cache vers le disque | Le comptable qui fait le bilan periodique |
-| **Autovacuum** | Nettoie les lignes mortes (tuples morts) laissees par MVCC | L'equipe de nettoyage qui passe apres les clients |
-| **WAL files** | Journaux de transactions sur disque, garantissent la durabilite | Le journal de bord : meme si le bateau coule, on peut reconstituer ce qui s'est passe |
+| **Autovacuum** | Nettoie les lignes mortes (tuples morts) laissees par MVCC | L'équipe de nettoyage qui passe après les clients |
+| **WAL files** | Journaux de transactions sur disque, garantissent la durabilite | Le journal de bord : même si le bateau coule, on peut reconstituer ce qui s'est passe |
 | **Data files** | Les fichiers physiques contenant les tables et les index | Les etageres de la bibliotheque |
 
-### 4.3 Le cycle de vie d'une requete
+### 4.3 Le cycle de vie d'une requête
 
 Quand tu executes `SELECT * FROM utilisateurs WHERE id = 42`, voici ce qui se passe :
 
@@ -220,7 +224,7 @@ Quand tu executes `SELECT * FROM utilisateurs WHERE id = 42`, voici ce qui se pa
     Client recoit les lignes
 ```
 
-> **Exercice mental** : Quand PostgreSQL execute un `INSERT`, a quel moment les donnees sont-elles vraiment "en securite" ? Reponse : quand le WAL Writer a ecrit l'entree dans le journal sur disque. Les donnees dans les Shared Buffers ne sont pas encore ecrites dans les fichiers de donnees — c'est le Checkpointer qui s'en charge plus tard.
+> **Exercice mental** : Quand PostgreSQL exécuté un `INSERT`, a quel moment les donnees sont-elles vraiment "en sécurité" ? Reponse : quand le WAL Writer a écrit l'entree dans le journal sur disque. Les donnees dans les Shared Buffers ne sont pas encore ecrites dans les fichiers de donnees — c'est le Checkpointer qui s'en charge plus tard.
 
 ---
 
@@ -228,7 +232,7 @@ Quand tu executes `SELECT * FROM utilisateurs WHERE id = 42`, voici ce qui se pa
 
 ### 5.1 Installation avec Docker
 
-Docker est la facon la plus simple et la plus propre d'installer PostgreSQL pour le developpement.
+Docker est la façon la plus simple et la plus propre d'installer PostgreSQL pour le développement.
 
 ```bash
 # Telecharger et demarrer PostgreSQL 16
@@ -249,7 +253,7 @@ docker ps
 docker logs pg-cours
 ```
 
-> **Piege classique** : N'oublie pas le flag `-v pgdata:/var/lib/postgresql/data`. Sans ce volume, tes donnees seront perdues a chaque redemarrage du conteneur. Le volume Docker persiste les donnees meme si le conteneur est supprime.
+> **Piege classique** : N'oublie pas le flag `-v pgdata:/var/lib/postgresql/data`. Sans ce volume, tes donnees seront perdues à chaque redemarrage du conteneur. Le volume Docker persiste les donnees même si le conteneur est supprime.
 
 ### 5.2 Se connecter avec psql
 
@@ -268,7 +272,7 @@ psql -h localhost -p 5432 -U postgres -d cours
 | Commande | Description | Exemple |
 |---|---|---|
 | `\l` | Lister toutes les bases de donnees | `\l` |
-| `\c nomdb` | Se connecter a une base | `\c cours` |
+| `\c nomdb` | Se connecter à une base | `\c cours` |
 | `\dt` | Lister les tables du schema courant | `\dt` |
 | `\dt+` | Lister les tables avec taille et description | `\dt+` |
 | `\d nomtable` | Decrire une table (colonnes, types, contraintes) | `\d utilisateurs` |
@@ -276,10 +280,10 @@ psql -h localhost -p 5432 -U postgres -d cours
 | `\di` | Lister les index | `\di` |
 | `\dn` | Lister les schemas | `\dn` |
 | `\du` | Lister les roles/utilisateurs | `\du` |
-| `\timing` | Activer/desactiver l'affichage du temps d'execution | `\timing` |
-| `\x` | Activer/desactiver l'affichage etendu (vertical) | `\x` |
-| `\e` | Ouvrir l'editeur pour ecrire une requete | `\e` |
-| `\i fichier.sql` | Executer un fichier SQL | `\i setup.sql` |
+| `\timing` | Activer/désactiver l'affichage du temps d'exécution | `\timing` |
+| `\x` | Activer/désactiver l'affichage etendu (vertical) | `\x` |
+| `\e` | Ouvrir l'editeur pour écrire une requête | `\e` |
+| `\i fichier.sql` | Exécuter un fichier SQL | `\i setup.sql` |
 | `\q` | Quitter psql | `\q` |
 | `\?` | Aide sur les commandes psql | `\?` |
 | `\h SELECT` | Aide sur la syntaxe SQL | `\h CREATE TABLE` |
@@ -305,7 +309,7 @@ docker run \
 
 ## 6. Premier contact : psql basics
 
-### 6.1 Creer et explorer une base de donnees
+### 6.1 Créer et explorer une base de donnees
 
 ```sql
 -- Creer une base de donnees
@@ -345,7 +349,7 @@ SELECT * FROM produits;
 --   4 | Cable USB-C        |  12.99 | t        | 2024-01-15 10:30:00.123456+01
 ```
 
-### 6.2 Quelques requetes de base
+### 6.2 Quelques requêtes de base
 
 ```sql
 -- Filtrer avec WHERE
@@ -467,7 +471,7 @@ async function main(): Promise<void> {
 main();
 ```
 
-### 7.3 Executer
+### 7.3 Exécuter
 
 ```bash
 node index.mjs
@@ -492,10 +496,10 @@ Pool ferme. Au revoir !
 |---|---|---|
 | **Utilisation** | Applications web (connexions partagees) | Scripts ponctuels, transactions |
 | **Connexions** | Reutilise les connexions existantes | 1 connexion dediee |
-| **Transactions** | Pas directement (chaque `query` peut utiliser une connexion differente) | Oui (BEGIN / COMMIT sur la meme connexion) |
+| **Transactions** | Pas directement (chaque `query` peut utiliser une connexion différente) | Oui (BEGIN / COMMIT sur la même connexion) |
 | **Recommandation** | **Utiliser par defaut** | Utiliser pour les transactions explicites |
 
-> **Piege classique** : Ne fais JAMAIS `BEGIN` directement sur un `Pool` avec `pool.query('BEGIN')`. Les requetes suivantes pourraient etre executees sur une AUTRE connexion du pool. Utilise `pool.connect()` pour obtenir un `Client` dedie, puis fais ta transaction sur ce client.
+> **Piege classique** : Ne fais JAMAIS `BEGIN` directement sur un `Pool` avec `pool.query('BEGIN')`. Les requêtes suivantes pourraient etre executees sur une AUTRE connexion du pool. Utilise `pool.connect()` pour obtenir un `Client` dedie, puis fais ta transaction sur ce client.
 
 ```typescript
 // MAUVAIS : transaction sur un pool
@@ -519,25 +523,25 @@ try {
 
 ---
 
-## 8. Glossaire des termes cles
+## 8. Glossaire des termes clés
 
 | Terme | Definition | Analogie |
 |---|---|---|
-| **SGBDR** | Systeme de Gestion de Base de Donnees Relationnelles | La bibliotheque entiere avec son systeme de gestion |
+| **SGBDR** | Système de Gestion de Base de Donnees Relationnelles | La bibliotheque entière avec son système de gestion |
 | **Table (Relation)** | Structure qui stocke des donnees en lignes et colonnes | Une etagere avec des rangements standardises |
 | **Ligne (Tuple)** | Un enregistrement dans une table | Un livre sur l'etagere |
-| **Colonne (Attribut)** | Un champ type d'une table | Une propriete du livre (titre, auteur, ISBN) |
-| **Cle primaire (PK)** | Identifiant unique d'une ligne | Le numero ISBN du livre |
-| **Cle etrangere (FK)** | Reference vers la cle primaire d'une autre table | La reference bibliographique |
-| **Index** | Structure accelerant les recherches | L'index alphabetique a la fin du livre |
+| **Colonne (Attribut)** | Un champ type d'une table | Une propriété du livre (titre, auteur, ISBN) |
+| **Cle primaire (PK)** | Identifiant unique d'une ligne | Le numéro ISBN du livre |
+| **Cle etrangere (FK)** | Référence vers la clé primaire d'une autre table | La référence bibliographique |
+| **Index** | Structure accelerant les recherches | L'index alphabetique à la fin du livre |
 | **Transaction** | Groupe d'operations atomique (tout ou rien) | Un virement bancaire |
 | **ACID** | Atomicity, Consistency, Isolation, Durability | Les 4 garanties du contrat bancaire |
 | **WAL** | Write-Ahead Log, journal de transactions | Le journal de bord du capitaine |
 | **MVCC** | Multi-Version Concurrency Control | Chaque lecteur a sa propre copie du livre |
 | **Schema** | Espace de noms logique dans une base | Un etage de la bibliotheque |
-| **Query Planner** | Optimiseur qui choisit le meilleur plan d'execution | Le GPS qui calcule le meilleur itineraire |
-| **Shared Buffers** | Cache memoire partage pour les pages de donnees | Le plan de travail en cuisine |
-| **VACUUM** | Nettoyage des lignes mortes (MVCC) | L'equipe de menage qui recycle les livres retires |
+| **Query Planner** | Optimiseur qui choisit le meilleur plan d'exécution | Le GPS qui calcule le meilleur itineraire |
+| **Shared Buffers** | Cache mémoire partage pour les pages de donnees | Le plan de travail en cuisine |
+| **VACUUM** | Nettoyage des lignes mortes (MVCC) | L'équipe de menage qui recycle les livres retires |
 
 ---
 
@@ -547,20 +551,20 @@ Voici la vue d'ensemble de tous les modules du cours, avec leur niveau de diffic
 
 | Module | Titre | Difficulte | Themes principaux |
 |---|---|---|---|
-| **00** | Prerequis & Vue d'ensemble | ⭐ | SGBDR, architecture, setup, premier contact |
-| **01** | Le modele relationnel | ⭐ | Tables, types, contraintes, modelisation |
+| **00** | Prérequis & Vue d'ensemble | ⭐ | SGBDR, architecture, setup, premier contact |
+| **01** | Le modèle relationnel | ⭐ | Tables, types, contraintes, modelisation |
 | **02** | CRUD & Requetes SQL | ⭐ | INSERT, SELECT, UPDATE, DELETE, agregations |
 | **03** | Relations & Jointures | ⭐⭐ | FK, JOIN, 1:N, N:M, self-join |
 | **04** | Transactions & ACID | ⭐⭐ | BEGIN/COMMIT, WAL, isolation, crash recovery |
 | **05** | Index : les fondamentaux | ⭐⭐ | B-tree, composite, partial, hash |
-| **06** | Le Query Planner | ⭐⭐⭐ | EXPLAIN ANALYZE, scans, join strategies, stats |
+| **06** | Le Query Planner | ⭐⭐⭐ | EXPLAIN ANALYZE, scans, join stratégies, stats |
 | **07** | Index avances (GIN, GiST, BRIN) | ⭐⭐⭐ | JSONB, full-text, ranges, covering indexes |
 | **08** | Niveaux d'isolation | ⭐⭐⭐ | Read Committed, Repeatable Read, Serializable |
 | **09** | MVCC en profondeur | ⭐⭐⭐ | xmin/xmax, snapshots, VACUUM, bloat |
 | **10** | Full-text search | ⭐⭐ | tsvector, tsquery, ranking, GIN |
 | **11** | JSONB & donnees semi-structurees | ⭐⭐ | Operateurs JSONB, indexation, patterns |
 | **12** | Fonctions & procedures (PL/pgSQL) | ⭐⭐⭐ | Fonctions, triggers, procedures stockees |
-| **13** | Roles, permissions & securite | ⭐⭐ | GRANT, REVOKE, Row-Level Security |
+| **13** | Roles, permissions & sécurité | ⭐⭐ | GRANT, REVOKE, Row-Level Security |
 | **14** | Partitionnement | ⭐⭐⭐ | Range, List, Hash partitioning |
 | **15** | Backup, replication & haute dispo | ⭐⭐⭐ | pg_dump, streaming replication, failover |
 
@@ -579,7 +583,7 @@ Voici la vue d'ensemble de tous les modules du cours, avec leur niveau de diffic
    SQL de base      Transactions      & Performance    Specialise
 ```
 
-> **Ce qu'il faut retenir** : Ne saute pas les modules fondamentaux (00-02). Meme si tu connais deja SQL, les sections sur l'architecture PostgreSQL et les bonnes pratiques Node.js te seront utiles. Les modules avances (06+) s'appuient fortement sur les concepts des modules precedents.
+> **Ce qu'il faut retenir** : Ne saute pas les modules fondamentaux (00-02). Même si tu connais déjà SQL, les sections sur l'architecture PostgreSQL et les bonnes pratiques Node.js te seront utiles. Les modules avances (06+) s'appuient fortement sur les concepts des modules précédents.
 
 ---
 
@@ -587,11 +591,11 @@ Voici la vue d'ensemble de tous les modules du cours, avec leur niveau de diffic
 
 Avant de passer au module suivant, reflechis a ces questions :
 
-1. **Pourquoi PostgreSQL utilise-t-il un processus par connexion plutot que des threads ?** (Indice : stabilite, isolation memoire, crash d'un processus n'affecte pas les autres)
+1. **Pourquoi PostgreSQL utilise-t-il un processus par connexion plutot que des threads ?** (Indice : stabilite, isolation mémoire, crash d'un processus n'affecte pas les autres)
 
-2. **Pourquoi le WAL (Write-Ahead Log) ecrit-il sur disque AVANT les donnees ?** (Indice : si le serveur crash apres l'ecriture WAL mais avant l'ecriture des donnees, PostgreSQL peut rejouer le WAL au redemarrage)
+2. **Pourquoi le WAL (Write-Ahead Log) écrit-il sur disque AVANT les donnees ?** (Indice : si le serveur crash après l'écriture WAL mais avant l'écriture des donnees, PostgreSQL peut rejouer le WAL au redemarrage)
 
-3. **Pourquoi utiliser un pool de connexions en Node.js plutot qu'un seul Client ?** (Indice : les connexions PostgreSQL sont couteuses a creer — fork d'un processus — et une application web gere des dizaines/centaines de requetes simultanees)
+3. **Pourquoi utiliser un pool de connexions en Node.js plutot qu'un seul Client ?** (Indice : les connexions PostgreSQL sont couteuses a créer — fork d'un processus — et une application web géré des dizaines/centaines de requêtes simultanees)
 
 ---
 
@@ -599,9 +603,18 @@ Avant de passer au module suivant, reflechis a ces questions :
 
 | | Lien |
 |---|---|
-| Module suivant | [Module 01 — Le modele relationnel](./01-modele-relationnel.md) |
+| Module suivant | [Module 01 — Le modèle relationnel](./01-modele-relationnel.md) |
 | Lab associe | Pas de lab pour ce module d'introduction |
 
 ---
 
-> **Ce qu'il faut retenir** : PostgreSQL est un SGBDR open-source mature, puissant et extensible. Son architecture multi-processus avec WAL garantit la fiabilite. Docker + psql + Node.js pg forment un trio de developpement efficace. Ce cours te guidera du debutant a l'expert, un module a la fois.
+> **Ce qu'il faut retenir** : PostgreSQL est un SGBDR open-source mature, puissant et extensible. Son architecture multi-processus avec WAL garantit la fiabilité. Docker + psql + Node.js pg forment un trio de développement efficace. Ce cours te guidera du débutant a l'expert, un module à la fois.
+
+---
+
+<!-- parcours-recommande -->
+
+::: tip Parcours recommandé
+1. **Screencast** : [screencast 00 prérequis](../screencasts/screencast-00-prerequis.md)
+2. **Quiz** : [quiz 00 prérequis](../quizzes/quiz-00-prerequis.html)
+:::

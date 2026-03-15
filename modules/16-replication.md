@@ -1,6 +1,6 @@
 # Module 16 — Replication
 
-> **Objectif** : Comprendre et mettre en oeuvre la replication PostgreSQL — streaming replication, replication logique, failover, PITR — pour garantir la disponibilite et la durabilite de vos donnees.
+> **Objectif** : Comprendre et mettre en oeuvre la replication PostgreSQL — streaming replication, replication logique, failover, PITR — pour garantir la disponibilité et la durabilite de vos donnees.
 >
 > **Difficulte** : ⭐⭐⭐⭐
 
@@ -8,11 +8,11 @@
 
 ## 1. Pourquoi la replication
 
-Imaginez que vous possedez un unique exemplaire d'un manuscrit ancien de valeur inestimable. Si un incendie ravage la bibliotheque, tout est perdu. La solution evidente : faire des **photocopies de securite** et les stocker dans d'autres batiments.
+Imaginez que vous possedez un unique exemplaire d'un manuscrit ancien de valeur inestimable. Si un incendie ravage la bibliotheque, tout est perdu. La solution evidente : faire des **photocopies de sécurité** et les stocker dans d'autres batiments.
 
-> **Analogie** : La replication PostgreSQL, c'est exactement ce systeme de photocopies. Votre base de donnees principale (le manuscrit original) est copiee en permanence vers un ou plusieurs serveurs secondaires (les photocopies). Si l'original est detruit, une copie prend le relais en quelques secondes.
+> **Analogie** : La replication PostgreSQL, c'est exactement ce système de photocopies. Votre base de donnees principale (le manuscrit original) est copiee en permanence vers un ou plusieurs serveurs secondaires (les photocopies). Si l'original est detruit, une copie prend le relais en quelques secondes.
 
-Mais les photocopies servent aussi a autre chose : si 200 etudiants veulent lire le manuscrit en meme temps, on peut leur distribuer des copies au lieu de faire la queue devant l'original.
+Mais les photocopies servent aussi a autre chose : si 200 etudiants veulent lire le manuscrit en même temps, on peut leur distribuer des copies au lieu de faire la queue devant l'original.
 
 ### Les trois raisons de repliquer
 
@@ -48,9 +48,9 @@ Mais les photocopies servent aussi a autre chose : si 200 etudiants veulent lire
 
 ### 2.1 Principe : copie bit-a-bit des WAL
 
-La replication physique (ou streaming replication) copie les **WAL (Write-Ahead Log)** du serveur primary vers un ou plusieurs serveurs standby. Les WAL contiennent l'enregistrement de chaque modification physique des fichiers de donnees.
+La replication physique (où streaming replication) copie les **WAL (Write-Ahead Log)** du serveur primary vers un ou plusieurs serveurs standby. Les WAL contiennent l'enregistrement de chaque modification physique des fichiers de donnees.
 
-> **Analogie** : Imaginez un comptable qui note chaque operation dans un journal. Au lieu de refaire tous les calculs, son assistant photocopy chaque page du journal au fur et a mesure et la rejoue sur sa propre copie des livres de comptes. C'est exactement ce que fait le standby : il recoit les WAL et les "rejoue" pour maintenir une copie identique.
+> **Analogie** : Imaginez un comptable qui note chaque operation dans un journal. Au lieu de refaire tous les calculs, son assistant photocopy chaque page du journal au fur et à mesure et la rejoue sur sa propre copie des livres de comptes. C'est exactement ce que fait le standby : il recoit les WAL et les "rejoue" pour maintenir une copie identique.
 
 ```
 Streaming Replication — flux de donnees :
@@ -76,10 +76,10 @@ Streaming Replication — flux de donnees :
   └────────────────┘                        └────────────────┘
 ```
 
-Caracteristiques cles :
+Caracteristiques clés :
 - Copie **bit-a-bit** : le standby est une copie physique exacte du primary
-- Le standby ne peut pas avoir un schema different
-- Les **deux serveurs doivent avoir la meme version majeure** de PostgreSQL
+- Le standby ne peut pas avoir un schema différent
+- Les **deux serveurs doivent avoir la même version majeure** de PostgreSQL
 - Le standby est en **lecture seule** (si `hot_standby = on`)
 
 ### 2.2 Architecture primary → standby
@@ -157,7 +157,7 @@ pg_basebackup -h primary.example.com -U replicator \
 #     └── Format plain (pas tar)
 ```
 
-L'option `-R` de `pg_basebackup` genere automatiquement les fichiers necessaires :
+L'option `-R` de `pg_basebackup` généré automatiquement les fichiers nécessaires :
 
 ```
 # postgresql.auto.conf (genere par pg_basebackup -R)
@@ -235,8 +235,8 @@ Replication SYNCHRONE :
 
 | Aspect | Asynchrone | Synchrone |
 |--------|------------|-----------|
-| Latence d'ecriture | Normale | Plus elevee (aller-retour reseau) |
-| Perte de donnees possible | Oui (dernieres transactions) | **Non** (zero data loss) |
+| Latence d'écriture | Normale | Plus elevee (aller-retour réseau) |
+| Perte de donnees possible | Oui (dernières transactions) | **Non** (zero data loss) |
 | Impact si standby tombe | Aucun | **Bloque les ecritures !** |
 | Cas d'usage | General, performance | Finance, donnees critiques |
 
@@ -257,10 +257,10 @@ synchronous_standby_names = 'standby1'   # Nom du standby synchrone
 | Valeur | Comportement | Perte possible | Latence |
 |--------|-------------|----------------|---------|
 | `on` | Attend flush local + **flush standby** | Aucune | Haute |
-| `remote_apply` | Attend que le standby ait **applique** le WAL | Aucune, lectures coherentes | Tres haute |
-| `remote_write` | Attend que le standby ait **ecrit** (pas flush) | Crash standby = perte | Moyenne |
+| `remote_apply` | Attend que le standby ait **applique** le WAL | Aucune, lectures coherentes | Très haute |
+| `remote_write` | Attend que le standby ait **écrit** (pas flush) | Crash standby = perte | Moyenne |
 | `local` | Flush local uniquement | Crash primary = perte | Normale |
-| `off` | Pas de flush du tout | Crash primary = perte | Tres basse |
+| `off` | Pas de flush du tout | Crash primary = perte | Très basse |
 
 ```sql
 -- Par transaction : desactiver la synchronisation pour un batch non critique
@@ -313,7 +313,7 @@ pg_ctl -D /var/lib/pgsql/16/data promote
 # promote_trigger_file dans recovery.conf (avant PG12)
 ```
 
-Apres la promotion :
+Après la promotion :
 
 ```sql
 -- Verifier que le nouveau primary accepte les ecritures
@@ -326,7 +326,7 @@ SELECT timeline_id FROM pg_control_checkpoint();
 -- Le timeline a ete incremente (ex: 1 → 2)
 ```
 
-> **Piege classique** : Apres un failover, l'ancien primary ne peut pas simplement etre rebranché comme standby. Il est sur un ancien timeline. Il faut soit le reconstruire avec `pg_basebackup`, soit utiliser `pg_rewind` (plus rapide) :
+> **Piege classique** : Après un failover, l'ancien primary ne peut pas simplement etre rebranché comme standby. Il est sur un ancien timeline. Il faut soit le reconstruire avec `pg_basebackup`, soit utiliser `pg_rewind` (plus rapide) :
 
 ```bash
 # pg_rewind : resynchroniser l'ancien primary pour en faire un standby
@@ -338,7 +338,7 @@ pg_rewind --target-pgdata=/var/lib/pgsql/16/data \
 
 Sans replication slot, le primary peut recycler des WAL **avant** que le standby les ait recus, ce qui casse la replication.
 
-> **Analogie** : Imaginez un journal quotidien. Sans abonnement (slot), le vendeur jette les vieux numeros. Si vous etes en vacances une semaine, vous avez manque 7 numeros et ne pouvez plus suivre. Avec un abonnement (slot), le vendeur garde vos numeros jusqu'a ce que vous les recuperiez.
+> **Analogie** : Imaginez un journal quotidien. Sans abonnement (slot), le vendeur jette les vieux numéros. Si vous etes en vacances une semaine, vous avez manque 7 numéros et ne pouvez plus suivre. Avec un abonnement (slot), le vendeur garde vos numéros jusqu'a ce que vous les recuperiez.
 
 ```sql
 -- Creer un replication slot (sur le PRIMARY)
@@ -378,7 +378,7 @@ SELECT pg_drop_replication_slot('standby1_slot');
 
 ### 3.1 Principe : replication au niveau SQL
 
-Contrairement a la replication physique qui copie des blocs bruts, la replication logique decode les WAL en **operations SQL logiques** (INSERT, UPDATE, DELETE) et les envoie au subscriber.
+Contrairement à la replication physique qui copie des blocs bruts, la replication logique decode les WAL en **operations SQL logiques** (INSERT, UPDATE, DELETE) et les envoie au subscriber.
 
 ```
 Replication physique vs logique :
@@ -394,7 +394,7 @@ Replication physique vs logique :
                (42, 'Alice')"          tables specifiques)
 ```
 
-> **Analogie** : La replication physique, c'est photocopier un livre page par page (copie exacte). La replication logique, c'est dicter le contenu du livre a quelqu'un qui l'ecrit dans son propre cahier — il peut choisir de ne noter que certains chapitres, et son cahier peut avoir un format different.
+> **Analogie** : La replication physique, c'est photocopier un livre page par page (copie exacte). La replication logique, c'est dicter le contenu du livre a quelqu'un qui l'écrit dans son propre cahier — il peut choisir de ne noter que certains chapitres, et son cahier peut avoir un format différent.
 
 ### 3.2 Publication / Subscription model
 
@@ -498,7 +498,7 @@ SELECT * FROM pg_stat_subscription;
 | Replication partielle | Ne repliquer que certaines tables | Economie de ressources |
 | Cross-version | Repliquer de PG15 vers PG17 | Migration de version majeure |
 | Consolidation | Plusieurs bases → une base centrale (reporting) | Dashboard unifie |
-| CDC (Change Data Capture) | Capturer les changements pour un systeme externe | Integration Kafka, etc. |
+| CDC (Change Data Capture) | Capturer les changements pour un système externe | Intégration Kafka, etc. |
 
 ```sql
 -- Exemple : migration zero-downtime de PG15 vers PG17
@@ -526,7 +526,7 @@ DROP SUBSCRIPTION migration_sub;
 
 ### 3.5 Logical decoding et output plugins
 
-Le logical decoding est le mecanisme interne qui transforme les WAL en operations logiques.
+Le logical decoding est le mécanisme interne qui transforme les WAL en operations logiques.
 
 ```sql
 -- Creer un slot de decodage logique
@@ -612,7 +612,7 @@ ALTER TABLE orders REPLICA IDENTITY USING INDEX orders_unique_idx;
 ALTER TABLE orders REPLICA IDENTITY FULL;
 ```
 
-> **PostgreSQL 17** : ameliorations majeures de la replication logique — failover slots pour la haute disponibilite, controle fin du subscriber (`disable_on_error`), et slots pour les standbys.
+> **PostgreSQL 17** : ameliorations majeures de la replication logique — failover slots pour la haute disponibilité, controle fin du subscriber (`disable_on_error`), et slots pour les standbys.
 
 ---
 
@@ -673,8 +673,8 @@ Flux du WAL et points de mesure :
 
 | Metrique | Signification | Alerte si |
 |----------|---------------|-----------|
-| `sent_lsn - write_lsn` | Lag reseau | > 1MB |
-| `write_lsn - flush_lsn` | Lag d'ecriture disque | > 0 longtemps |
+| `sent_lsn - write_lsn` | Lag réseau | > 1MB |
+| `write_lsn - flush_lsn` | Lag d'écriture disque | > 0 longtemps |
 | `flush_lsn - replay_lsn` | Lag d'application | > 10MB |
 | `replay_lag` | Retard temporel total | > 1 seconde |
 
@@ -704,7 +704,7 @@ SELECT
     END AS lag_seconds;
 ```
 
-> **Piege classique** : La fonction `pg_last_xact_replay_timestamp()` retourne le timestamp de la **derniere transaction repliquee**, pas le "lag reel". Si le primary n'ecrit rien, ce timestamp ne bouge pas, et le lag semble augmenter alors qu'il est en realite de 0. Utilisez plutot `replay_lag` de `pg_stat_replication` (PG10+).
+> **Piege classique** : La fonction `pg_last_xact_replay_timestamp()` retourne le timestamp de la **dernière transaction repliquee**, pas le "lag réel". Si le primary n'écrit rien, ce timestamp ne bouge pas, et le lag semble augmenter alors qu'il est en realite de 0. Utilisez plutot `replay_lag` de `pg_stat_replication` (PG10+).
 
 ---
 
@@ -832,7 +832,7 @@ listen postgres_read
     server replica3 10.0.1.4:5432 check
 ```
 
-### 5.3 Probleme de replication lag et consistency
+### 5.3 Problème de replication lag et consistency
 
 ```
 Le probleme du "read-your-own-write" :
@@ -895,7 +895,7 @@ async function queryWithSticky(
 
 Le PITR permet de restaurer la base a **n'importe quel instant** dans le passe. C'est l'outil indispensable contre les erreurs humaines.
 
-> **Analogie** : Imaginez une camera de surveillance dans votre bureau. Meme si quelqu'un a fait tomber du cafe sur un document a 14h37, vous pouvez rembobiner la bande video et voir l'etat du bureau a 14h36, juste avant l'accident. Le PITR est cette camera pour votre base de donnees.
+> **Analogie** : Imaginez une camera de surveillance dans votre bureau. Même si quelqu'un a fait tomber du cafe sur un document a 14h37, vous pouvez rembobiner la bande video et voir l'état du bureau a 14h36, juste avant l'accident. Le PITR est cette camera pour votre base de donnees.
 
 ```
 Composants du PITR :
@@ -996,15 +996,15 @@ SELECT pg_create_restore_point('before_big_migration');
 -- Maintenant on peut revenir a ce point si la migration echoue
 ```
 
-> **Piege classique** : Oubliez `recovery.signal` et PostgreSQL demarre normalement sans faire la recovery ! Verifiez toujours que le fichier est present avant de demarrer.
+> **Piege classique** : Oubliez `recovery.signal` et PostgreSQL demarre normalement sans faire la recovery ! Verifiez toujours que le fichier est present avant de démarrer.
 
 ---
 
-## 7. Haute disponibilite
+## 7. Haute disponibilité
 
 ### 7.1 Patroni
 
-Patroni est le standard de facto pour la haute disponibilite PostgreSQL. Il gere automatiquement le failover et la gestion du cluster.
+Patroni est le standard de facto pour la haute disponibilité PostgreSQL. Il géré automatiquement le failover et la gestion du cluster.
 
 ```
 Architecture Patroni :
@@ -1088,7 +1088,7 @@ repmgr -f /etc/repmgr.conf node rejoin -d 'host=new-primary ...'
 
 ### 7.3 Split-brain prevention
 
-Le split-brain est le scenario cauchemar : deux noeuds pensent etre le primary et acceptent des ecritures. Les donnees divergent de facon irreversible.
+Le split-brain est le scenario cauchemar : deux noeuds pensent etre le primary et acceptent des ecritures. Les donnees divergent de façon irreversible.
 
 ```
 Split-brain :
@@ -1136,9 +1136,9 @@ Solutions :
 | Critere | Streaming (physique) | Logique |
 |---------|---------------------|---------|
 | Niveau de copie | Bit-a-bit (WAL brut) | Operations SQL |
-| Version croisee | Non (meme version majeure) | **Oui** |
-| Replication partielle | Non (toute la base) | **Oui** (tables specifiques) |
-| Schema different | Non | **Oui** (colonnes supplementaires OK) |
+| Version croisee | Non (même version majeure) | **Oui** |
+| Replication partielle | Non (toute la base) | **Oui** (tables spécifiques) |
+| Schema différent | Non | **Oui** (colonnes supplementaires OK) |
 | DDL replique | Oui (implicitement) | **Non** |
 | Sequences repliquees | Oui | **Non** |
 | Performance | Excellente | Bonne (decodage overhead) |
@@ -1385,24 +1385,24 @@ await db.transaction(async (client: PoolClient) => {
 
 ## 10. Exercice mental
 
-> **Exercice mental 1** : Vous avez un primary et deux standbys en replication asynchrone. Le primary tombe. Le standby 1 a un lag de 0.5s, le standby 2 a un lag de 2s. Lequel promouvoir ? Quelles donnees sont perdues ?
+> **Exercice mental 1** : Vous avez un primary et deux standbys en replication asynchrone. Le primary tombe. Le standby 1 à un lag de 0.5s, le standby 2 à un lag de 2s. Lequel promouvoir ? Quelles donnees sont perdues ?
 
 <details>
 <summary>Reponse</summary>
 
-On promeut le **standby 1** (lag le plus faible). Les transactions commitees dans les 0.5 dernieres secondes sur le primary, mais pas encore repliquees sur le standby 1, sont **perdues**. C'est le prix de la replication asynchrone.
+On promeut le **standby 1** (lag le plus faible). Les transactions commitees dans les 0.5 dernières secondes sur le primary, mais pas encore repliquees sur le standby 1, sont **perdues**. C'est le prix de la replication asynchrone.
 
-Pour eviter cette perte, il faudrait utiliser `synchronous_commit = on` avec `synchronous_standby_names`, mais cela augmente la latence d'ecriture et bloque les ecritures si tous les standbys synchrones sont indisponibles.
+Pour éviter cette perte, il faudrait utiliser `synchronous_commit = on` avec `synchronous_standby_names`, mais cela augmente la latence d'écriture et bloque les ecritures si tous les standbys synchrones sont indisponibles.
 </details>
 
-> **Exercice mental 2** : Vous utilisez la replication logique pour migrer de PG15 a PG17. Un developpeur execute un `ALTER TABLE orders ADD COLUMN discount NUMERIC DEFAULT 0` sur le publisher (PG15). Que se passe-t-il cote subscriber ?
+> **Exercice mental 2** : Vous utilisez la replication logique pour migrer de PG15 a PG17. Un développeur exécuté un `ALTER TABLE orders ADD COLUMN discount NUMERIC DEFAULT 0` sur le publisher (PG15). Que se passe-t-il cote subscriber ?
 
 <details>
 <summary>Reponse</summary>
 
 **Rien ne se passe automatiquement.** La replication logique ne replique pas le DDL. Le subscriber n'a pas la colonne `discount`. Les INSERT futures sur le publisher incluront `discount`, mais le subscriber ne la recevra pas (la colonne est ignoree).
 
-Il faut executer manuellement le meme `ALTER TABLE` sur le subscriber. Si on ne le fait pas, les donnees de la colonne `discount` sont perdues cote subscriber.
+Il faut exécuter manuellement le même `ALTER TABLE` sur le subscriber. Si on ne le fait pas, les donnees de la colonne `discount` sont perdues cote subscriber.
 
 C'est une des principales limitations de la replication logique : le DDL doit etre synchronise manuellement.
 </details>
@@ -1460,10 +1460,20 @@ SELECT pg_drop_replication_slot('standby1_slot');
 
 ## Navigation
 
-| Precedent | Suivant |
+| Précédent | Suivant |
 |---|---|
-| [Module 15 — Projet final](./15-projet-final.md) | [Module 17 — Monitoring & Observabilite](./17-monitoring-et-observabilite.md) |
+| [Module 15 — Projet final](./15-projet-final.md) | [Module 17 — Monitoring & Observabilité](./17-monitoring-et-observabilite.md) |
 
 ---
 
 > *"La replication n'est pas un luxe, c'est une assurance. Le jour ou votre serveur tombe, la seule question est : aviez-vous un replica pret a prendre le relais ?"*
+
+---
+
+<!-- parcours-recommande -->
+
+::: tip Parcours recommandé
+1. **Screencast** : [screencast 16 replication](../screencasts/screencast-16-replication.md)
+2. **Lab** : [lab-16-replication](../labs/lab-16-replication/README)
+3. **Quiz** : [quiz 16 replication](../quizzes/quiz-16-replication.html)
+:::

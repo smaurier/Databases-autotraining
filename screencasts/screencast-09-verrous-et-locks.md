@@ -111,7 +111,7 @@ ROLLBACK;
 
 > `pg_locks` est la vue système qui montre tous les verrous actifs. C'est l'outil de diagnostic essentiel.
 
-**Action** : Ouvrir un troisième terminal (ou utiliser un des deux) pour observer les locks.
+**Action** : Ouvrir un troisième terminal (où utiliser un des deux) pour observer les locks.
 
 ```sql
 -- === TERMINAL 1 ===
@@ -185,7 +185,7 @@ ROLLBACK;
 ROLLBACK;
 ```
 
-> `NOWAIT` est utile quand votre application a un timeout strict ou quand vous préférez retenter immédiatement avec une autre stratégie plutôt que de bloquer le thread.
+> `NOWAIT` est utile quand votre application à un timeout strict ou quand vous préférez retenter immédiatement avec une autre stratégie plutôt que de bloquer le thread.
 
 **Action** : Montrer l'erreur immédiate de NOWAIT dans Terminal 2.
 

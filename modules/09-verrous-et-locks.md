@@ -1,6 +1,6 @@
 # Module 09 — Verrous & Locks
 
-> **Objectif** : Maitriser les mecanismes de verrouillage de PostgreSQL — row locks, table locks, advisory locks — pour controler finement la concurrence.
+> **Objectif** : Maîtriser les mécanismes de verrouillage de PostgreSQL — row locks, table locks, advisory locks — pour controler finement la concurrence.
 >
 > **Difficulte** : ⭐⭐⭐
 
@@ -8,9 +8,9 @@
 
 ## 1. Pourquoi les verrous
 
-On a vu dans le module precedent que MVCC evite les locks en lecture. Mais quand deux transactions veulent **modifier la meme ligne**, il faut bien un arbitre.
+On a vu dans le module précédent que MVCC evite les locks en lecture. Mais quand deux transactions veulent **modifier la même ligne**, il faut bien un arbitre.
 
-> **Analogie** : La salle de bain d'un appartement partage. Plusieurs colocataires (transactions) peuvent lire le planning sur la porte en meme temps (SELECT = pas de lock). Mais quand quelqu'un entre dans la salle de bain (UPDATE), il verrouille la porte. Les autres doivent attendre. Si deux personnes pouvaient modifier le thermostat de la douche en meme temps, le resultat serait imprevisible.
+> **Analogie** : La salle de bain d'un appartement partage. Plusieurs colocataires (transactions) peuvent lire le planning sur la porte en même temps (SELECT = pas de lock). Mais quand quelqu'un entre dans la salle de bain (UPDATE), il verrouille la porte. Les autres doivent attendre. Si deux personnes pouvaient modifier le thermostat de la douche en même temps, le résultat serait imprevisible.
 
 ### Le spectre des verrous PostgreSQL
 
@@ -30,16 +30,16 @@ On a vu dans le module precedent que MVCC evite les locks en lecture. Mais quand
 
 ## 2. Deux familles de verrous
 
-PostgreSQL utilise deux familles de verrous tres differentes :
+PostgreSQL utilise deux familles de verrous très différentes :
 
 | Famille | Granularite | Cree par | Duree |
 |---------|------------|----------|-------|
 | **Row-level locks** | Une ligne | SELECT ... FOR UPDATE, UPDATE, DELETE | Jusqu'au COMMIT/ROLLBACK |
-| **Table-level locks** | Une table entiere | SELECT, INSERT, ALTER TABLE, DROP | Jusqu'au COMMIT/ROLLBACK |
+| **Table-level locks** | Une table entière | SELECT, INSERT, ALTER TABLE, DROP | Jusqu'au COMMIT/ROLLBACK |
 
-> **Point cle** : Les **row-level locks** ne sont PAS stockes en memoire partagee. Ils sont marques directement dans le tuple (via xmax). C'est pourquoi PostgreSQL peut verrouiller des millions de lignes sans surcharge memoire.
+> **Point clé** : Les **row-level locks** ne sont PAS stockes en mémoire partagee. Ils sont marques directement dans le tuple (via xmax). C'est pourquoi PostgreSQL peut verrouiller des millions de lignes sans surcharge mémoire.
 
-### Difference avec d'autres SGBD
+### Différence avec d'autres SGBD
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -59,7 +59,7 @@ PostgreSQL utilise deux familles de verrous tres differentes :
 
 | Mode | Cree par | Bloque | Cas d'usage |
 |------|---------|--------|-------------|
-| `FOR KEY SHARE` | FK check | Rien sauf FOR UPDATE sur PK | Verification FK |
+| `FOR KEY SHARE` | FK check | Rien sauf FOR UPDATE sur PK | Vérification FK |
 | `FOR SHARE` | Lecture protegee | FOR UPDATE, FOR NO KEY UPDATE | Lire et garantir que la ligne ne change pas |
 | `FOR NO KEY UPDATE` | UPDATE sans PK | FOR UPDATE, FOR SHARE | UPDATE de colonnes non-PK |
 | `FOR UPDATE` | Verrouillage exclusif | TOUT (sauf FOR KEY SHARE) | Modifier, supprimer |
@@ -103,7 +103,7 @@ COMMIT;
 -- Lock libere
 ```
 
-> **Analogie** : FOR UPDATE, c'est comme prendre un livre a la bibliotheque et le poser sur votre table avec un panneau "reserve". Les autres peuvent VOIR qu'il est la, mais personne ne peut le prendre.
+> **Analogie** : FOR UPDATE, c'est comme prendre un livre à la bibliotheque et le poser sur votre table avec un panneau "reserve". Les autres peuvent VOIR qu'il est la, mais personne ne peut le prendre.
 
 ### 3.4 FOR SHARE — Verrouillage partage
 
@@ -126,7 +126,7 @@ COMMIT;
 
 ### 3.5 FOR NO KEY UPDATE
 
-Quand vous faites un UPDATE qui ne touche **pas** la cle primaire ni les colonnes avec UNIQUE, PostgreSQL utilise automatiquement `FOR NO KEY UPDATE` en interne.
+Quand vous faites un UPDATE qui ne touche **pas** la clé primaire ni les colonnes avec UNIQUE, PostgreSQL utilise automatiquement `FOR NO KEY UPDATE` en interne.
 
 ```sql
 -- Ceci acquiert FOR NO KEY UPDATE en interne :
@@ -206,7 +206,7 @@ SELECT SUM(solde) FROM comptes;
 COMMIT;
 ```
 
-> **Piege classique** : `LOCK TABLE` acquiert un **ACCESS EXCLUSIVE** lock par defaut, ce qui bloque TOUT, meme les SELECT. Specifiez toujours le mode explicitement.
+> **Piege classique** : `LOCK TABLE` acquiert un **ACCESS EXCLUSIVE** lock par defaut, ce qui bloque TOUT, même les SELECT. Specifiez toujours le mode explicitement.
 
 ```sql
 -- DANGEREUX : bloque tout
@@ -238,7 +238,7 @@ LOCK TABLE comptes IN SHARE MODE;
 
 ---
 
-## 5. pg_locks — Observer les verrous en temps reel
+## 5. pg_locks — Observer les verrous en temps réel
 
 ### 5.1 La vue pg_locks
 
@@ -260,7 +260,7 @@ WHERE l.relation IS NOT NULL
 ORDER BY a.query_start;
 ```
 
-### 5.2 Colonnes cles de pg_locks
+### 5.2 Colonnes clés de pg_locks
 
 | Colonne | Description | Exemple |
 |---------|-------------|---------|
@@ -270,7 +270,7 @@ ORDER BY a.query_start;
 | `page` | Numero de page (pour row locks) | 0 |
 | `tuple` | Numero de tuple | 1 |
 | `virtualxid` | Virtual transaction ID | 3/45 |
-| `transactionid` | Transaction ID reel | 12345 |
+| `transactionid` | Transaction ID réel | 12345 |
 | `mode` | Mode du lock | RowExclusiveLock |
 | `granted` | Lock accorde ? | true/false |
 | `pid` | Process ID du backend | 1234 |
@@ -326,12 +326,12 @@ La vue `pg_stat_activity` est votre **tableau de bord** pour la concurrence.
 | `pid` | Process ID | 1234 |
 | `usename` | Utilisateur | 'myapp' |
 | `datname` | Base de donnees | 'production' |
-| `state` | Etat du backend | active, idle, idle in transaction |
-| `query` | Derniere requete | 'SELECT ...' |
-| `query_start` | Debut de la requete | timestamp |
+| `state` | État du backend | active, idle, idle in transaction |
+| `query` | Derniere requête | 'SELECT ...' |
+| `query_start` | Debut de la requête | timestamp |
 | `xact_start` | Debut de la transaction | timestamp |
 | `wait_event_type` | Type d'attente | Lock, IO, Client |
-| `wait_event` | Evenement d'attente | relation, transactionid |
+| `wait_event` | Événement d'attente | relation, transactionid |
 | `backend_type` | Type de processus | client backend |
 
 ### 6.2 Requetes utiles
@@ -346,7 +346,7 @@ WHERE state = 'idle in transaction'
 ORDER BY xact_start;
 ```
 
-> **Piege classique** : Une transaction "idle in transaction" maintient ses locks ET empeche VACUUM de nettoyer les tuples morts. C'est un des problemes les plus courants en production.
+> **Piege classique** : Une transaction "idle in transaction" maintient ses locks ET empeche VACUUM de nettoyer les tuples morts. C'est un des problèmes les plus courants en production.
 
 ```sql
 -- Tuer une session bloquante (en dernier recours)
@@ -356,7 +356,7 @@ SELECT pg_terminate_backend(1234);
 SELECT pg_cancel_backend(1234);
 ```
 
-### 6.3 Les etats d'un backend
+### 6.3 Les états d'un backend
 
 ```
                  Connexion
@@ -424,7 +424,7 @@ SET lock_timeout = '5s';       -- Max 5s pour obtenir le lock
 SET statement_timeout = '30s'; -- Max 30s pour la requete entiere
 ```
 
-### 7.3 Node.js : gerer NOWAIT
+### 7.3 Node.js : gérer NOWAIT
 
 ```typescript
 import pg from 'pg';
@@ -487,9 +487,9 @@ async function reserverProduit(produitId, quantite) {
 
 ### 8.1 Principe
 
-`SKIP LOCKED` saute les lignes deja verrouillees au lieu d'attendre. C'est **parfait** pour implementer une file d'attente (queue).
+`SKIP LOCKED` saute les lignes déjà verrouillees au lieu d'attendre. C'est **parfait** pour implementer une file d'attente (queue).
 
-> **Analogie** : Imaginez un supermarche avec plusieurs caisses. Au lieu de faire la queue derriere quelqu'un, vous allez directement a la caisse libre. `SKIP LOCKED` fait exactement ca : il prend les lignes "libres" et ignore les "occupees".
+> **Analogie** : Imaginez un supermarche avec plusieurs caisses. Au lieu de faire la queue derriere quelqu'un, vous allez directement à la caisse libre. `SKIP LOCKED` fait exactement ça : il prend les lignes "libres" et ignore les "occupees".
 
 ### 8.2 Exemple : Job queue
 
@@ -631,7 +631,7 @@ workerLoop().catch(console.error);
 
 Les **advisory locks** sont des verrous "virtuels" qui ne protegent aucune ligne ni table. C'est votre application qui decide de leur signification.
 
-> **Analogie** : Imaginez un panneau "Occupe/Libre" sur une porte. Le panneau n'empeche pas physiquement d'ouvrir la porte — c'est un signal que tout le monde respecte par convention. Les advisory locks fonctionnent de la meme facon.
+> **Analogie** : Imaginez un panneau "Occupe/Libre" sur une porte. Le panneau n'empeche pas physiquement d'ouvrir la porte — c'est un signal que tout le monde respecte par convention. Les advisory locks fonctionnent de la même façon.
 
 ### 9.2 Types d'advisory locks
 
@@ -794,7 +794,7 @@ UPDATE comptes SET solde = 300   UPDATE comptes SET solde = 400
      CYCLE = DEADLOCK
 ```
 
-Nous verrons les details et les strategies de prevention dans le module 10.
+Nous verrons les details et les stratégies de prevention dans le module 10.
 
 ---
 
@@ -895,9 +895,9 @@ async function modificationAvecTimeout(userId, data) {
 <details>
 <summary>Reponse</summary>
 
-**Probleme** : Tous les 100 workers vont essayer de verrouiller **la meme ligne** (le premier job pending). 99 d'entre eux vont attendre. Quand le premier libere le lock, le 2eme le prend, les 98 autres attendent... C'est un **goulot d'etranglement** (lock contention).
+**Problème** : Tous les 100 workers vont essayer de verrouiller **la même ligne** (le premier job pending). 99 d'entre eux vont attendre. Quand le premier libere le lock, le 2eme le prend, les 98 autres attendent... C'est un **goulot d'etranglement** (lock contention).
 
-**Solution** : `FOR UPDATE SKIP LOCKED`. Chaque worker prend le prochain job **disponible** (non verrouille). Pas d'attente, pas de contention. Les 100 workers traitent 100 jobs differents en parallele.
+**Solution** : `FOR UPDATE SKIP LOCKED`. Chaque worker prend le prochain job **disponible** (non verrouille). Pas d'attente, pas de contention. Les 100 workers traitent 100 jobs différents en parallele.
 </details>
 
 ---
@@ -933,7 +933,7 @@ async function modificationAvecTimeout(userId, data) {
 
 ## Navigation
 
-| Precedent | Suivant |
+| Précédent | Suivant |
 |---|---|
 | [Module 08 — Niveaux d'isolation & MVCC](./08-niveaux-isolation.md) | [Module 10 — Deadlocks](./10-deadlocks.md) |
 
@@ -942,3 +942,14 @@ async function modificationAvecTimeout(userId, data) {
 ---
 
 > *"Un verrou bien place vaut mieux qu'un bug en production. Mais un verrou inutile est un ralentisseur sur une autoroute."*
+
+---
+
+<!-- parcours-recommande -->
+
+::: tip Parcours recommandé
+1. **Screencast** : [screencast 09 verrous et locks](../screencasts/screencast-09-verrous-et-locks.md)
+2. **Lab** : [lab-09-locks-en-action](../labs/lab-09-locks-en-action/README)
+3. **Visualisation** : [Lock Matrix](../visualizations/lock-matrix.html)
+4. **Quiz** : [quiz 09 verrous et locks](../quizzes/quiz-09-verrous-et-locks.html)
+:::

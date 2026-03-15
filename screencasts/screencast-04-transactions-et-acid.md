@@ -127,7 +127,7 @@ SELECT * FROM accounts;
 -- Alice: 700, Charlie: 350
 ```
 
-> Le SAVEPOINT est utile quand on a une longue transaction et qu'une opération optionnelle peut échouer sans devoir tout recommencer.
+> Le SAVEPOINT est utile quand on à une longue transaction et qu'une opération optionnelle peut échouer sans devoir tout recommencer.
 
 **Action** : Montrer le solde d'Alice à chaque étape pour visualiser l'effet du SAVEPOINT.
 

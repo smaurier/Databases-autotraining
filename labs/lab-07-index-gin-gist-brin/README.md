@@ -5,7 +5,7 @@
 - Comprendre les index GIN (Generalized Inverted Index) pour JSONB, tableaux, full-text
 - Comprendre les index BRIN (Block Range INdex) pour les donnees ordonnees
 - Comprendre les index GiST (Generalized Search Tree) pour les ranges
-- Comparer tailles et performances des differents types d'index
+- Comparer tailles et performances des différents types d'index
 
 ## Pre-requis
 
@@ -51,7 +51,7 @@ CREATE TABLE tags_table (
 |---|-------------|
 | 1 | JSONB sans GIN → Seq Scan |
 | 2 | GIN sur JSONB → Index Scan avec @> |
-| 3 | GIN + operateur ? (existence de cle) |
+| 3 | GIN + operateur ? (existence de clé) |
 | 4 | BRIN sur timestamps → scan de plage |
 | 5 | Comparaison taille BRIN vs B-tree |
 | 6 | GIN sur tableau TEXT[] avec @> |

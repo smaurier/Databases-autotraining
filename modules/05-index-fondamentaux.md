@@ -1,18 +1,18 @@
 # Module 05 — Index : les fondamentaux
 
-> **Objectif** : Comprendre pourquoi les index sont indispensables, maitriser le fonctionnement interne du B-tree, savoir creer des index simples, composites, partiels, d'expression et hash, et evaluer le cout/benefice de chaque index.
+> **Objectif** : Comprendre pourquoi les index sont indispensables, maîtriser le fonctionnement interne du B-tree, savoir créer des index simples, composites, partiels, d'expression et hash, et évaluer le cout/benefice de chaque index.
 >
-> **Difficulte** : ⭐⭐ (intermediaire)
+> **Difficulte** : ⭐⭐ (intermédiaire)
 
 ---
 
 ## 1. Pourquoi les index
 
-### 1.1 Le probleme : chercher une aiguille dans une botte de foin
+### 1.1 Le problème : chercher une aiguille dans une botte de foin
 
-Sans index, PostgreSQL doit lire **chaque ligne** de la table pour trouver celles qui correspondent a ta requete. C'est ce qu'on appelle un **Seq Scan** (Sequential Scan) ou **Full Table Scan**.
+Sans index, PostgreSQL doit lire **chaque ligne** de la table pour trouver celles qui correspondent a ta requête. C'est ce qu'on appelle un **Seq Scan** (Sequential Scan) ou **Full Table Scan**.
 
-> **Analogie** : Imagine un livre de 1000 pages sans index ni table des matieres. Pour trouver toutes les pages qui parlent de "PostgreSQL", tu dois lire les 1000 pages une par une. Avec un index alphabetique a la fin du livre, tu trouves "PostgreSQL : pages 42, 156, 789" instantanement.
+> **Analogie** : Imagine un livre de 1000 pages sans index ni table des matieres. Pour trouver toutes les pages qui parlent de "PostgreSQL", tu dois lire les 1000 pages une par une. Avec un index alphabetique à la fin du livre, tu trouves "PostgreSQL : pages 42, 156, 789" instantanement.
 
 ```sql
 -- Sans index : PostgreSQL lit TOUTE la table
@@ -40,7 +40,7 @@ SELECT * FROM employe WHERE email = 'alice@example.com';
 | 10 000 000 | ~10 000 ms | ~0.3 ms | x33 000 |
 | 100 000 000 | ~100 000 ms | ~0.4 ms | x250 000 |
 
-> **Ce qu'il faut retenir** : Le Seq Scan est en **O(n)** — lineaire. L'Index Scan avec B-tree est en **O(log n)** — logarithmique. Sur 100 millions de lignes, c'est la difference entre 100 secondes et 0.4 milliseconde. L'index est INDISPENSABLE pour les tables de taille moyenne a grande.
+> **Ce qu'il faut retenir** : Le Seq Scan est en **O(n)** — lineaire. L'Index Scan avec B-tree est en **O(log n)** — logarithmique. Sur 100 millions de lignes, c'est la différence entre 100 secondes et 0.4 milliseconde. L'index est INDISPENSABLE pour les tables de taille moyenne a grande.
 
 ---
 
@@ -78,7 +78,7 @@ Le Seq Scan n'est pas toujours mauvais. Il est optimal quand :
 | **Pas de clause WHERE** | `SELECT * FROM table` doit lire tout → Seq Scan est le seul choix |
 | **Pas d'index disponible** | Aucun index ne couvre la colonne filtree |
 
-> **Piege classique** : Ne cree pas un index sur une colonne `boolean` avec seulement 2 valeurs distinctes. Si 50% des lignes ont `true` et 50% `false`, PostgreSQL preferera un Seq Scan de toute facon. L'index est utile quand la **selectivite** est elevee (peu de lignes correspondent).
+> **Piege classique** : Ne créé pas un index sur une colonne `boolean` avec seulement 2 valeurs distinctes. Si 50% des lignes ont `true` et 50% `false`, PostgreSQL preferera un Seq Scan de toute façon. L'index est utile quand la **selectivite** est elevee (peu de lignes correspondent).
 
 ---
 
@@ -190,7 +190,7 @@ SELECT * FROM employe WHERE id BETWEEN 100 AND 200;
 | `LIKE 'prefix%'` | Oui (prefix) | `WHERE nom LIKE 'Dup%'` |
 | `LIKE '%suffix'` | **Non** | Necessite un index trigram (pg_trgm) |
 | `ORDER BY` | Oui | `ORDER BY nom` (evite le tri) |
-| `MIN()` / `MAX()` | Oui | Acces direct a la premiere/derniere feuille |
+| `MIN()` / `MAX()` | Oui | Acces direct à la première/dernière feuille |
 
 ---
 
@@ -227,7 +227,7 @@ DROP INDEX CONCURRENTLY idx_employe_nom;
 | `idx_table_colonne_partial` | `idx_employe_actif_partial` | Index partiel |
 | `idx_table_colonne_unique` | `idx_employe_email_unique` | Index unique |
 
-### 4.3 CONCURRENTLY : creer un index sans bloquer
+### 4.3 CONCURRENTLY : créer un index sans bloquer
 
 ```sql
 -- CREATE INDEX normal : bloque les INSERT/UPDATE/DELETE pendant la creation
@@ -255,20 +255,20 @@ CREATE INDEX CONCURRENTLY idx_gros ON grosse_table(colonne);
 
 ### 5.1 Principe
 
-Un index composite couvre **plusieurs colonnes** et est particulierement utile pour les requetes qui filtrent sur une combinaison de colonnes.
+Un index composite couvre **plusieurs colonnes** et est particulierement utile pour les requêtes qui filtrent sur une combinaison de colonnes.
 
 ```sql
 -- Index sur (departement_id, nom)
 CREATE INDEX idx_employe_dep_nom ON employe(departement_id, nom);
 ```
 
-### 5.2 L'ordre des colonnes : pourquoi ca compte
+### 5.2 L'ordre des colonnes : pourquoi ça compte
 
 > **Analogie** : Un annuaire telephonique est trie par nom de famille, PUIS par prenom. Tu peux chercher "Dupont" facilement. Tu peux chercher "Dupont, Alice" encore plus facilement. Mais chercher "Alice" (juste le prenom) ne t'aide pas — l'annuaire n'est pas trie par prenom.
 
 C'est la **Leftmost Prefix Rule** : l'index composite `(A, B, C)` peut etre utilise pour :
 
-| Requete | Utilise l'index ? | Raison |
+| Requête | Utilise l'index ? | Raison |
 |---|---|---|
 | `WHERE A = 1` | Oui | Prefixe gauche (A) |
 | `WHERE A = 1 AND B = 2` | Oui | Prefixe gauche (A, B) |
@@ -358,7 +358,7 @@ ON reservation(salle, date, heure);
 
 ### 7.1 Principe
 
-Le Hash index utilise une **fonction de hachage** pour calculer directement la position d'une valeur. C'est un acces en **O(1)** theorique.
+Le Hash index utilise une **fonction de hachage** pour calculer directement la position d'une valeur. C'est un acces en **O(1)** théorique.
 
 ```
  Hash Index :
@@ -405,7 +405,7 @@ CREATE INDEX idx_session_token_hash ON session USING HASH (token);
 
 ### 8.1 Principe
 
-Un **expression index** indexe le resultat d'une **expression** ou d'une **fonction**, pas directement la valeur de la colonne.
+Un **expression index** indexe le résultat d'une **expression** ou d'une **fonction**, pas directement la valeur de la colonne.
 
 ```sql
 -- Probleme : recherche insensible a la casse
@@ -451,7 +451,7 @@ SELECT * FROM employe WHERE prenom || ' ' || nom = 'Alice Dupont';
 -- Utilise l'index
 ```
 
-> **Piege classique** : L'expression dans la requete doit correspondre **exactement** a l'expression de l'index. Si l'index est sur `LOWER(email)`, la requete `WHERE lower(email) = ...` utilise l'index, mais `WHERE UPPER(email) = ...` ne l'utilise **pas**.
+> **Piege classique** : L'expression dans la requête doit correspondre **exactement** a l'expression de l'index. Si l'index est sur `LOWER(email)`, la requête `WHERE lower(email) = ...` utilise l'index, mais `WHERE UPPER(email) = ...` ne l'utilise **pas**.
 
 ---
 
@@ -503,7 +503,7 @@ WHERE est_actif = true;
 |---|---|
 | **Taille reduite** | L'index ne contient qu'un sous-ensemble des lignes |
 | **Maintenance rapide** | Moins de lignes a mettre a jour lors des INSERT/UPDATE |
-| **Cache efficace** | L'index tient mieux en memoire (shared buffers) |
+| **Cache efficace** | L'index tient mieux en mémoire (shared buffers) |
 | **Unicite conditionnelle** | Contrainte UNIQUE sur un sous-ensemble |
 
 ```sql
@@ -527,7 +527,7 @@ WHERE relname = 'commande';
 
 ### 10.1 Espace disque
 
-Chaque index est une **structure supplementaire** stockee sur disque, en plus de la table elle-meme.
+Chaque index est une **structure supplementaire** stockee sur disque, en plus de la table elle-même.
 
 ```sql
 -- Voir la taille des tables et des index
@@ -575,7 +575,7 @@ Chaque `INSERT`, `UPDATE` ou `DELETE` doit mettre a jour **tous les index** de l
 
 ### 10.3 HOT updates et quand un index les empeche
 
-PostgreSQL a une optimisation appelee **HOT** (Heap-Only Tuple) qui accelere les UPDATE en evitant de mettre a jour les index si les colonnes indexees n'ont pas change.
+PostgreSQL à une optimisation appelee **HOT** (Heap-Only Tuple) qui accelere les UPDATE en evitant de mettre a jour les index si les colonnes indexees n'ont pas change.
 
 ```sql
 -- Sans index sur 'salaire' : HOT update possible
@@ -588,26 +588,26 @@ UPDATE employe SET salaire = 50000 WHERE id = 1;
 -- → la table ET l'index doivent etre mis a jour
 ```
 
-> **Ce qu'il faut retenir** : Chaque index supplementaire ralentit les ecritures. Sur une table a forte volumetrie d'insertion (logs, evenements, IoT), le nombre d'index doit etre minimise. Cree un index seulement si les requetes de lecture le necessitent.
+> **Ce qu'il faut retenir** : Chaque index supplementaire ralentit les ecritures. Sur une table a forte volumetrie d'insertion (logs, événements, IoT), le nombre d'index doit etre minimise. Cree un index seulement si les requêtes de lecture le necessitent.
 
-### 10.4 Cout des index — resume
+### 10.4 Cout des index — résumé
 
 | Cout | Description |
 |---|---|
 | **Espace disque** | Chaque index occupe de l'espace (~50-100% de la taille de la table pour un B-tree) |
-| **Ralentissement INSERT** | Chaque index ajoute une ecriture supplementaire |
+| **Ralentissement INSERT** | Chaque index ajoute une écriture supplementaire |
 | **Ralentissement UPDATE** | Si la colonne indexee change, l'index doit etre mis a jour |
 | **Ralentissement DELETE** | Les entrees d'index doivent etre marquees comme supprimees |
 | **Maintenance** | VACUUM doit nettoyer les index en plus de la table |
-| **Temps de creation** | Creer un index sur une grande table prend du temps et des ressources |
+| **Temps de création** | Créer un index sur une grande table prend du temps et des ressources |
 
 ---
 
 ## 11. Visibility Map et Index Only Scan
 
-### 11.1 Le probleme : l'index ne suffit pas toujours
+### 11.1 Le problème : l'index ne suffit pas toujours
 
-Meme quand un index couvre toutes les colonnes demandees par une requete, PostgreSQL doit parfois **retourner dans la table (heap)** pour verifier que la ligne est visible par la transaction courante. C'est a cause de MVCC : l'index ne stocke pas les informations de visibilite (`xmin`, `xmax`).
+Même quand un index couvre toutes les colonnes demandees par une requête, PostgreSQL doit parfois **retourner dans la table (heap)** pour vérifier que la ligne est visible par la transaction courante. C'est a cause de MVCC : l'index ne stocke pas les informations de visibilite (`xmin`, `xmax`).
 
 ### 11.2 La Visibility Map
 
@@ -628,7 +628,7 @@ La **Visibility Map** (VM) est une structure annexe, maintenue pour chaque table
 
 ### 11.3 Index Only Scan : le scan ideal
 
-Quand un index couvre toutes les colonnes necessaires **et** que la Visibility Map confirme que la page est all-visible, PostgreSQL peut repondre **uniquement a partir de l'index**, sans lire la table. C'est l'**Index Only Scan**.
+Quand un index couvre toutes les colonnes nécessaires **et** que la Visibility Map confirme que la page est all-visible, PostgreSQL peut repondre **uniquement à partir de l'index**, sans lire la table. C'est l'**Index Only Scan**.
 
 ```
  Index Only Scan — parcours :
@@ -660,32 +660,32 @@ WHERE departement_id = 1;
 
 ### 11.4 Impact de VACUUM sur la Visibility Map
 
-C'est **VACUUM** qui met a jour la Visibility Map. Apres un VACUUM, les pages dont les tuples morts ont ete nettoyes sont marquees "all-visible". Sans VACUUM regulier, la VM est incomplète et les Index Only Scans tombent dans le cas lent (Heap Fetches).
+C'est **VACUUM** qui met a jour la Visibility Map. Après un VACUUM, les pages dont les tuples morts ont ete nettoyes sont marquees "all-visible". Sans VACUUM regulier, la VM est incomplète et les Index Only Scans tombent dans le cas lent (Heap Fetches).
 
 | Situation | Heap Fetches | Performance |
 |---|---|---|
 | VACUUM frequent (autovacuum OK) | Proches de 0 | Index Only Scan rapide |
-| VACUUM rare / table tres active | Eleves | Index Only Scan degrade |
+| VACUUM rare / table très active | Eleves | Index Only Scan degrade |
 | Table en lecture seule | 0 | Index Only Scan optimal |
 
-> **Ce qu'il faut retenir** : Pour beneficier pleinement des Index Only Scans, il faut (1) un index couvrant toutes les colonnes de la requete, et (2) un VACUUM regulier pour que la Visibility Map soit a jour. Surveille la colonne `Heap Fetches` dans le plan `EXPLAIN ANALYZE` : si elle est elevee, c'est que VACUUM doit passer.
+> **Ce qu'il faut retenir** : Pour beneficier pleinement des Index Only Scans, il faut (1) un index couvrant toutes les colonnes de la requête, et (2) un VACUUM regulier pour que la Visibility Map soit a jour. Surveille la colonne `Heap Fetches` dans le plan `EXPLAIN ANALYZE` : si elle est elevee, c'est que VACUUM doit passer.
 
 ---
 
-## 12. Quand ne PAS creer un index
+## 12. Quand ne PAS créer un index
 
 | Situation | Raison |
 |---|---|
-| **Table tres petite** (< 1000 lignes) | Seq Scan est deja tres rapide |
-| **Colonne rarement filtree** | L'index est maintenu en ecriture mais jamais utilise en lecture |
-| **Faible selectivite** (ex: boolean) | Peu de valeurs distinctes → le planner prefere le Seq Scan |
-| **Table a tres forte insertion** | Chaque index ralentit les INSERT |
+| **Table très petite** (< 1000 lignes) | Seq Scan est déjà très rapide |
+| **Colonne rarement filtree** | L'index est maintenu en écriture mais jamais utilise en lecture |
+| **Faible selectivite** (ex: boolean) | Peu de valeurs distinctes → le planner préféré le Seq Scan |
+| **Table a très forte insertion** | Chaque index ralentit les INSERT |
 | **Colonne souvent modifiee** | Chaque UPDATE sur la colonne modifie aussi l'index |
-| **Index redondant** | `(A, B)` rend `(A)` redondant car le composite couvre deja `A` seul |
+| **Index redondant** | `(A, B)` rend `(A)` redondant car le composite couvre déjà `A` seul |
 
 ---
 
-## 13. Node.js : creer et verifier des index
+## 13. Node.js : créer et vérifier des index
 
 ```typescript
 // fichier : index-management.mjs
@@ -836,7 +836,7 @@ WHERE seq_scan > 100         -- beaucoup de Seq Scan
 ORDER BY seq_scan DESC;
 ```
 
-### 14.3 Verifier les index dupliques
+### 14.3 Vérifier les index dupliques
 
 ```sql
 -- Trouver les index redondants (meme prefixe de colonnes)
@@ -858,9 +858,9 @@ ORDER BY pg_relation_size(a.indexrelid) DESC;
 
 ## 15. Exercice mental
 
-1. **Tu as un index sur `(ville, nom)`. La requete `WHERE nom = 'Dupont'` utilise-t-elle l'index ?** (Non — la leftmost prefix rule impose de commencer par `ville`)
+1. **Tu as un index sur `(ville, nom)`. La requête `WHERE nom = 'Dupont'` utilise-t-elle l'index ?** (Non — la leftmost prefix rule impose de commencer par `ville`)
 
-2. **Tu as 1 million de lignes dont 999 000 avec `actif = true` et 1 000 avec `actif = false`. Quel index est le plus utile ?** (Un index partiel `WHERE actif = false` : petit et tres selectif)
+2. **Tu as 1 million de lignes dont 999 000 avec `actif = true` et 1 000 avec `actif = false`. Quel index est le plus utile ?** (Un index partiel `WHERE actif = false` : petit et très selectif)
 
 3. **Tu as 20 index sur une table. Chaque INSERT est lent. Que faire ?** (Auditer les index inutilises avec `pg_stat_user_indexes`, supprimer les redondants et inutilises)
 
@@ -870,10 +870,21 @@ ORDER BY pg_relation_size(a.indexrelid) DESC;
 
 | | Lien |
 |---|---|
-| Module precedent | [Module 04 — Transactions & ACID](./04-transactions-et-acid.md) |
+| Module précédent | [Module 04 — Transactions & ACID](./04-transactions-et-acid.md) |
 | Module suivant | [Module 06 — Le Query Planner](./06-query-planner.md) |
-| Lab associe | [Lab 05 — Creer et optimiser des index](../labs/lab-05.md) |
+| Lab associe | [Lab 05 — Créer et optimiser des index](../labs/lab-05.md) |
 
 ---
 
-> **Ce qu'il faut retenir** : Les index sont essentiels pour les performances en lecture (de O(n) a O(log n) avec le B-tree). L'ordre des colonnes dans un index composite suit la leftmost prefix rule. Les index partiels et d'expression offrent des optimisations ciblees. Mais chaque index a un cout en ecriture et en espace. Surveille l'utilisation avec `pg_stat_user_indexes` et supprime les index inutilises.
+> **Ce qu'il faut retenir** : Les index sont essentiels pour les performances en lecture (de O(n) a O(log n) avec le B-tree). L'ordre des colonnes dans un index composite suit la leftmost prefix rule. Les index partiels et d'expression offrent des optimisations ciblees. Mais chaque index à un cout en écriture et en espace. Surveille l'utilisation avec `pg_stat_user_indexes` et supprime les index inutilises.
+
+---
+
+<!-- parcours-recommande -->
+
+::: tip Parcours recommandé
+1. **Screencast** : [screencast 05 index fondamentaux](../screencasts/screencast-05-index-fondamentaux.md)
+2. **Lab** : [lab-05-index-et-explain](../labs/lab-05-index-et-explain/README)
+3. **Visualisation** : [B-tree Index](../visualizations/btree-index.html)
+4. **Quiz** : [quiz 05 index fondamentaux](../quizzes/quiz-05-index-fondamentaux.html)
+:::

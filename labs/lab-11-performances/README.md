@@ -2,12 +2,12 @@
 
 ## Objectifs
 
-- Mesurer l'impact des index sur les requetes SELECT
+- Mesurer l'impact des index sur les requêtes SELECT
 - Comparer INSERT individuel, batch INSERT et COPY
-- Exploiter les prepared statements pour les requetes repetees
+- Exploiter les prepared statements pour les requêtes repetees
 - Comprendre le bloat et le ramasse-miettes (VACUUM)
 - Analyser les statistiques du planificateur (ANALYZE)
-- Creer et tester des tables partitionnees
+- Créer et tester des tables partitionnees
 
 ## Schema
 
@@ -27,16 +27,16 @@ CREATE TABLE big_table (
 
 ## Tests (10)
 
-1. **SELECT sans index** — Mesurer le temps d'une requete filtrée
+1. **SELECT sans index** — Mesurer le temps d'une requête filtrée
 2. **Ajout d'index** — Mesurer l'amelioration significative
 3. **INSERT individuel vs batch** — Comparer 1000 INSERTs un par un vs un seul multi-valeurs
 4. **COPY** — Chargement en masse le plus rapide
-5. **Prepared statements** — Comparer requetes preparees vs non preparees
-6. **Table bloat** — Observer n_dead_tup apres des UPDATEs
+5. **Prepared statements** — Comparer requêtes preparees vs non preparees
+6. **Table bloat** — Observer n_dead_tup après des UPDATEs
 7. **VACUUM** — Nettoyer les tuples morts
 8. **VACUUM FULL vs VACUUM** — Comparer les deux approches
 9. **ANALYZE** — Mettre a jour les statistiques du planificateur
-10. **Partitionnement** — Creer des partitions par date et verifier le partition pruning
+10. **Partitionnement** — Créer des partitions par date et vérifier le partition pruning
 
 ## Lancer le lab
 

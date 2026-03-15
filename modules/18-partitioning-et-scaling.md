@@ -1,6 +1,6 @@
 # Module 18 — Partitioning avance & Scaling
 
-> **Objectif** : Maitriser le partitionnement natif de PostgreSQL (RANGE, LIST, HASH, sous-partitions), la maintenance des partitions, et les strategies de scaling horizontal (Citus, FDW, sharding) pour gerer des tables de centaines de millions de lignes.
+> **Objectif** : Maîtriser le partitionnement natif de PostgreSQL (RANGE, LIST, HASH, sous-partitions), la maintenance des partitions, et les stratégies de scaling horizontal (Citus, FDW, sharding) pour gérer des tables de centaines de millions de lignes.
 >
 > **Difficulte** : ⭐⭐⭐⭐⭐
 
@@ -8,7 +8,7 @@
 
 ## 1. Pourquoi partitionner
 
-Imaginez une armoire avec un seul tiroir geant contenant 10 millions de feuilles. Pour trouver une feuille, vous devez potentiellement fouiller dans tout le tiroir. Maintenant, imaginez cette meme armoire avec 12 tiroirs etiquetes "Janvier", "Fevrier", ..., "Decembre". Pour trouver une feuille de Mars, vous n'ouvrez qu'un seul tiroir.
+Imaginez une armoire avec un seul tiroir geant contenant 10 millions de feuilles. Pour trouver une feuille, vous devez potentiellement fouiller dans tout le tiroir. Maintenant, imaginez cette même armoire avec 12 tiroirs etiquetes "Janvier", "Fevrier", ..., "Decembre". Pour trouver une feuille de Mars, vous n'ouvrez qu'un seul tiroir.
 
 > **Analogie** : Le partitionnement PostgreSQL, c'est cette armoire a tiroirs. Au lieu d'une seule table gigantesque, vous la decoupez en **sous-tables** (partitions) selon un critere logique. PostgreSQL sait automatiquement dans quel "tiroir" chercher grace au **partition pruning**.
 
@@ -65,11 +65,11 @@ Sans partitionnement :                Avec partitionnement (par mois) :
 ### 2.1 Cas d'usage
 
 Le partitionnement par RANGE est le plus courant. Il est ideal pour :
-- **Time-series** : logs, evenements, metriques (par jour, semaine, mois)
+- **Time-series** : logs, événements, metriques (par jour, semaine, mois)
 - **Donnees historiques** : commandes, transactions (par mois, trimestre)
 - **Donnees avec cycle de vie** : garder N mois, archiver/supprimer le reste
 
-### 2.2 Creation complete
+### 2.2 Création complete
 
 ```sql
 -- ============================================================
@@ -267,8 +267,8 @@ CREATE TABLE tenant_data_others PARTITION OF tenant_data DEFAULT;
 
 Le partitionnement par HASH distribue les lignes **uniformement** entre les partitions. Il est utile quand :
 - Il n'y a **pas de critere naturel** de partition (pas de date, pas de region)
-- On veut une **distribution uniforme** pour paralleliser les requetes
-- La cle est un UUID ou un ID numerique sans ordre significatif
+- On veut une **distribution uniforme** pour paralleliser les requêtes
+- La clé est un UUID ou un ID numérique sans ordre significatif
 
 ### 4.2 Exemple
 
@@ -319,7 +319,7 @@ EXPLAIN SELECT * FROM user_sessions WHERE user_id = 42;
 
 ### 5.1 RANGE puis LIST
 
-On peut combiner les strategies de partitionnement sur plusieurs niveaux.
+On peut combiner les stratégies de partitionnement sur plusieurs niveaux.
 
 ```sql
 -- ============================================================
@@ -386,13 +386,13 @@ Arbre des partitions :
   → Ne scanne QUE sales_2024_01_eu (double pruning !)
 ```
 
-> **Piege classique** : Avec 12 mois x 4 regions = 48 sous-partitions par an. Sur 5 ans, c'est 240 partitions. Au-dela de quelques centaines, le planificateur de requetes ralentit. Gardez le nombre total de partitions sous controle (< 1000 idealement).
+> **Piege classique** : Avec 12 mois x 4 regions = 48 sous-partitions par an. Sur 5 ans, c'est 240 partitions. Au-dela de quelques centaines, le planificateur de requêtes ralentit. Gardez le nombre total de partitions sous controle (< 1000 idealement).
 
 ---
 
 ## 6. Maintenance des partitions
 
-### 6.1 Creer automatiquement les nouvelles partitions
+### 6.1 Créer automatiquement les nouvelles partitions
 
 ```sql
 -- ============================================================
@@ -494,7 +494,7 @@ Comparaison DELETE vs DROP PARTITION :
 
 ### 6.4 pg_partman extension
 
-`pg_partman` automatise entierement la gestion des partitions.
+`pg_partman` automatise entièrement la gestion des partitions.
 
 ```sql
 -- Installation
@@ -574,9 +574,9 @@ CREATE TABLE events (
 ) PARTITION BY RANGE (created_at);
 ```
 
-> **Piege classique** : Cette contrainte signifie qu'un `id` n'est unique que **dans une partition**. Le meme `id` peut theoriquement exister dans deux partitions differentes (avec des `created_at` differents). En pratique, avec un IDENTITY ou une SEQUENCE, c'est peu probable mais pas impossible. Utilisez un UUID si l'unicite globale est requise.
+> **Piege classique** : Cette contrainte signifie qu'un `id` n'est unique que **dans une partition**. Le même `id` peut theoriquement exister dans deux partitions différentes (avec des `created_at` différents). En pratique, avec un IDENTITY ou une SEQUENCE, c'est peu probable mais pas impossible. Utilisez un UUID si l'unicite globale est requise.
 
-### 7.3 Probleme des FK vers une table partitionnee
+### 7.3 Problème des FK vers une table partitionnee
 
 ```sql
 -- PostgreSQL 12+ : les FK VERS une table partitionnee sont supportees
@@ -672,7 +672,7 @@ GROUP BY 1;
 -- Finalize Aggregate
 ```
 
-### 8.4 Quand partitionner nuit a la performance
+### 8.4 Quand partitionner nuit à la performance
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -801,7 +801,7 @@ JOIN remote_analytics.analytics_events e ON e.user_id = u.id
 GROUP BY u.name;
 ```
 
-> **Piege classique** : `postgres_fdw` envoie les filtres (WHERE) au serveur distant quand c'est possible (pushdown). Mais les jointures complexes et les agregats sont souvent executes localement apres avoir ramene toutes les donnees. Verifiez avec `EXPLAIN VERBOSE` que le pushdown fonctionne.
+> **Piege classique** : `postgres_fdw` envoie les filtres (WHERE) au serveur distant quand c'est possible (pushdown). Mais les jointures complexes et les agregats sont souvent executes localement après avoir ramene toutes les donnees. Verifiez avec `EXPLAIN VERBOSE` que le pushdown fonctionne.
 
 ### 9.3 Sharding patterns
 
@@ -838,7 +838,7 @@ GROUP BY u.name;
 | Critere | Partitioning local | Sharding distribue (Citus) |
 |---------|-------------------|---------------------------|
 | Complexite | Faible | Elevee |
-| Scalabilite ecriture | Non (1 seul serveur) | **Oui** (N serveurs) |
+| Scalabilite écriture | Non (1 seul serveur) | **Oui** (N serveurs) |
 | Scalabilite lecture | Avec replicas | **Native** |
 | Transactions | Locales (rapides) | Distribuees (plus lentes) |
 | Jointures | Normales | Limitees (colocation requise) |
@@ -887,15 +887,15 @@ Architecture production complete :
 ```
 
 Les avantages combines :
-1. **Partitioning** : requetes rapides grace au pruning, maintenance simple (DROP/DETACH)
-2. **Read replicas** : scalabilite en lecture, les replicas ont les memes partitions
+1. **Partitioning** : requêtes rapides grace au pruning, maintenance simple (DROP/DETACH)
+2. **Read replicas** : scalabilité en lecture, les replicas ont les memes partitions
 3. **WAL archiving** : PITR pour la protection contre les erreurs humaines
 
 ---
 
 ## 11. Migration vers un schema partitionne
 
-### 11.1 La methode classique (avec downtime)
+### 11.1 La méthode classique (avec downtime)
 
 ```sql
 -- Etape 1 : Creer la nouvelle table partitionnee
@@ -936,7 +936,7 @@ SELECT setval(
 );
 ```
 
-### 11.2 La methode zero-downtime (avec replication logique)
+### 11.2 La méthode zero-downtime (avec replication logique)
 
 ```sql
 -- Etape 1 : Sur le MEME serveur, creer la nouvelle table partitionnee
@@ -994,7 +994,7 @@ COMMIT;
 
 ---
 
-## 12. Node.js : requetes sur tables partitionnees, routing multi-shard
+## 12. Node.js : requêtes sur tables partitionnees, routing multi-shard
 
 ```typescript
 // ============================================================
@@ -1231,16 +1231,16 @@ async function getPartitionStats(): Promise<PartitionRow[]> {
 
 ## 13. Exercice mental
 
-> **Exercice mental 1** : Vous avez une table `logs` de 500 millions de lignes partitionnee par mois (24 partitions sur 2 ans). Un developpeur execute `SELECT count(*) FROM logs WHERE user_id = 42`. Pourquoi cette requete est-elle lente malgre le partitionnement ?
+> **Exercice mental 1** : Vous avez une table `logs` de 500 millions de lignes partitionnee par mois (24 partitions sur 2 ans). Un développeur exécuté `SELECT count(*) FROM logs WHERE user_id = 42`. Pourquoi cette requête est-elle lente malgre le partitionnement ?
 
 <details>
 <summary>Reponse</summary>
 
-La requete filtre sur `user_id`, mais la table est partitionnee par **date** (`created_at`). Il n'y a **aucun filtre sur la cle de partition**, donc PostgreSQL doit scanner les **24 partitions**. Le partition pruning ne s'applique pas.
+La requête filtre sur `user_id`, mais la table est partitionnee par **date** (`created_at`). Il n'y a **aucun filtre sur la clé de partition**, donc PostgreSQL doit scanner les **24 partitions**. Le partition pruning ne s'applique pas.
 
 Solutions :
-1. Ajouter un index sur `user_id` (sera cree sur chaque partition)
-2. Si les requetes par user_id sont tres frequentes, envisager de re-partitionner par user_id (HASH) ou d'ajouter un sous-partitionnement
+1. Ajouter un index sur `user_id` (sera créé sur chaque partition)
+2. Si les requêtes par user_id sont très frequentes, envisager de re-partitionner par user_id (HASH) ou d'ajouter un sous-partitionnement
 3. Ajouter un filtre sur la date : `WHERE user_id = 42 AND created_at > now() - interval '30 days'` pour limiter a 1 partition
 </details>
 
@@ -1249,36 +1249,36 @@ Solutions :
 <details>
 <summary>Reponse</summary>
 
-Impossible directement. Une contrainte UNIQUE sur une table partitionnee doit inclure la cle de partition. Il faudrait `UNIQUE (email, tenant_id)`, ce qui n'empeche **pas** deux tenants d'avoir le meme email (c'est peut-etre acceptable).
+Impossible directement. Une contrainte UNIQUE sur une table partitionnee doit inclure la clé de partition. Il faudrait `UNIQUE (email, tenant_id)`, ce qui n'empeche **pas** deux tenants d'avoir le même email (c'est peut-etre acceptable).
 
 Si l'unicite globale de l'email est requise, les alternatives sont :
-1. **UNIQUE (email, tenant_id)** + verification applicative cross-tenant
-2. **Table de reference separee** (non partitionnee) avec `UNIQUE (email)` et une FK
-3. **Trigger BEFORE INSERT** qui verifie l'unicite manuellement sur toutes les partitions
+1. **UNIQUE (email, tenant_id)** + vérification applicative cross-tenant
+2. **Table de référence separee** (non partitionnee) avec `UNIQUE (email)` et une FK
+3. **Trigger BEFORE INSERT** qui vérifié l'unicite manuellement sur toutes les partitions
 
-La solution 2 est generalement la meilleure.
+La solution 2 est généralement la meilleure.
 </details>
 
-> **Exercice mental 3** : Votre table partitionnee par mois a une partition `events_default` qui contient 5 millions de lignes avec des dates de 2025. Vous voulez creer `events_2025_01`. Que se passe-t-il ?
+> **Exercice mental 3** : Votre table partitionnee par mois à une partition `events_default` qui contient 5 millions de lignes avec des dates de 2025. Vous voulez créer `events_2025_01`. Que se passe-t-il ?
 
 <details>
 <summary>Reponse</summary>
 
-PostgreSQL refuse de creer la partition car la partition DEFAULT contient des lignes dont le `created_at` tombe dans la plage `[2025-01-01, 2025-02-01)`. L'erreur sera :
+PostgreSQL refuse de créer la partition car la partition DEFAULT contient des lignes dont le `created_at` tombe dans la plage `[2025-01-01, 2025-02-01)`. L'erreur sera :
 
 ```
 ERROR: updated partition constraint for default partition "events_default"
 would be violated by some row
 ```
 
-Pour resoudre :
-1. Creer une table temporaire : `CREATE TABLE temp AS SELECT * FROM events_default WHERE created_at >= '2025-01-01' AND created_at < '2025-02-01'`
+Pour résoudre :
+1. Créer une table temporaire : `CREATE TABLE temp AS SELECT * FROM events_default WHERE created_at >= '2025-01-01' AND created_at < '2025-02-01'`
 2. Supprimer ces lignes de la default : `DELETE FROM events_default WHERE created_at >= '2025-01-01' AND created_at < '2025-02-01'`
-3. Creer la partition : `CREATE TABLE events_2025_01 PARTITION OF events FOR VALUES FROM ('2025-01-01') TO ('2025-02-01')`
+3. Créer la partition : `CREATE TABLE events_2025_01 PARTITION OF events FOR VALUES FROM ('2025-01-01') TO ('2025-02-01')`
 4. Reinserer : `INSERT INTO events SELECT * FROM temp`
 5. Drop temp : `DROP TABLE temp`
 
-C'est pourquoi il faut creer les partitions **a l'avance** et garder la default vide.
+C'est pourquoi il faut créer les partitions **a l'avance** et garder la default vide.
 </details>
 
 ---
@@ -1322,10 +1322,31 @@ C'est pourquoi il faut creer les partitions **a l'avance** et garder la default 
 
 ## Navigation
 
-| Precedent | Suivant |
+| Précédent | Suivant |
 |---|---|
-| [Module 17 — Monitoring & Observabilite](./17-monitoring-et-observabilite.md) | Fin du cours avance |
+| [Module 17 — Monitoring & Observabilité](./17-monitoring-et-observabilite.md) | Fin du cours avance |
 
 ---
 
-> *"Le partitionnement n'est pas une optimisation prematuree — c'est une decision d'architecture. Comme pour un immeuble, il vaut mieux prevoir les etages avant de couler les fondations que d'essayer de les ajouter apres."*
+> *"Le partitionnement n'est pas une optimisation prematuree — c'est une decision d'architecture. Comme pour un immeuble, il vaut mieux prevoir les etages avant de couler les fondations que d'essayer de les ajouter après."*
+
+---
+
+<!-- parcours-recommande -->
+
+::: tip Parcours recommandé
+1. **Screencast** : [screencast 18 partitioning et scaling](../screencasts/screencast-18-partitioning-et-scaling.md)
+2. **Lab** : [lab-18-partitioning](../labs/lab-18-partitioning/README)
+3. **Quiz** : [quiz 18 partitioning](../quizzes/quiz-18-partitioning.html)
+:::
+
+---
+
+<!-- navigation-inter-cours -->
+
+::: info Cours suivant
+Bravo, tu as termine le cours **PostgreSQL** ! 
+Le prochain cours du curriculum est **HTTP & Caching**.
+
+[Commencer HTTP & Caching →](../../07-http-caching/modules/00-prerequis-et-vue-ensemble.md)
+:::

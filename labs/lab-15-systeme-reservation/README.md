@@ -1,14 +1,14 @@
-# Lab 15 — Systeme de reservation (Projet final)
+# Lab 15 — Système de reservation (Projet final)
 
 ## Objectifs
 
-Ce lab final integre toutes les competences acquises dans les labs precedents pour construire un systeme de reservation complet :
+Ce lab final intégré toutes les compétences acquises dans les labs précédents pour construire un système de reservation complet :
 
 - Modelisation de schema avec contraintes avancees (EXCLUDE, FK, indexes)
 - Transactions et verrouillage (FOR UPDATE, Serializable)
 - Recherche plein texte (TSVECTOR)
 - Analyse de performances (EXPLAIN ANALYZE)
-- Fonctions de fenetre et CTEs
+- Fonctions de fenêtre et CTEs
 - Requetes LATERAL
 - Monitoring avec pg_stat_activity
 - Gestion de la concurrence avec logique de retry
@@ -65,15 +65,15 @@ CREATE TABLE audit_log (
 
 ## Tests (12)
 
-1. **Schema** — Creer toutes les tables, contraintes, index
-2. **Insertion** — Ajouter des salles et evenements
+1. **Schema** — Créer toutes les tables, contraintes, index
+2. **Insertion** — Ajouter des salles et événements
 3. **Reservation** — Reserver avec transaction + FOR UPDATE
 4. **Double booking** — Contrainte EXCLUDE empeche le chevauchement
 5. **Concurrence** — Deux clients en Serializable
-6. **Recherche** — Full-text search sur les evenements
-7. **EXPLAIN ANALYZE** — Verifier l'usage des index
+6. **Recherche** — Full-text search sur les événements
+7. **EXPLAIN ANALYZE** — Vérifier l'usage des index
 8. **Window function** — Stats de reservations par salle
-9. **CTE** — Rapport de disponibilite
+9. **CTE** — Rapport de disponibilité
 10. **LATERAL** — Prochain creneau disponible par salle
 11. **Monitoring** — pg_stat_activity pendant la concurrence
 12. **Scenario complet** — Reservation concurrente avec retry

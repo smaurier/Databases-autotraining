@@ -1,6 +1,6 @@
 # Module 13 — JSONB & Types avances
 
-> **Objectif** : Exploiter la puissance de JSONB, des arrays, des range types et du Full-Text Search pour aller au-dela du modele relationnel classique.
+> **Objectif** : Exploiter la puissance de JSONB, des arrays, des range types et du Full-Text Search pour aller au-dela du modèle relationnel classique.
 >
 > **Difficulte** : ⭐⭐⭐
 
@@ -15,12 +15,12 @@ PostgreSQL propose **deux** types pour stocker du JSON :
 | Critere | JSON | JSONB |
 |---------|------|-------|
 | Stockage | Texte brut | Binaire decompose |
-| Preservation du formatage | **Oui** (espaces, ordre des cles) | Non |
-| Doublons de cles | Conserves | Derniere valeur gagne |
+| Preservation du formatage | **Oui** (espaces, ordre des clés) | Non |
+| Doublons de clés | Conserves | Derniere valeur gagne |
 | Indexation (GIN) | **Non** | **Oui** |
 | Operateurs avances | Limites | **Complets** |
-| Vitesse d'ecriture | Plus rapide (pas de parsing) | Legerement plus lent |
-| Vitesse de lecture | Plus lent (re-parsing a chaque lecture) | **Plus rapide** |
+| Vitesse d'écriture | Plus rapide (pas de parsing) | Legerement plus lent |
+| Vitesse de lecture | Plus lent (re-parsing à chaque lecture) | **Plus rapide** |
 
 > **Analogie** : JSON, c'est comme garder un document Word tel quel — avec sa mise en forme. JSONB, c'est comme le convertir dans une base de donnees structuree — on perd la mise en forme mais on peut chercher dedans instantanement.
 
@@ -38,7 +38,7 @@ PostgreSQL propose **deux** types pour stocker du JSON :
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### 1.3 Creer une table avec JSONB
+### 1.3 Créer une table avec JSONB
 
 ```sql
 CREATE TABLE produits (
@@ -90,7 +90,7 @@ INSERT INTO produits (nom, prix, metadata) VALUES
 
 ### 2.1 Acceder aux valeurs
 
-| Operateur | Retourne | Exemple | Resultat |
+| Operateur | Retourne | Exemple | Résultat |
 |-----------|---------|---------|----------|
 | `->` | JSONB | `metadata->'marque'` | `"TechCorp"` (avec guillemets) |
 | `->>` | TEXT | `metadata->>'marque'` | `TechCorp` (sans guillemets) |
@@ -129,8 +129,8 @@ SELECT * FROM produits WHERE metadata->'note' > '4'::jsonb;
 | `@>` | Contient | `metadata @> '{"en_stock": true}'` |
 | `<@` | Est contenu dans | `'{"en_stock": true}' <@ metadata` |
 | `?` | Cle existe | `metadata ? 'marque'` |
-| `?\|` | Au moins une cle existe | `metadata ?\| array['marque','couleur']` |
-| `?&` | Toutes les cles existent | `metadata ?& array['marque','note']` |
+| `?\|` | Au moins une clé existe | `metadata ?\| array['marque','couleur']` |
+| `?&` | Toutes les clés existent | `metadata ?& array['marque','note']` |
 
 ```sql
 -- Produits en stock
@@ -294,7 +294,7 @@ CREATE INDEX idx_produits_metadata_path
 
 | Classe d'operateur | Taille index | Operateurs supportes | Cas d'usage |
 |---|---|---|---|
-| `jsonb_ops` | Plus grand | @>, ?, ?\|, ?& | Usage general |
+| `jsonb_ops` | Plus grand | @>, ?, ?\|, ?& | Usage général |
 | `jsonb_path_ops` | ~3x plus petit | @> seulement | Recherche par contenance |
 
 ### 3.3 Index sur une expression JSONB
@@ -315,7 +315,7 @@ CREATE INDEX idx_produits_note
 SELECT * FROM produits WHERE (metadata->>'note')::numeric > 4.5;
 ```
 
-### 3.4 Node.js : requetes JSONB
+### 3.4 Node.js : requêtes JSONB
 
 ```typescript
 import pg from 'pg';
@@ -465,7 +465,7 @@ PostgreSQL offre des types natifs pour representer des **intervalles** :
 | `tstzrange` | Timestamps (avec TZ) | `['2025-01-01 00:00+01','2025-02-01 00:00+01')` |
 | `daterange` | Dates | `[2025-01-01,2025-02-01)` |
 
-> **Analogie** : Un range, c'est comme un segment sur une droite numerique. Au lieu de stocker "debut" et "fin" dans deux colonnes, vous stockez le segment entier. PostgreSQL peut alors faire des operations geometriques : intersection, union, chevauchement...
+> **Analogie** : Un range, c'est comme un segment sur une droite numérique. Au lieu de stocker "debut" et "fin" dans deux colonnes, vous stockez le segment entier. PostgreSQL peut alors faire des operations geometriques : intersection, union, chevauchement...
 
 ### 5.2 Notation
 
@@ -483,7 +483,7 @@ PostgreSQL offre des types natifs pour representer des **intervalles** :
 
 | Operateur | Signification | Exemple |
 |-----------|---------------|---------|
-| `@>` | Contient element | `int4range(1,10) @> 5` → true |
+| `@>` | Contient élément | `int4range(1,10) @> 5` → true |
 | `<@` | Est contenu dans | `5 <@ int4range(1,10)` → true |
 | `&&` | Se chevauchent | `int4range(1,5) && int4range(3,8)` → true |
 | `-\|-` | Adjacent | `int4range(1,5) -\|- int4range(5,10)` → true |
@@ -555,7 +555,7 @@ VALUES (1, '[2025-03-07 09:30, 2025-03-07 10:30)', 'Eve');
 -- (1, ["2025-03-07 09:00","2025-03-07 10:00")).
 ```
 
-> **Point cle** : La contrainte EXCLUDE avec les ranges est **la** facon correcte d'empecher les doubles reservations. C'est plus fiable que n'importe quelle verification applicative.
+> **Point clé** : La contrainte EXCLUDE avec les ranges est **la** façon correcte d'empecher les doubles reservations. C'est plus fiable que n'importe quelle vérification applicative.
 
 ### 5.6 GiST index sur les ranges
 
@@ -573,7 +573,7 @@ CREATE INDEX idx_reservations_salle_creneau
 
 ## 6. Full-Text Search
 
-### 6.1 Le probleme
+### 6.1 Le problème
 
 ```sql
 -- LIKE est simple mais limite
@@ -590,7 +590,7 @@ SELECT * FROM articles WHERE titre LIKE '%postgresql%';
 | Concept | Description | Exemple |
 |---------|-------------|---------|
 | `tsvector` | Document preprocesse (tokens, positions, poids) | `'introduct':1 'postgresql':3 'databas':4` |
-| `tsquery` | Requete de recherche (operateurs logiques) | `'postgresql & database'` |
+| `tsquery` | Requête de recherche (operateurs logiques) | `'postgresql & database'` |
 | `@@` | Operateur de correspondance | `tsvector @@ tsquery` |
 
 ```sql
@@ -610,7 +610,7 @@ SELECT to_tsvector('french', 'Introduction aux bases de donnees PostgreSQL')
 
 > **Analogie** : `tsvector` est comme un index de livre : il liste les mots importants avec leur position. `tsquery` est comme votre question : "je cherche les livres qui parlent de X ET Y". L'operateur `@@` cherche dans l'index.
 
-### 6.3 Configuration en francais
+### 6.3 Configuration en français
 
 ```sql
 -- Voir les configurations disponibles
@@ -630,7 +630,7 @@ SELECT to_tsvector('english', 'Les chevaux mangeaient dans les champs');
 -- Pas de stemming francais !
 ```
 
-### 6.4 Creer une table avec Full-Text Search
+### 6.4 Créer une table avec Full-Text Search
 
 ```sql
 CREATE TABLE evenements (
@@ -842,7 +842,7 @@ UPDATE factures SET montant_ttc = 150;
 -- ERROR: column "montant_ttc" can only be updated to DEFAULT
 ```
 
-### 7.2 tsvector en colonne generee (rappel)
+### 7.2 tsvector en colonne générée (rappel)
 
 ```sql
 -- Deja vu plus haut, c'est le pattern recommande
@@ -858,7 +858,7 @@ CREATE INDEX idx_articles_fts ON articles USING GIN (search_vector);
 
 ## 8. Exercice mental
 
-> **Exercice mental** : Vous construisez un systeme de reservation de salles. Comment empecheriez-vous les doubles reservations en utilisant les types avances de PostgreSQL ? Quels types, contraintes et index utiliseriez-vous ?
+> **Exercice mental** : Vous construisez un système de reservation de salles. Comment empecheriez-vous les doubles reservations en utilisant les types avances de PostgreSQL ? Quels types, contraintes et index utiliseriez-vous ?
 
 <details>
 <summary>Reponse</summary>
@@ -866,8 +866,8 @@ CREATE INDEX idx_articles_fts ON articles USING GIN (search_vector);
 1. **Type** : `tstzrange` pour le creneau de reservation
 2. **Extension** : `btree_gist` pour les contraintes d'exclusion
 3. **Contrainte** : `EXCLUDE USING GIST (salle_id WITH =, creneau WITH &&)`
-   - "Pas deux reservations pour la meme salle avec des creneaux qui se chevauchent"
-4. **Index** : GiST sur `(salle_id, creneau)` pour les requetes de disponibilite
+   - "Pas deux reservations pour la même salle avec des creneaux qui se chevauchent"
+4. **Index** : GiST sur `(salle_id, creneau)` pour les requêtes de disponibilité
 5. **Recherche** : `WHERE creneau && '[2025-03-07 09:00, 2025-03-07 10:00)'::tstzrange` pour trouver les conflits
 
 C'est exactement ce qu'on implementera dans le module 15 (projet final).
@@ -906,12 +906,22 @@ C'est exactement ce qu'on implementera dans le module 15 (projet final).
 
 ## Navigation
 
-| Precedent | Suivant |
+| Précédent | Suivant |
 |---|---|
-| [Module 12 — Fonctions avancees SQL](./12-fonctions-avancees-sql.md) | [Module 14 — Securite & Administration](./14-securite-et-administration.md) |
+| [Module 12 — Fonctions avancees SQL](./12-fonctions-avancees-sql.md) | [Module 14 — Sécurité & Administration](./14-securite-et-administration.md) |
 
 **Travaux pratiques** : [Lab 13 — JSONB, arrays, ranges et Full-Text Search](../labs/lab-13-types-avances.md)
 
 ---
 
-> *"PostgreSQL n'est pas juste une base relationnelle. C'est une base relationnelle qui a absorbe le meilleur des bases documents, des bases cle-valeur et des moteurs de recherche."*
+> *"PostgreSQL n'est pas juste une base relationnelle. C'est une base relationnelle qui a absorbe le meilleur des bases documents, des bases clé-valeur et des moteurs de recherche."*
+
+---
+
+<!-- parcours-recommande -->
+
+::: tip Parcours recommandé
+1. **Screencast** : [screencast 13 jsonb fulltext](../screencasts/screencast-13-jsonb-fulltext.md)
+2. **Lab** : [lab-13-jsonb-fulltext](../labs/lab-13-jsonb-fulltext/README)
+3. **Quiz** : [quiz 13 jsonb et types avances](../quizzes/quiz-13-jsonb-et-types-avances.html)
+:::

@@ -81,11 +81,11 @@ export default defineConfig({
           text: 'Visualisations',
           items: [
             { text: 'Toutes les visualisations', link: '/visualizations/' },
-            { text: 'B-tree Index', link: '/visualizations/btree-index' },
-            { text: 'Query Planner', link: '/visualizations/query-planner' },
-            { text: 'MVCC & Isolation', link: '/visualizations/mvcc-isolation' },
-            { text: 'Lock Matrix', link: '/visualizations/lock-matrix' },
-            { text: 'WAL & Transaction', link: '/visualizations/wal-transaction' }
+            { text: 'B-tree Index', link: '/visualizations/btree-index.html' },
+            { text: 'Query Planner', link: '/visualizations/query-planner.html' },
+            { text: 'MVCC & Isolation', link: '/visualizations/mvcc-isolation.html' },
+            { text: 'Lock Matrix', link: '/visualizations/lock-matrix.html' },
+            { text: 'WAL & Transaction', link: '/visualizations/wal-transaction.html' }
           ]
         }
       ]

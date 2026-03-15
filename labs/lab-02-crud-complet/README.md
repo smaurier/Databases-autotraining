@@ -2,15 +2,15 @@
 
 ## Objectifs
 
-- Maitriser les operations CRUD (Create, Read, Update, Delete)
+- Maîtriser les operations CRUD (Create, Read, Update, Delete)
 - Utiliser INSERT avec RETURNING
-- Effectuer des requetes d'agregation (AVG, GROUP BY)
-- Comprendre les requetes parametrees et la protection contre l'injection SQL
+- Effectuer des requêtes d'agregation (AVG, GROUP BY)
+- Comprendre les requêtes parametrees et la protection contre l'injection SQL
 
 ## Pre-requis
 
 - Lab 01 termine
-- PostgreSQL en cours d'execution
+- PostgreSQL en cours d'exécution
 
 ## Schema
 

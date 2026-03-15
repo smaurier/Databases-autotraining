@@ -9,7 +9,7 @@ Formation complète sur PostgreSQL et les bases de données relationnelles : du 
 - JavaScript courant (ES2020+, async/await, Promises)
 - Notions de base en développement web
 - Node.js 20+ installé
-- PostgreSQL 16 via Docker (ou installation locale)
+- PostgreSQL 16 via Docker (où installation locale)
 
 ## Structure
 

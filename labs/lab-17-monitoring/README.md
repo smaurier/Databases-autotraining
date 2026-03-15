@@ -1,20 +1,20 @@
-# Lab 17 — Monitoring et Observabilite PostgreSQL
+# Lab 17 — Monitoring et Observabilité PostgreSQL
 
 ## Objectifs
 
-Ce lab explore les outils de monitoring integres a PostgreSQL pour diagnostiquer les problemes de performance et surveiller la sante de la base de donnees :
+Ce lab explore les outils de monitoring integres a PostgreSQL pour diagnostiquer les problèmes de performance et surveiller la sante de la base de donnees :
 
-- pg_stat_activity — sessions actives et requetes en cours
-- pg_stat_statements — statistiques d'execution des requetes
+- pg_stat_activity — sessions actives et requêtes en cours
+- pg_stat_statements — statistiques d'exécution des requêtes
 - pg_stat_user_tables — scans sequentiels vs index scans
 - pg_stat_user_indexes — detection des index inutilises
 - pg_stat_database — cache hit ratio
 - pg_stat_bgwriter — statistiques de checkpoints
-- Detection des requetes longues et des sessions bloquantes
+- Detection des requêtes longues et des sessions bloquantes
 - Monitoring des dead tuples et VACUUM
 - Construction d'une fonction de health check
 
-## Concepts cles
+## Concepts clés
 
 ```sql
 -- Sessions actives
@@ -40,9 +40,9 @@ SELECT pg_blocking_pids(pid) FROM pg_stat_activity;
 4. **pg_stat_user_indexes** — Trouver les index inutilises
 5. **pg_stat_database** — Calculer le cache hit ratio
 6. **pg_stat_bgwriter** — Statistiques de checkpoints
-7. **Requetes longues** — Identifier les requetes > 1 seconde
+7. **Requetes longues** — Identifier les requêtes > 1 seconde
 8. **Sessions bloquantes** — Identifier avec pg_blocking_pids()
-9. **Dead tuples** — Creer, monitorer, VACUUM, re-verifier
+9. **Dead tuples** — Créer, monitorer, VACUUM, re-vérifier
 10. **Health check** — Fonction JSON avec toutes les metriques
 
 ## Lancer le lab

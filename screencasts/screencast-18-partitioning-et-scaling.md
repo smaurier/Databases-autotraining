@@ -217,7 +217,7 @@ ALTER TABLE logs ATTACH PARTITION logs_2024_01
 SELECT count(*) FROM logs;
 ```
 
-> Lors du ATTACH, PostgreSQL valide que toutes les lignes respectent les bornes. Si une ligne de `logs_2024_01` a une date en mars, le ATTACH échoue. C'est une garantie d'intégrité.
+> Lors du ATTACH, PostgreSQL valide que toutes les lignes respectent les bornes. Si une ligne de `logs_2024_01` à une date en mars, le ATTACH échoue. C'est une garantie d'intégrité.
 
 ### [15:00-18:00] Partition par défaut et contrainte UNIQUE
 

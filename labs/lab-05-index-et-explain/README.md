@@ -3,8 +3,8 @@
 ## Objectifs
 
 - Comprendre EXPLAIN et EXPLAIN ANALYZE
-- Observer la difference entre Seq Scan et Index Scan
-- Creer des index B-tree (simples, composites, uniques)
+- Observer la différence entre Seq Scan et Index Scan
+- Créer des index B-tree (simples, composites, uniques)
 - Decouvrir les index d'expression et partiels
 - Mesurer l'impact des index sur les performances
 
@@ -40,21 +40,21 @@ CREATE TABLE employees (
 
 ## Progression
 
-### Etape 1 : EXPLAIN basique (5 tests)
+### Étape 1 : EXPLAIN basique (5 tests)
 1. EXPLAIN simple → observer le plan
-2. Verifier qu'un Seq Scan est utilise (pas d'index)
-3. EXPLAIN ANALYZE pour les temps reels
+2. Vérifier qu'un Seq Scan est utilise (pas d'index)
+3. EXPLAIN ANALYZE pour les temps réels
 4. Extraire le cout du plan
 5. Comparer lignes estimees vs reelles
 
-### Etape 2 : Index B-tree (3 tests supplementaires)
+### Étape 2 : Index B-tree (3 tests supplementaires)
 6. Index B-tree sur department → Index Scan
 7. Index composite (department, salary) → utilisation
 8. Index UNIQUE sur email → contrainte + index
 
-### Etape 3 : Index avances (4 tests supplementaires)
-9. Index d'expression LOWER(email) → recherche insensible a la casse
-10. Index partiel WHERE is_active = true → requete filtree
+### Étape 3 : Index avances (4 tests supplementaires)
+9. Index d'expression LOWER(email) → recherche insensible à la casse
+10. Index partiel WHERE is_active = true → requête filtree
 11. Comparaison temps Seq Scan vs Index Scan
 12. Statistiques d'utilisation des index (pg_stat_user_indexes)
 

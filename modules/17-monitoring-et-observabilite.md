@@ -1,6 +1,6 @@
-# Module 17 — Monitoring & Observabilite
+# Module 17 — Monitoring & Observabilité
 
-> **Objectif** : Maitriser les outils de monitoring internes et externes de PostgreSQL — vues pg_stat_*, analyse de locks, logs, Prometheus/Grafana — pour diagnostiquer les problemes avant qu'ils ne deviennent des incidents.
+> **Objectif** : Maîtriser les outils de monitoring internes et externes de PostgreSQL — vues pg_stat_*, analyse de locks, logs, Prometheus/Grafana — pour diagnostiquer les problèmes avant qu'ils ne deviennent des incidents.
 >
 > **Difficulte** : ⭐⭐⭐⭐
 
@@ -8,9 +8,9 @@
 
 ## 1. Pourquoi le monitoring
 
-Imaginez que vous conduisez une voiture sans tableau de bord. Pas de compteur de vitesse, pas de jauge d'essence, pas de temoin moteur. Vous roulez a l'aveugle jusqu'a la panne. La plupart des equipes font exactement cela avec leur base de donnees.
+Imaginez que vous conduisez une voiture sans tableau de bord. Pas de compteur de vitesse, pas de jauge d'essence, pas de temoin moteur. Vous roulez a l'aveugle jusqu'à la panne. La plupart des équipes font exactement cela avec leur base de donnees.
 
-> **Analogie** : Le monitoring PostgreSQL, c'est le tableau de bord de votre voiture. Le tachymetre, c'est le nombre de transactions par seconde. La jauge d'essence, c'est l'espace disque. Le temoin de temperature, c'est le CPU. Le temoin d'huile, c'est le ratio de cache hit. Et le voyant moteur ? C'est une alerte sur les deadlocks ou les requetes de plus de 5 minutes.
+> **Analogie** : Le monitoring PostgreSQL, c'est le tableau de bord de votre voiture. Le tachymetre, c'est le nombre de transactions par seconde. La jauge d'essence, c'est l'espace disque. Le temoin de temperature, c'est le CPU. Le temoin d'huile, c'est le ratio de cache hit. Et le voyant moteur ? C'est une alerte sur les deadlocks ou les requêtes de plus de 5 minutes.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -31,19 +31,19 @@ Imaginez que vous conduisez une voiture sans tableau de bord. Pas de compteur de
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### Les trois piliers de l'observabilite
+### Les trois piliers de l'observabilité
 
 | Pilier | Description | Outils PostgreSQL |
 |--------|-------------|-------------------|
-| **Metriques** | Valeurs numeriques dans le temps (TPS, latence, cache) | pg_stat_*, Prometheus |
-| **Logs** | Evenements textuels horodates (erreurs, slow queries) | postgresql.log, pgBadger |
-| **Traces** | Suivi d'une requete de bout en bout | EXPLAIN ANALYZE, auto_explain |
+| **Metriques** | Valeurs numériques dans le temps (TPS, latence, cache) | pg_stat_*, Prometheus |
+| **Logs** | Événements textuels horodates (erreurs, slow queries) | postgresql.log, pgBadger |
+| **Traces** | Suivi d'une requête de bout en bout | EXPLAIN ANALYZE, auto_explain |
 
 ---
 
 ## 2. Les vues pg_stat_* en profondeur
 
-PostgreSQL expose des dizaines de vues systeme qui fournissent des metriques en temps reel. Ce sont vos capteurs.
+PostgreSQL expose des dizaines de vues système qui fournissent des metriques en temps réel. Ce sont vos capteurs.
 
 ### 2.1 pg_stat_activity — anatomie complete
 
@@ -70,7 +70,7 @@ SELECT
 FROM pg_stat_activity;
 ```
 
-Les etats possibles :
+Les états possibles :
 
 ```
 ┌──────────────────────┬──────────────────────────────────────────┐
@@ -169,7 +169,7 @@ ORDER BY count DESC;
 
 ### 2.3 pg_stat_statements — top SQL
 
-`pg_stat_statements` est l'extension la plus importante pour le monitoring. Elle enregistre des statistiques sur **chaque requete distincte** executee.
+`pg_stat_statements` est l'extension la plus importante pour le monitoring. Elle enregistre des statistiques sur **chaque requête distincte** executee.
 
 ```sql
 -- Prerequis : activer l'extension
@@ -302,7 +302,7 @@ ORDER BY pg_relation_size(indexrelid) DESC;
 -- - Doit etre supprime (apres verification !)
 ```
 
-> **Piege classique** : Apres un redemarrage de PostgreSQL, les compteurs `idx_scan` sont remis a zero. Attendez au moins un cycle complet de votre application (1 semaine minimum, idealement 1 mois) avant de decider qu'un index est inutilise.
+> **Piege classique** : Après un redemarrage de PostgreSQL, les compteurs `idx_scan` sont remis a zero. Attendez au moins un cycle complet de votre application (1 semaine minimum, idealement 1 mois) avant de decider qu'un index est inutilise.
 
 ### 2.6 pg_stat_bgwriter
 
@@ -389,7 +389,7 @@ FROM pg_stat_database
 WHERE datname = current_database();
 ```
 
-| Metrique | Seuil sain | Action si depasse |
+| Metrique | Seuil sain | Action si dépasse |
 |----------|-----------|-------------------|
 | `cache_hit_ratio` | > 99% | Augmenter `shared_buffers` |
 | `commit_ratio` | > 95% | Investiguer les erreurs applicatives |
@@ -401,7 +401,7 @@ WHERE datname = current_database();
 
 ## 3. pg_locks avance
 
-### 3.1 Requete pour identifier les sessions bloquantes
+### 3.1 Requête pour identifier les sessions bloquantes
 
 ```sql
 -- Sessions bloquantes avec detail des locks
@@ -509,7 +509,7 @@ ORDER BY path;
 --     |- PID 9012   | app     | active | SELECT * FROM orders ...
 ```
 
-> **Piege classique** : Un `ALTER TABLE` prend un `ACCESS EXCLUSIVE` lock. Si une transaction longue tient un `ACCESS SHARE` lock (simple SELECT), l'`ALTER TABLE` attend. Et **toutes les requetes suivantes** attendent aussi derriere l'`ALTER TABLE`, meme les simples SELECTs ! C'est l'effet "cascade de locks".
+> **Piege classique** : Un `ALTER TABLE` prend un `ACCESS EXCLUSIVE` lock. Si une transaction longue tient un `ACCESS SHARE` lock (simple SELECT), l'`ALTER TABLE` attend. Et **toutes les requêtes suivantes** attendent aussi derriere l'`ALTER TABLE`, même les simples SELECTs ! C'est l'effet "cascade de locks".
 
 ---
 
@@ -698,12 +698,12 @@ scrape_configs:
       - targets: ['postgres_exporter:9187']
 ```
 
-### 5.2 Metriques cles a monitorer
+### 5.2 Metriques clés a monitorer
 
 | Metrique Prometheus | Description | Alerte si |
 |---------------------|-------------|-----------|
 | `pg_up` | PostgreSQL est accessible | = 0 |
-| `pg_stat_activity_count` | Connexions actives par etat | `idle_in_transaction` > 5 |
+| `pg_stat_activity_count` | Connexions actives par état | `idle_in_transaction` > 5 |
 | `pg_stat_database_xact_commit` | Commits/sec (delta) | Drop soudain |
 | `pg_stat_database_blks_hit` / `_read` | Cache hit ratio | < 99% |
 | `pg_stat_database_deadlocks` | Nombre de deadlocks (delta) | > 0/min |
@@ -931,7 +931,7 @@ Workflow de diagnostic :
   └──────────────────────────┘
 ```
 
-### 7.2 Exemple reel 1 : index manquant
+### 7.2 Exemple réel 1 : index manquant
 
 ```sql
 -- Etape 1 : pg_stat_statements revele cette requete
@@ -982,7 +982,7 @@ WHERE o.status = 'pending'
 -- Amelioration : 28ms → 1.2ms (x23 plus rapide)
 ```
 
-### 7.3 Exemple reel 2 : N+1 queries
+### 7.3 Exemple réel 2 : N+1 queries
 
 ```sql
 -- pg_stat_statements revele :
@@ -1004,7 +1004,7 @@ WHERE oi.order_id = ANY($1::int[]);
 -- → 1 seule requete au lieu de 10,000
 ```
 
-### 7.4 Exemple reel 3 : scan sequentiel sur une grosse table
+### 7.4 Exemple réel 3 : scan sequentiel sur une grosse table
 
 ```sql
 -- pg_stat_statements :
@@ -1414,10 +1414,10 @@ app.listen(3000, () => {
 Actions :
 1. Augmenter `shared_buffers` a `2GB`
 2. Ajuster `effective_cache_size` a `6GB` (75% de la RAM)
-3. Redemarrer PostgreSQL (shared_buffers necessite un redemarrage)
+3. Redemarrer PostgreSQL (shared_buffers nécessité un redemarrage)
 4. Monitorer : le cache_hit_ratio devrait monter au-dessus de 99%
 
-Si la base fait 20 GB et que la RAM ne fait que 8 GB, toute la base ne tiendra pas en cache. Il faudra aussi verifier que les index les plus utilises tiennent dans shared_buffers, et eventuellement ajouter de la RAM.
+Si la base fait 20 GB et que la RAM ne fait que 8 GB, toute la base ne tiendra pas en cache. Il faudra aussi vérifier que les index les plus utilises tiennent dans shared_buffers, et eventuellement ajouter de la RAM.
 </details>
 
 > **Exercice mental 2** : `pg_stat_user_tables` montre que la table `events` a 2 millions de `n_dead_tup` et que `last_autovacuum` est NULL. Que se passe-t-il ?
@@ -1425,14 +1425,14 @@ Si la base fait 20 GB et que la RAM ne fait que 8 GB, toute la base ne tiendra p
 <details>
 <summary>Reponse</summary>
 
-L'autovacuum ne s'est **jamais execute** sur cette table. Causes possibles :
+L'autovacuum ne s'est **jamais exécuté** sur cette table. Causes possibles :
 
-1. **autovacuum = off** : verifie avec `SHOW autovacuum;`
+1. **autovacuum = off** : vérifié avec `SHOW autovacuum;`
 2. **Le seuil n'est pas atteint** : `autovacuum_vacuum_threshold` (defaut 50) + `autovacuum_vacuum_scale_factor` (defaut 0.2) * n_live_tup. Si la table a 100M de lignes, le seuil est 20M de dead tuples — 2M ne suffit pas.
-3. **Une transaction longue bloque VACUUM** : verifier `pg_stat_activity` pour des transactions `idle in transaction` depuis longtemps.
+3. **Une transaction longue bloque VACUUM** : vérifier `pg_stat_activity` pour des transactions `idle in transaction` depuis longtemps.
 4. **L'autovacuum est sature** : `autovacuum_max_workers` (defaut 3) sont tous occupes sur d'autres tables.
 
-Solution immediate : `VACUUM ANALYZE events;` manuellement. Puis ajuster les parametres de l'autovacuum pour cette table specifique :
+Solution immediate : `VACUUM ANALYZE events;` manuellement. Puis ajuster les paramètres de l'autovacuum pour cette table spécifique :
 
 ```sql
 ALTER TABLE events SET (
@@ -1442,16 +1442,16 @@ ALTER TABLE events SET (
 ```
 </details>
 
-> **Exercice mental 3** : Votre application signale des timeouts intermittents. `pg_stat_activity` montre 95 connexions sur un `max_connections = 100`. La plupart sont `idle`. Quel est le probleme et la solution ?
+> **Exercice mental 3** : Votre application signale des timeouts intermittents. `pg_stat_activity` montre 95 connexions sur un `max_connections = 100`. La plupart sont `idle`. Quel est le problème et la solution ?
 
 <details>
 <summary>Reponse</summary>
 
-Le probleme est un **epuisement du pool de connexions**. 95 connexions ouvertes dont la plupart sont idle signifie que l'application ouvre des connexions mais ne les referme pas (ou les garde trop longtemps).
+Le problème est un **epuisement du pool de connexions**. 95 connexions ouvertes dont la plupart sont idle signifie que l'application ouvre des connexions mais ne les referme pas (où les garde trop longtemps).
 
 Solutions :
 1. **Utiliser un connection pooler** (PgBouncer) en amont de PostgreSQL avec un mode `transaction` : chaque connexion applicative est multiplexee.
-2. **Reduire `max` dans le pool Node.js** : si 5 serveurs ont chacun un pool de `max=20`, ca fait 100 connexions.
+2. **Reduire `max` dans le pool Node.js** : si 5 serveurs ont chacun un pool de `max=20`, ça fait 100 connexions.
 3. **Identifier les connexions idle longues** et ajouter un `idle_timeout` dans le pool applicatif.
 4. **Configurer `idle_in_transaction_session_timeout`** pour tuer automatiquement les sessions idle in transaction.
 
@@ -1499,10 +1499,20 @@ SELECT pg_reload_conf();
 
 ## Navigation
 
-| Precedent | Suivant |
+| Précédent | Suivant |
 |---|---|
 | [Module 16 — Replication](./16-replication.md) | [Module 18 — Partitioning & Scaling](./18-partitioning-et-scaling.md) |
 
 ---
 
-> *"On ne peut pas optimiser ce qu'on ne mesure pas. Le monitoring n'est pas un luxe d'operations, c'est une competence de developpeur."*
+> *"On ne peut pas optimiser ce qu'on ne mesure pas. Le monitoring n'est pas un luxe d'operations, c'est une compétence de développeur."*
+
+---
+
+<!-- parcours-recommande -->
+
+::: tip Parcours recommandé
+1. **Screencast** : [screencast 17 monitoring et observabilité](../screencasts/screencast-17-monitoring-et-observabilite.md)
+2. **Lab** : [lab-17-monitoring](../labs/lab-17-monitoring/README)
+3. **Quiz** : [quiz 17 monitoring](../quizzes/quiz-17-monitoring.html)
+:::

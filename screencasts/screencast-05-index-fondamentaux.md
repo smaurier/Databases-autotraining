@@ -100,7 +100,7 @@ SELECT * FROM events WHERE user_id = 4242;
 
 > On passe de ~100ms à moins de 1ms. C'est 100 à 200 fois plus rapide. Le planificateur utilise maintenant un Index Scan au lieu d'un Seq Scan.
 
-**Action** : Afficher les deux EXPLAIN ANALYZE côte à côte (ou successivement) pour comparer les temps.
+**Action** : Afficher les deux EXPLAIN ANALYZE côte à côte (où successivement) pour comparer les temps.
 
 ```sql
 -- L'index a un coût : espace disque
@@ -243,7 +243,7 @@ WHERE tablename = 'events';
 
 ### [21:00-21:45] Conclusion
 
-> Les index sont l'outil numéro un pour accélérer vos requêtes. On a vu le B-tree, les index composites, les expression indexes et les index partiels. Mais attention — chaque index a un coût en espace et ralentit les écritures. Il faut indexer intelligemment. Dans le prochain module, on va plonger dans le query planner pour comprendre comment PostgreSQL décide d'utiliser ou non un index.
+> Les index sont l'outil numéro un pour accélérer vos requêtes. On a vu le B-tree, les index composites, les expression indexes et les index partiels. Mais attention — chaque index à un coût en espace et ralentit les écritures. Il faut indexer intelligemment. Dans le prochain module, on va plonger dans le query planner pour comprendre comment PostgreSQL décide d'utiliser ou non un index.
 
 **Action** : Nettoyage.
 

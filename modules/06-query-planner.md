@@ -1,6 +1,6 @@
 # Module 06 — Le Query Planner
 
-> **Objectif** : Comprendre comment PostgreSQL choisit le plan d'execution optimal, maitriser `EXPLAIN` et `EXPLAIN ANALYZE`, identifier les differents types de scans et strategies de jointure, et savoir optimiser une requete lente.
+> **Objectif** : Comprendre comment PostgreSQL choisit le plan d'exécution optimal, maîtriser `EXPLAIN` et `EXPLAIN ANALYZE`, identifier les différents types de scans et stratégies de jointure, et savoir optimiser une requête lente.
 >
 > **Difficulte** : ⭐⭐⭐ (avance)
 
@@ -10,9 +10,9 @@
 
 ### 1.1 Le role du planner
 
-Le **query planner** (ou optimizer) est le composant de PostgreSQL qui decide **comment** executer ta requete SQL. Tu ecris du SQL declaratif (ce que tu veux), et le planner determine le chemin le plus rapide pour obtenir le resultat.
+Le **query planner** (où optimizer) est le composant de PostgreSQL qui decide **comment** exécuter ta requête SQL. Tu ecris du SQL declaratif (ce que tu veux), et le planner déterminé le chemin le plus rapide pour obtenir le résultat.
 
-> **Analogie** : Le query planner est un **GPS**. Tu lui donnes ta destination (la requete SQL), et il calcule le meilleur itineraire en tenant compte de la carte routiere (les tables et index), du trafic (les statistiques), et des regles de circulation (les contraintes). Plusieurs itineraires sont possibles — le GPS choisit le plus rapide.
+> **Analogie** : Le query planner est un **GPS**. Tu lui donnes ta destination (la requête SQL), et il calcule le meilleur itineraire en tenant compte de la carte routiere (les tables et index), du trafic (les statistiques), et des regles de circulation (les contraintes). Plusieurs itineraires sont possibles — le GPS choisit le plus rapide.
 
 ```
  Le pipeline d'une requete SQL :
@@ -26,7 +26,7 @@ Le **query planner** (ou optimizer) est le composant de PostgreSQL qui decide **
 
 ### 1.2 Comment le planner choisit
 
-Pour chaque requete, le planner :
+Pour chaque requête, le planner :
 
 1. **Enumere** les plans possibles (combinaisons de scans, joins, tris)
 2. **Estime** le cout de chaque plan (en unites abstraites)
@@ -53,7 +53,7 @@ Pour chaque requete, le planner :
 
 ---
 
-## 2. EXPLAIN — lire un plan d'execution
+## 2. EXPLAIN — lire un plan d'exécution
 
 ### 2.1 Syntaxe de base
 
@@ -84,7 +84,7 @@ Sortie typique :
 
 | Champ | Signification |
 |---|---|
-| **startup_cost** | Cout avant de pouvoir retourner la premiere ligne (ex: un Sort doit d'abord trier tout) |
+| **startup_cost** | Cout avant de pouvoir retourner la première ligne (ex: un Sort doit d'abord trier tout) |
 | **total_cost** | Cout total pour retourner toutes les lignes |
 | **rows** | Estimation du nombre de lignes retournees |
 | **width** | Taille estimee d'une ligne en octets |
@@ -126,19 +126,19 @@ EXPLAIN (FORMAT XML) SELECT * FROM employe;
 
 ---
 
-## 3. EXPLAIN ANALYZE — mesurer le temps reel
+## 3. EXPLAIN ANALYZE — mesurer le temps réel
 
-### 3.1 Difference avec EXPLAIN simple
+### 3.1 Différence avec EXPLAIN simple
 
 | | EXPLAIN | EXPLAIN ANALYZE |
 |---|---|---|
-| **Execute la requete** | Non | **Oui** |
-| **Couts** | Estimes | Estimes + **reels** |
+| **Execute la requête** | Non | **Oui** |
+| **Couts** | Estimes | Estimes + **réels** |
 | **Temps** | Non | **Oui** (actual time) |
 | **Lignes** | Estimees | Estimees + **reelles** |
 | **Modifie les donnees** | Non | **Oui** (INSERT, UPDATE, DELETE) |
 
-> **Piege classique** : `EXPLAIN ANALYZE` sur un `DELETE FROM grande_table` va **reellement supprimer** les donnees ! Pour tester un DELETE/UPDATE sans impact, enveloppe dans une transaction :
+> **Piege classique** : `EXPLAIN ANALYZE` sur un `DELETE FROM grande_table` va **réellement supprimer** les donnees ! Pour tester un DELETE/UPDATE sans impact, enveloppe dans une transaction :
 
 ```sql
 BEGIN;
@@ -178,10 +178,10 @@ EXPLAIN ANALYZE SELECT * FROM employe WHERE departement_id = 3;
 
 | Metrique | Estime | Reel | Commentaire |
 |---|---|---|---|
-| **rows** | 5 | 7 | Difference acceptable (~40%) |
-| **time** | — | 0.031 ms | Tres rapide |
+| **rows** | 5 | 7 | Différence acceptable (~40%) |
+| **time** | — | 0.031 ms | Très rapide |
 
-> **Ce qu'il faut retenir** : Si les estimations sont tres differentes de la realite (ex: estime 10 lignes, reel 100 000), le planner a fait un **mauvais choix** de plan. La cause est generalement des **statistiques obsoletes**. Lance `ANALYZE nom_table` pour les mettre a jour.
+> **Ce qu'il faut retenir** : Si les estimations sont très différentes de la realite (ex: estime 10 lignes, réel 100 000), le planner a fait un **mauvais choix** de plan. La cause est généralement des **statistiques obsoletes**. Lance `ANALYZE nom_table` pour les mettre a jour.
 
 ### 3.4 EXPLAIN avec options avancees
 
@@ -207,7 +207,7 @@ EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM employe WHERE departement_id = 3;
 | `shared dirtied=1` | 1 page modifiee en cache |
 | `shared written=0` | 0 page ecrite sur disque |
 
-> **Analogie** : `shared hit`, c'est quand tu trouves le livre sur ton bureau (memoire). `shared read`, c'est quand tu dois aller le chercher dans la reserve (disque). La difference de vitesse est enorme.
+> **Analogie** : `shared hit`, c'est quand tu trouves le livre sur ton bureau (mémoire). `shared read`, c'est quand tu dois aller le chercher dans la reserve (disque). La différence de vitesse est enorme.
 
 ```sql
 -- Options completes d'EXPLAIN
@@ -247,7 +247,7 @@ EXPLAIN SELECT * FROM employe;
 **Quand le planner choisit Seq Scan :**
 - Pas d'index disponible
 - Grande proportion des lignes retournees (> 5-10%)
-- Table tres petite
+- Table très petite
 - `enable_seqscan = on` (defaut)
 
 ### 4.2 Index Scan
@@ -284,7 +284,7 @@ EXPLAIN SELECT * FROM employe WHERE id = 42;
 
 ### 4.3 Index Only Scan
 
-Quand **toutes** les colonnes necessaires sont dans l'index, pas besoin de lire la table (heap).
+Quand **toutes** les colonnes nécessaires sont dans l'index, pas besoin de lire la table (heap).
 
 ```sql
 -- Index couvrant : toutes les colonnes sont dans l'index
@@ -313,7 +313,7 @@ EXPLAIN SELECT departement_id, nom FROM employe WHERE departement_id = 3;
 
 > **Ce qu'il faut retenir** : L'Index Only Scan est le scan le **plus rapide**. Pour en beneficier, toutes les colonnes du SELECT, WHERE et ORDER BY doivent etre dans l'index. C'est le principe des **covering indexes** (voir Module 07).
 
-> **Piege classique** : L'Index Only Scan ne fonctionne correctement que si la **visibility map** de la table est a jour. Si VACUUM n'a pas tourne recemment, PostgreSQL doit quand meme verifier la table pour la visibilite des tuples. Lance `VACUUM` regulierement.
+> **Piege classique** : L'Index Only Scan ne fonctionne correctement que si la **visibility map** de la table est a jour. Si VACUUM n'a pas tourne recemment, PostgreSQL doit quand même vérifier la table pour la visibilite des tuples. Lance `VACUUM` regulierement.
 
 ### 4.4 Bitmap Index Scan + Bitmap Heap Scan
 
@@ -378,7 +378,7 @@ WHERE departement_id = 3 AND salaire > 50000;
 
 ---
 
-## 5. Strategies de JOIN
+## 5. Stratégies de JOIN
 
 ### 5.1 Nested Loop
 
@@ -404,7 +404,7 @@ Pour chaque ligne de la table externe, scanner la table interne.
 
 ### 5.2 Hash Join
 
-Construire une table de hachage en memoire pour une table, puis scanner l'autre.
+Construire une table de hachage en mémoire pour une table, puis scanner l'autre.
 
 ```
  Hash Join :
@@ -459,13 +459,13 @@ Trier les deux tables sur la colonne de jointure, puis les fusionner.
  Ideal quand : donnees deja triees (index) ou tres grands ensembles
 ```
 
-### 5.4 Tableau comparatif des 3 strategies
+### 5.4 Tableau comparatif des 3 stratégies
 
-| Strategie | Complexite | Memoire | Cas optimal | Cas defavorable |
+| Stratégie | Complexite | Mémoire | Cas optimal | Cas defavorable |
 |---|---|---|---|---|
 | **Nested Loop** | O(N × log M) | Faible | Petite table externe + index | Deux grandes tables sans index |
-| **Hash Join** | O(N + M) | Elevee (hash table) | Egalite sur grands ensembles | Hash table trop grande pour la memoire |
-| **Merge Join** | O(N log N + M log M) | Moyenne | Donnees deja triees (index) | Donnees non triees |
+| **Hash Join** | O(N + M) | Elevee (hash table) | Egalite sur grands ensembles | Hash table trop grande pour la mémoire |
+| **Merge Join** | O(N log N + M log M) | Moyenne | Donnees déjà triees (index) | Donnees non triees |
 
 ---
 
@@ -480,7 +480,7 @@ EXPLAIN SELECT * FROM employe ORDER BY nom;
 --   -> Seq Scan on employe  (cost=0.00..25.00 rows=1000 width=72)
 ```
 
-> **Ce qu'il faut retenir** : Un `Sort` dans le plan signifie que PostgreSQL doit trier les donnees en memoire (ou sur disque si `work_mem` est insuffisant). Si tu vois un sort et que la requete est lente, envisage un index qui fournit les donnees deja triees.
+> **Ce qu'il faut retenir** : Un `Sort` dans le plan signifie que PostgreSQL doit trier les donnees en mémoire (où sur disque si `work_mem` est insuffisant). Si tu vois un sort et que la requête est lente, envisage un index qui fournit les donnees déjà triees.
 
 ### 6.2 HashAggregate vs GroupAggregate
 
@@ -502,7 +502,7 @@ GROUP BY departement_id ORDER BY departement_id;
 
 ### 6.3 Materialize
 
-Stocke le resultat d'un sous-plan en memoire pour le reutiliser.
+Stocke le résultat d'un sous-plan en mémoire pour le réutiliser.
 
 ```sql
 -- Le noeud Materialize apparait quand le plan interne
@@ -512,7 +512,7 @@ Stocke le resultat d'un sous-plan en memoire pour le reutiliser.
 
 ### 6.4 Append
 
-Combine les resultats de plusieurs sous-plans (UNION, tables heritees, partitionnement).
+Combine les résultats de plusieurs sous-plans (UNION, tables heritees, partitionnement).
 
 ```sql
 EXPLAIN SELECT * FROM employe WHERE id < 10
@@ -567,9 +567,9 @@ ANALYZE employe(departement_id, salaire);
 ANALYZE;
 ```
 
-> **Ce qu'il faut retenir** : L'**autovacuum** lance automatiquement `ANALYZE` quand une table a subi suffisamment de modifications (~10% des lignes). Mais apres un chargement massif de donnees (COPY, migration), lance `ANALYZE` manuellement pour mettre a jour les statistiques immediatement.
+> **Ce qu'il faut retenir** : L'**autovacuum** lance automatiquement `ANALYZE` quand une table a subi suffisamment de modifications (~10% des lignes). Mais après un chargement massif de donnees (COPY, migration), lance `ANALYZE` manuellement pour mettre a jour les statistiques immediatement.
 
-### 7.3 Augmenter la precision des statistiques
+### 7.3 Augmenter la précision des statistiques
 
 ```sql
 -- Par defaut, PostgreSQL echantillonne 100 valeurs par colonne
@@ -581,15 +581,15 @@ ANALYZE employe(salaire);
 
 ### 7.4 Parametres de cout du planner
 
-| Parametre | Defaut | Signification |
+| Paramètre | Defaut | Signification |
 |---|---|---|
 | `seq_page_cost` | 1.0 | Cout de lecture d'une page sequentielle |
 | `random_page_cost` | 4.0 | Cout de lecture d'une page aleatoire |
 | `cpu_tuple_cost` | 0.01 | Cout de traitement d'une ligne |
 | `cpu_index_tuple_cost` | 0.005 | Cout de traitement d'une entree d'index |
 | `cpu_operator_cost` | 0.0025 | Cout d'un operateur (=, <, ...) |
-| `effective_cache_size` | 4GB | Estimation de la memoire disponible pour le cache OS + shared buffers |
-| `work_mem` | 4MB | Memoire disponible pour les tris et hash tables |
+| `effective_cache_size` | 4GB | Estimation de la mémoire disponible pour le cache OS + shared buffers |
+| `work_mem` | 4MB | Mémoire disponible pour les tris et hash tables |
 
 > **Piege classique** : Si tes donnees sont principalement en SSD, le ratio `random_page_cost / seq_page_cost = 4.0` est trop eleve. Sur SSD, mets `random_page_cost = 1.1` car les acces aleatoires sont presque aussi rapides que les acces sequentiels.
 
@@ -609,7 +609,7 @@ SHOW work_mem;
 
 ## 8. Forcer le planner (debug tool)
 
-### 8.1 Desactiver des strategies
+### 8.1 Desactiver des stratégies
 
 ```sql
 -- Desactiver le Seq Scan pour forcer l'utilisation d'un index
@@ -635,13 +635,13 @@ RESET enable_nestloop;
 RESET ALL;
 ```
 
-> **Piege classique** : Ne mets JAMAIS `enable_seqscan = off` en production. C'est un outil de diagnostic pour comprendre pourquoi le planner ne choisit pas un certain plan. Si le planner choisit un Seq Scan alors qu'un index existe, le probleme est souvent dans les **statistiques** ou les **parametres de cout**, pas dans le planner lui-meme.
+> **Piege classique** : Ne mets JAMAIS `enable_seqscan = off` en production. C'est un outil de diagnostic pour comprendre pourquoi le planner ne choisit pas un certain plan. Si le planner choisit un Seq Scan alors qu'un index existe, le problème est souvent dans les **statistiques** ou les **paramètres de cout**, pas dans le planner lui-même.
 
 ---
 
-## 9. Cas pratiques : optimiser une requete lente
+## 9. Cas pratiques : optimiser une requête lente
 
-### 9.1 Methodologie
+### 9.1 Méthodologie
 
 ```
  Etapes pour optimiser une requete lente :
@@ -657,7 +657,7 @@ RESET ALL;
  9. Re-executer et comparer
 ```
 
-### 9.2 Exemple : optimiser une requete e-commerce
+### 9.2 Exemple : optimiser une requête e-commerce
 
 ```sql
 -- Requete lente : trouver les commandes recentes d'un client avec leurs produits
@@ -735,7 +735,7 @@ ANALYZE client, commande, ligne_commande, produit;
  Execution Time: 0.205 ms  ← 0.2 ms (6000x plus rapide !)
 ```
 
-| | Avant | Apres | Amelioration |
+| | Avant | Après | Amelioration |
 |---|---|---|---|
 | Temps | 1250 ms | 0.2 ms | **x6 250** |
 | Scans | Seq Scan partout | Index Scan partout | Acces direct |
@@ -887,13 +887,13 @@ main();
 
 ## 12. Exercice mental
 
-1. **Tu vois un Seq Scan sur une table de 10M de lignes avec `rows=10M` dans EXPLAIN. La requete retourne 5 lignes. Que fais-tu ?** (Creer un index sur la colonne WHERE, puis `ANALYZE`)
+1. **Tu vois un Seq Scan sur une table de 10M de lignes avec `rows=10M` dans EXPLAIN. La requête retourne 5 lignes. Que fais-tu ?** (Créer un index sur la colonne WHERE, puis `ANALYZE`)
 
-2. **Le plan montre `rows=100` estime mais `rows=500000` reel. Quel est le probleme ?** (Statistiques obsoletes → `ANALYZE`, ou statistiques insuffisantes → `SET STATISTICS`)
+2. **Le plan montre `rows=100` estime mais `rows=500000` réel. Quel est le problème ?** (Statistiques obsoletes → `ANALYZE`, ou statistiques insuffisantes → `SET STATISTICS`)
 
-3. **Tu vois `Buffers: shared read=50000`. Est-ce bon ?** (Non : 50000 pages lues depuis le disque. Les donnees ne sont pas en cache. Soit augmenter `shared_buffers`, soit optimiser la requete pour lire moins de pages)
+3. **Tu vois `Buffers: shared read=50000`. Est-ce bon ?** (Non : 50000 pages lues depuis le disque. Les donnees ne sont pas en cache. Soit augmenter `shared_buffers`, soit optimiser la requête pour lire moins de pages)
 
-4. **Un Hash Join a un `Batches: 16`. Que signifie ce nombre ?** (Le hash table ne tient pas en memoire (`work_mem`), PostgreSQL a du ecrire sur disque en 16 batches. Augmenter `work_mem` pourrait aider)
+4. **Un Hash Join à un `Batches: 16`. Que signifie ce nombre ?** (Le hash table ne tient pas en mémoire (`work_mem`), PostgreSQL a du écrire sur disque en 16 batches. Augmenter `work_mem` pourrait aider)
 
 ---
 
@@ -901,10 +901,22 @@ main();
 
 | | Lien |
 |---|---|
-| Module precedent | [Module 05 — Index : les fondamentaux](./05-index-fondamentaux.md) |
+| Module précédent | [Module 05 — Index : les fondamentaux](./05-index-fondamentaux.md) |
 | Module suivant | [Module 07 — Index avances (GIN, GiST, BRIN)](./07-index-avances.md) |
 | Lab associe | [Lab 06 — Analyser et optimiser avec EXPLAIN](../labs/lab-06.md) |
 
 ---
 
-> **Ce qu'il faut retenir** : Le query planner est le cerveau de PostgreSQL. `EXPLAIN ANALYZE` avec `BUFFERS` est ton meilleur outil de diagnostic. Les cles d'optimisation sont : des statistiques a jour (`ANALYZE`), des index adaptes, des parametres de cout realistes (`random_page_cost` pour SSD), et suffisamment de `work_mem` pour les tris et hash joins. Ne force jamais le planner en production — corrige la cause plutot que le symptome.
+> **Ce qu'il faut retenir** : Le query planner est le cerveau de PostgreSQL. `EXPLAIN ANALYZE` avec `BUFFERS` est ton meilleur outil de diagnostic. Les clés d'optimisation sont : des statistiques a jour (`ANALYZE`), des index adaptes, des paramètres de cout realistes (`random_page_cost` pour SSD), et suffisamment de `work_mem` pour les tris et hash joins. Ne force jamais le planner en production — corrige la cause plutot que le symptome.
+
+---
+
+<!-- parcours-recommande -->
+
+::: tip Parcours recommandé
+1. **Screencast** : [screencast 06 query planner](../screencasts/screencast-06-query-planner.md)
+2. **Lab** : [lab-06-query-planner-deep-dive](../labs/lab-06-query-planner-deep-dive/README)
+3. **Visualisation** : [B-tree Index](../visualizations/btree-index.html)
+4. **Visualisation** : [Query Planner](../visualizations/query-planner.html)
+5. **Quiz** : [quiz 06 query planner](../quizzes/quiz-06-query-planner.html)
+:::

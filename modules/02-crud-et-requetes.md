@@ -1,8 +1,8 @@
 # Module 02 — CRUD & Requetes SQL
 
-> **Objectif** : Maitriser les quatre operations fondamentales (Create, Read, Update, Delete), les fonctions d'agregation, les sous-requetes et l'integration securisee avec Node.js via des requetes parametrees.
+> **Objectif** : Maîtriser les quatre operations fondamentales (Create, Read, Update, Delete), les fonctions d'agregation, les sous-requêtes et l'intégration securisee avec Node.js via des requêtes parametrees.
 >
-> **Difficulte** : ⭐ (debutant)
+> **Difficulte** : ⭐ (débutant)
 
 ---
 
@@ -19,7 +19,7 @@ INSERT INTO produit (nom, prix, categorie)
 VALUES ('Clavier mecanique', 89.99, 'peripherique');
 ```
 
-> **Analogie** : `INSERT`, c'est comme remplir un formulaire et le deposer dans le bon classeur. Chaque champ du formulaire correspond a une colonne, et le classeur est la table.
+> **Analogie** : `INSERT`, c'est comme remplir un formulaire et le deposer dans le bon classeur. Chaque champ du formulaire correspond à une colonne, et le classeur est la table.
 
 ### 1.2 Insertion multiple
 
@@ -33,9 +33,9 @@ INSERT INTO produit (nom, prix, categorie) VALUES
     ('Hub USB-C', 29.99, 'accessoire');
 ```
 
-> **Ce qu'il faut retenir** : Inserer 1000 lignes avec un seul `INSERT ... VALUES (row1), (row2), ...` est **10 a 100 fois plus rapide** qu'executer 1000 `INSERT` individuels. Chaque `INSERT` individuel est une transaction complete (parse, plan, execute, WAL write, commit).
+> **Ce qu'il faut retenir** : Inserer 1000 lignes avec un seul `INSERT ... VALUES (row1), (row2), ...` est **10 a 100 fois plus rapide** qu'exécuter 1000 `INSERT` individuels. Chaque `INSERT` individuel est une transaction complete (parse, plan, exécuté, WAL write, commit).
 
-### 1.3 RETURNING — recuperer les donnees inserees
+### 1.3 RETURNING — récupérer les donnees inserees
 
 ```sql
 -- RETURNING : obtenir les donnees inserees (notamment l'ID genere)
@@ -54,11 +54,11 @@ VALUES ('Tapis de souris', 19.99, 'accessoire')
 RETURNING *;
 ```
 
-> **Ce qu'il faut retenir** : `RETURNING` est une extension PostgreSQL extremement utile. Elle evite de faire un `SELECT` apres l'`INSERT` pour recuperer l'ID genere. C'est **une seule operation** au lieu de deux.
+> **Ce qu'il faut retenir** : `RETURNING` est une extension PostgreSQL extremement utile. Elle evite de faire un `SELECT` après l'`INSERT` pour récupérer l'ID généré. C'est **une seule operation** au lieu de deux.
 
 ### 1.4 INSERT ... ON CONFLICT (Upsert)
 
-L'upsert (update or insert) est un pattern tres courant : si la ligne existe deja, on la met a jour au lieu de generer une erreur.
+L'upsert (update or insert) est un pattern très courant : si la ligne existe déjà, on la met a jour au lieu de générer une erreur.
 
 ```sql
 -- Creer une table avec contrainte UNIQUE
@@ -174,7 +174,7 @@ ORDER BY categorie, prix DESC;
 -- Pour chaque categorie, retourne le produit le plus cher
 ```
 
-> **Piege classique** : `SELECT DISTINCT` trie implicitement les resultats pour eliminer les doublons. Sur une grande table, c'est couteux. Si tu as besoin de `DISTINCT` souvent, c'est peut-etre un signe que ton modele est mal normalise.
+> **Piege classique** : `SELECT DISTINCT` trie implicitement les résultats pour eliminer les doublons. Sur une grande table, c'est couteux. Si tu as besoin de `DISTINCT` souvent, c'est peut-etre un signe que ton modèle est mal normalise.
 
 ### 2.3 Expressions et operateurs utiles
 
@@ -215,7 +215,7 @@ SELECT total / NULLIF(quantite, 0) AS prix_unitaire FROM ligne;
 
 ---
 
-## 3. WHERE — filtrer les resultats
+## 3. WHERE — filtrer les résultats
 
 ### 3.1 Operateurs de comparaison
 
@@ -270,7 +270,7 @@ SELECT * FROM produit WHERE nom ~* 'clavier'; -- insensible a la casse
 ```
 
 > **Piege classique** : `NULL` n'est pas une valeur, c'est l'**absence de valeur**. On ne peut pas comparer avec `=` :
-> - `WHERE telephone = NULL` → **ne retourne JAMAIS rien** (meme si des lignes ont `telephone` NULL)
+> - `WHERE telephone = NULL` → **ne retourne JAMAIS rien** (même si des lignes ont `telephone` NULL)
 > - `WHERE telephone IS NULL` → **correct**
 > - `NULL = NULL` → `NULL` (pas `true` !)
 > - `NULL <> 42` → `NULL` (pas `true` !)
@@ -332,7 +332,7 @@ SELECT * FROM produit ORDER BY id LIMIT 10 OFFSET 10;
 -- OFFSET = (page - 1) * taille_page
 ```
 
-> **Piege classique** : La pagination par `OFFSET` est **tres inefficace** sur les grandes tables. `OFFSET 1000000` oblige PostgreSQL a lire 1 000 000 de lignes, puis a les jeter. Pour une pagination performante, utilise la **pagination par curseur** (keyset pagination) :
+> **Piege classique** : La pagination par `OFFSET` est **très inefficace** sur les grandes tables. `OFFSET 1000000` oblige PostgreSQL a lire 1 000 000 de lignes, puis a les jeter. Pour une pagination performante, utilise la **pagination par curseur** (keyset pagination) :
 
 ```sql
 -- MAUVAIS : pagination par OFFSET (lent sur les grandes pages)
@@ -386,7 +386,7 @@ WHERE id = 1;
 UPDATE produit SET prix = 0;  -- DANGER : tous les prix a zero !
 ```
 
-> **Piege classique** : Un `UPDATE` sans `WHERE` modifie **toutes** les lignes de la table. C'est l'une des erreurs les plus frequentes et les plus destructrices en SQL. Toujours verifier ta clause `WHERE` avec un `SELECT` d'abord :
+> **Piege classique** : Un `UPDATE` sans `WHERE` modifie **toutes** les lignes de la table. C'est l'une des erreurs les plus frequentes et les plus destructrices en SQL. Toujours vérifier ta clause `WHERE` avec un `SELECT` d'abord :
 
 ```sql
 -- Etape 1 : verifier quelles lignes seront affectees
@@ -406,7 +406,7 @@ WHERE categorie = 'peripherique'
 RETURNING id, nom, prix AS nouveau_prix;
 ```
 
-### 5.3 UPDATE avec sous-requete
+### 5.3 UPDATE avec sous-requête
 
 ```sql
 -- Mettre a jour une colonne a partir d'une autre table
@@ -462,7 +462,7 @@ RETURNING id, nom;
 DELETE FROM produit;  -- supprime tout le contenu
 ```
 
-### 6.2 DELETE avec sous-requete
+### 6.2 DELETE avec sous-requête
 
 ```sql
 -- Supprimer les employes des departements fermes
@@ -478,7 +478,7 @@ WHERE e.departement_id = d.id
   AND d.est_ferme = true;
 ```
 
-### 6.3 TRUNCATE — vider une table entierement
+### 6.3 TRUNCATE — vider une table entièrement
 
 ```sql
 -- TRUNCATE : beaucoup plus rapide que DELETE pour vider une table
@@ -493,19 +493,19 @@ TRUNCATE TABLE departement CASCADE;
 
 | Aspect | `DELETE FROM table` | `TRUNCATE TABLE table` |
 |---|---|---|
-| **Vitesse** | Lent (supprime ligne par ligne) | Tres rapide (desalloue les pages) |
+| **Vitesse** | Lent (supprime ligne par ligne) | Très rapide (desalloue les pages) |
 | **WHERE** | Oui | Non (tout ou rien) |
 | **RETURNING** | Oui | Non |
 | **Triggers** | Oui (FOR EACH ROW) | Non (sauf FOR EACH STATEMENT) |
 | **Transactionnel** | Oui | Oui (en PostgreSQL !) |
-| **VACUUM necessaire** | Oui | Non |
+| **VACUUM nécessaire** | Oui | Non |
 | **Reinitialiser SERIAL** | Non | Oui (avec RESTART IDENTITY) |
 
 ---
 
 ## 7. Fonctions d'agregation
 
-Les fonctions d'agregation calculent une valeur a partir d'un **ensemble** de lignes.
+Les fonctions d'agregation calculent une valeur à partir d'un **ensemble** de lignes.
 
 ### 7.1 Les fonctions de base
 
@@ -645,7 +645,7 @@ ORDER BY categorie, en_stock;
 
 ### 8.3 HAVING — filtrer les groupes
 
-`HAVING` est au `GROUP BY` ce que `WHERE` est au `SELECT` : un filtre. Mais `HAVING` s'applique **apres** le regroupement, sur les resultats agreges.
+`HAVING` est au `GROUP BY` ce que `WHERE` est au `SELECT` : un filtre. Mais `HAVING` s'applique **après** le regroupement, sur les résultats agreges.
 
 ```sql
 -- Categories avec plus de 2 produits
@@ -668,7 +668,7 @@ HAVING AVG(prix) > 50         -- HAVING filtre APRES le GROUP BY
 ORDER BY prix_moyen DESC;
 ```
 
-> **Ce qu'il faut retenir** : L'ordre d'execution logique d'une requete SQL est :
+> **Ce qu'il faut retenir** : L'ordre d'exécution logique d'une requête SQL est :
 >
 > 1. `FROM` (quelle table ?)
 > 2. `WHERE` (filtrer les lignes)
@@ -712,9 +712,9 @@ ORDER BY prix_moyen DESC;
 
 ---
 
-## 9. Sous-requetes
+## 9. Sous-requêtes
 
-### 9.1 Sous-requete scalaire (retourne une seule valeur)
+### 9.1 Sous-requête scalaire (retourne une seule valeur)
 
 ```sql
 -- Produits plus chers que la moyenne
@@ -734,7 +734,7 @@ WHERE departement_id = (
 );
 ```
 
-### 9.2 Sous-requete avec IN
+### 9.2 Sous-requête avec IN
 
 ```sql
 -- Employes qui travaillent dans un departement a Paris
@@ -753,9 +753,9 @@ WHERE id NOT IN (
 );
 ```
 
-> **Piege classique** : `NOT IN` avec une sous-requete qui contient des `NULL` retourne un ensemble VIDE. C'est contre-intuitif mais logique : `2 NOT IN (1, NULL)` → `NULL` (pas `true`), et `WHERE NULL` ne garde rien. Utilise `NOT EXISTS` a la place.
+> **Piege classique** : `NOT IN` avec une sous-requête qui contient des `NULL` retourne un ensemble VIDE. C'est contre-intuitif mais logique : `2 NOT IN (1, NULL)` → `NULL` (pas `true`), et `WHERE NULL` ne garde rien. Utilise `NOT EXISTS` à la place.
 
-### 9.3 Sous-requete avec EXISTS
+### 9.3 Sous-requête avec EXISTS
 
 ```sql
 -- Employes qui ont au moins un projet
@@ -773,9 +773,9 @@ WHERE NOT EXISTS (
 );
 ```
 
-> **Ce qu'il faut retenir** : `EXISTS` est generalement **plus performant** que `IN` pour les sous-requetes correlees, car il s'arrete des qu'il trouve une correspondance (`short-circuit`). Privilegie `EXISTS` / `NOT EXISTS` quand c'est possible.
+> **Ce qu'il faut retenir** : `EXISTS` est généralement **plus performant** que `IN` pour les sous-requêtes correlees, car il s'arrete des qu'il trouve une correspondance (`short-circuit`). Privilegie `EXISTS` / `NOT EXISTS` quand c'est possible.
 
-### 9.4 Sous-requete dans le FROM (table derivee)
+### 9.4 Sous-requête dans le FROM (table derivee)
 
 ```sql
 -- Statistiques par categorie, puis filtrage
@@ -793,7 +793,7 @@ WHERE stats.nb >= 2 AND stats.prix_moyen > 30;
 
 ### 9.5 CTE (Common Table Expression) — WITH
 
-Les CTE rendent les requetes complexes lisibles et maintenables.
+Les CTE rendent les requêtes complexes lisibles et maintenables.
 
 ```sql
 -- Meme requete avec CTE (beaucoup plus lisible)
@@ -845,7 +845,7 @@ const query = `SELECT * FROM utilisateur WHERE nom = '${nom}'`;
 // La table est SUPPRIMEE !
 ```
 
-> **Analogie** : L'injection SQL, c'est comme si tu demandais a quelqu'un de remplir un formulaire, et au lieu d'ecrire son nom, il ecrit des instructions qui modifient le formulaire lui-meme. Les requetes parametrees empechent cela en separant les donnees des instructions.
+> **Analogie** : L'injection SQL, c'est comme si tu demandais a quelqu'un de remplir un formulaire, et au lieu d'écrire son nom, il écrit des instructions qui modifient le formulaire lui-même. Les requêtes parametrees empechent cela en separant les donnees des instructions.
 
 ### 10.2 Requetes parametrees avec pg
 
@@ -1125,12 +1125,12 @@ main();
 
 ## 12. Exercice mental
 
-Avant de passer au module suivant, ecris mentalement (ou sur papier) les requetes pour :
+Avant de passer au module suivant, ecris mentalement (où sur papier) les requêtes pour :
 
 1. **Trouver les 5 produits les plus chers** de la categorie 'electronique'
 2. **Compter le nombre d'employes par departement**, en n'affichant que les departements avec plus de 3 employes
-3. **Trouver les produits dont le prix est superieur a la moyenne de leur categorie** (indice : sous-requete correlee)
-4. **Faire un upsert** : inserer un employe, et si l'email existe deja, mettre a jour le nom et le poste
+3. **Trouver les produits dont le prix est superieur à la moyenne de leur categorie** (indice : sous-requête correlee)
+4. **Faire un upsert** : inserer un employe, et si l'email existe déjà, mettre a jour le nom et le poste
 
 ### Solutions
 
@@ -1174,10 +1174,20 @@ SET nom = EXCLUDED.nom,
 
 | | Lien |
 |---|---|
-| Module precedent | [Module 01 — Le modele relationnel](./01-modele-relationnel.md) |
+| Module précédent | [Module 01 — Le modèle relationnel](./01-modele-relationnel.md) |
 | Module suivant | [Module 03 — Relations & Jointures](./03-relations-et-jointures.md) |
 | Lab associe | [Lab 02 — CRUD operations](../labs/lab-02.md) |
 
 ---
 
-> **Ce qu'il faut retenir** : Les operations CRUD sont le pain quotidien du developpeur SQL. `INSERT ... RETURNING` et `ON CONFLICT` sont des outils puissants specifiques a PostgreSQL. Utilise TOUJOURS des requetes parametrees ($1, $2...) en Node.js pour te proteger des injections SQL. Les fonctions d'agregation + GROUP BY + HAVING forment un trio indispensable pour l'analyse de donnees.
+> **Ce qu'il faut retenir** : Les operations CRUD sont le pain quotidien du développeur SQL. `INSERT ... RETURNING` et `ON CONFLICT` sont des outils puissants spécifiques a PostgreSQL. Utilise TOUJOURS des requêtes parametrees ($1, $2...) en Node.js pour te proteger des injections SQL. Les fonctions d'agregation + GROUP BY + HAVING forment un trio indispensable pour l'analyse de donnees.
+
+---
+
+<!-- parcours-recommande -->
+
+::: tip Parcours recommandé
+1. **Screencast** : [screencast 02 crud et requêtes](../screencasts/screencast-02-crud-et-requetes.md)
+2. **Lab** : [lab-02-crud-complet](../labs/lab-02-crud-complet/README)
+3. **Quiz** : [quiz 02 crud et requêtes](../quizzes/quiz-02-crud-et-requetes.html)
+:::

@@ -1,6 +1,6 @@
 # Module 07 — Index avances (GIN, GiST, BRIN)
 
-> **Objectif** : Comprendre pourquoi le B-tree ne suffit pas toujours, maitriser les index GIN (JSONB, arrays, full-text), GiST (ranges, geometrie), BRIN (time-series), et les covering indexes avec `INCLUDE`.
+> **Objectif** : Comprendre pourquoi le B-tree ne suffit pas toujours, maîtriser les index GIN (JSONB, arrays, full-text), GiST (ranges, geometrie), BRIN (time-series), et les covering indexes avec `INCLUDE`.
 >
 > **Difficulte** : ⭐⭐⭐ (avance)
 
@@ -8,12 +8,12 @@
 
 ## 1. Rappel : pourquoi un B-tree ne suffit pas toujours
 
-Le B-tree est excellent pour les comparaisons simples (`=`, `<`, `>`, `BETWEEN`) sur des valeurs scalaires. Mais certains types de donnees et certaines operations ne se pretent pas a une comparaison lineaire :
+Le B-tree est excellent pour les comparaisons simples (`=`, `<`, `>`, `BETWEEN`) sur des valeurs scalaires. Mais certains types de donnees et certaines operations ne se pretent pas à une comparaison lineaire :
 
 | Besoin | B-tree peut faire ? | Index adapte |
 |---|---|---|
-| Chercher une cle dans un objet JSONB | Non (valeur composite) | **GIN** |
-| Chercher si un array contient un element | Non (valeur composite) | **GIN** |
+| Chercher une clé dans un objet JSONB | Non (valeur composite) | **GIN** |
+| Chercher si un array contient un élément | Non (valeur composite) | **GIN** |
 | Full-text search (tsvector @@ tsquery) | Non (pas d'ordre lineaire) | **GIN** ou **GiST** |
 | Chercher si deux intervalles se chevauchent | Non (comparaison 2D) | **GiST** |
 | Recherche geospatiale (points, polygones) | Non (comparaison 2D/3D) | **GiST** |
@@ -52,7 +52,7 @@ Le B-tree est excellent pour les comparaisons simples (`=`, `<`, `>`, `BETWEEN`)
 
 ### 2.1 Principe : un index inverse
 
-Le GIN est un **index inverse** (inverted index). Au lieu de mapper "ligne → valeur", il mappe "valeur → liste de lignes". C'est le meme principe que l'index de Google : pour chaque mot, on connait toutes les pages web qui le contiennent.
+Le GIN est un **index inverse** (inverted index). Au lieu de mapper "ligne → valeur", il mappe "valeur → liste de lignes". C'est le même principe que l'index de Google : pour chaque mot, on connait toutes les pages web qui le contiennent.
 
 ```
  B-tree vs GIN — difference fondamentale :
@@ -75,7 +75,7 @@ Le GIN est un **index inverse** (inverted index). Au lieu de mapper "ligne → v
  Pour chercher "postgresql" : acces direct a la liste {ligne 1, ligne 2}
 ```
 
-> **Analogie** : Un B-tree, c'est comme une liste de courses classee par rayon (rayon 1 : lait, oeufs, beurre). Un GIN, c'est comme un registre alphabetique des ingredients : "beurre → rayon 1, rayon 5 ; oeufs → rayon 1, rayon 3". Si tu cherches un ingredient specifique, le registre alphabetique est beaucoup plus rapide.
+> **Analogie** : Un B-tree, c'est comme une liste de courses classee par rayon (rayon 1 : lait, oeufs, beurre). Un GIN, c'est comme un registre alphabetique des ingredients : "beurre → rayon 1, rayon 5 ; oeufs → rayon 1, rayon 3". Si tu cherches un ingredient spécifique, le registre alphabetique est beaucoup plus rapide.
 
 ### 2.2 GIN pour JSONB
 
@@ -190,9 +190,9 @@ ORDER BY pertinence DESC;
 -- Utilise l'index GIN pour trouver rapidement les documents
 ```
 
-### 2.6 Cout en ecriture du GIN
+### 2.6 Cout en écriture du GIN
 
-Le GIN a un cout en ecriture plus eleve que le B-tree car chaque valeur composite (JSON, array) peut contenir plusieurs cles a indexer.
+Le GIN à un cout en écriture plus eleve que le B-tree car chaque valeur composite (JSON, array) peut contenir plusieurs clés a indexer.
 
 ```
  INSERT d'un document JSONB avec 10 cles :
@@ -333,13 +333,13 @@ SELECT * FROM document WHERE tsv @@ to_tsquery('french', 'postgresql');
 | Critere | GIN | GiST |
 |---|---|---|
 | **Vitesse de recherche** | **Rapide** (index inverse, acces direct) | Plus lent (parcours d'arbre) |
-| **Vitesse de creation** | Plus lent (beaucoup d'entrees) | **Plus rapide** |
+| **Vitesse de création** | Plus lent (beaucoup d'entrees) | **Plus rapide** |
 | **Taille d'index** | Plus grand | **Plus petit** |
-| **Vitesse d'insertion** | Plus lent (meme avec fastupdate) | **Plus rapide** |
+| **Vitesse d'insertion** | Plus lent (même avec fastupdate) | **Plus rapide** |
 | **Exact match** | Oui | Peut avoir des faux positifs (recheck) |
 | **Recommandation** | **Tables stables** (peu d'INSERT) | Tables avec beaucoup d'INSERT |
 
-> **Ce qu'il faut retenir** : Pour le full-text search en production, **GIN** est generalement le meilleur choix car la vitesse de recherche prime. Utilise GiST si les insertions sont tres frequentes et que la vitesse de recherche est secondaire.
+> **Ce qu'il faut retenir** : Pour le full-text search en production, **GIN** est généralement le meilleur choix car la vitesse de recherche prime. Utilise GiST si les insertions sont très frequentes et que la vitesse de recherche est secondaire.
 
 ### 3.6 GiST pour la geometrie (PostGIS preview)
 
@@ -433,9 +433,9 @@ ORDER BY horodatage DESC;
 -- Le BRIN elimine instantanement >99% des blocs de pages
 ```
 
-### 4.3 Le parametre pages_per_range
+### 4.3 Le paramètre pages_per_range
 
-Le parametre `pages_per_range` controle le nombre de pages dans chaque "zone" du BRIN.
+Le paramètre `pages_per_range` controle le nombre de pages dans chaque "zone" du BRIN.
 
 ```sql
 -- Defaut : 128 pages par range
@@ -509,9 +509,9 @@ EXPLAIN ANALYZE SELECT * FROM donnees_random WHERE valeur = 'some-uuid';
 -- → Seq Scan sera probablement choisi
 ```
 
-> **Ce qu'il faut retenir** : Le BRIN est extraordinaire pour les donnees qui sont naturellement ordonnees sur disque (time-series, logs, IDs sequentiels). Son ratio taille/performance est imbattable. Mais il est completement inutile pour les donnees aleatoires ou frequemment mises a jour.
+> **Ce qu'il faut retenir** : Le BRIN est extraordinaire pour les donnees qui sont naturellement ordonnees sur disque (time-series, logs, IDs sequentiels). Son ratio taille/performance est imbattable. Mais il est complètement inutile pour les donnees aleatoires ou frequemment mises a jour.
 
-### 4.5 Verifier la correlation physique
+### 4.5 Vérifier la correlation physique
 
 ```sql
 -- La colonne "correlation" dans pg_stats indique si les donnees
@@ -535,7 +535,7 @@ WHERE tablename = 'log_acces';
 
 ### 5.1 Principe
 
-Un **covering index** ajoute des colonnes supplementaires dans les **feuilles** de l'index, sans les inclure dans l'arbre de recherche. Cela permet l'**Index Only Scan** meme pour des requetes qui lisent des colonnes non indexees.
+Un **covering index** ajoute des colonnes supplementaires dans les **feuilles** de l'index, sans les inclure dans l'arbre de recherche. Cela permet l'**Index Only Scan** même pour des requêtes qui lisent des colonnes non indexees.
 
 ```sql
 -- Index standard sur (departement_id)
@@ -669,8 +669,8 @@ WHERE status_code >= 500
 | **Full-text** (`@@`) | Non | Non | **Oui** | Oui (plus lent) | Non |
 | **ORDER BY** | **Oui** | Non | Non | Non | Non |
 | **Taille** | Moyenne | Petite | **Grande** | Moyenne | **Minuscule** |
-| **Vitesse INSERT** | Rapide | Rapide | **Lent** | Moyen | **Tres rapide** |
-| **Vitesse SELECT** | Rapide | Tres rapide (=) | Rapide (composite) | Moyen | Moyen |
+| **Vitesse INSERT** | Rapide | Rapide | **Lent** | Moyen | **Très rapide** |
+| **Vitesse SELECT** | Rapide | Très rapide (=) | Rapide (composite) | Moyen | Moyen |
 | **Multi-colonnes** | Oui | Non | Oui | Oui | Oui |
 | **Index partiel** | Oui | Oui | Oui | Oui | Oui |
 | **INCLUDE** | Oui (PG11+) | Non | Non | Non | Non |
@@ -866,19 +866,19 @@ main();
 
 ## 9. Exercice mental
 
-1. **Tu as une table `evenement` avec une colonne `data JSONB`. Tu fais souvent `WHERE data @> '{"user_id": 42}'`. Quel index creer ?** (GIN avec `jsonb_path_ops` car seul `@>` est utilise, et cet index est plus compact)
+1. **Tu as une table `evenement` avec une colonne `data JSONB`. Tu fais souvent `WHERE data @> '{"user_id": 42}'`. Quel index créer ?** (GIN avec `jsonb_path_ops` car seul `@>` est utilise, et cet index est plus compact)
 
 2. **Tu as une table de 500M de lignes de logs avec un timestamp. Un index B-tree sur le timestamp fait 10 GB. Comment reduire a quelques KB ?** (BRIN : les donnees sont naturellement ordonnees par timestamp)
 
-3. **Tu veux empecher deux evenements dans la meme salle au meme creneau horaire. Comment faire cela au niveau de la base ?** (Constraint EXCLUDE USING GIST avec `salle WITH =, creneau WITH &&`)
+3. **Tu veux empecher deux événements dans la même salle au même creneau horaire. Comment faire cela au niveau de la base ?** (Constraint EXCLUDE USING GIST avec `salle WITH =, creneau WITH &&`)
 
-4. **Ta requete fait un Index Scan mais pas un Index Only Scan. Le SELECT lit `nom` et `email` en plus de `departement_id`. Comment obtenir un Index Only Scan ?** (Creer un covering index : `CREATE INDEX ... ON table(departement_id) INCLUDE (nom, email)`)
+4. **Ta requête fait un Index Scan mais pas un Index Only Scan. Le SELECT lit `nom` et `email` en plus de `departement_id`. Comment obtenir un Index Only Scan ?** (Créer un covering index : `CREATE INDEX ... ON table(departement_id) INCLUDE (nom, email)`)
 
-5. **Tu as un index GIN sur une colonne JSONB. Les INSERT sont lents. Que faire ?** (Verifier que `fastupdate = on` est active, ou si les performances en lecture sont critiques, accepter le cout en ecriture. Eventuellement, utiliser `jsonb_path_ops` pour un index plus petit)
+5. **Tu as un index GIN sur une colonne JSONB. Les INSERT sont lents. Que faire ?** (Vérifier que `fastupdate = on` est active, ou si les performances en lecture sont critiques, accepter le cout en écriture. Eventuellement, utiliser `jsonb_path_ops` pour un index plus petit)
 
 ---
 
-## 10. Resume : quand utiliser chaque type d'index
+## 10. Résumé : quand utiliser chaque type d'index
 
 ```
  ┌─────────────────────────────────────────────────────────────┐
@@ -909,10 +909,21 @@ main();
 
 | | Lien |
 |---|---|
-| Module precedent | [Module 06 — Le Query Planner](./06-query-planner.md) |
+| Module précédent | [Module 06 — Le Query Planner](./06-query-planner.md) |
 | Module suivant | [Module 08 — Niveaux d'isolation](./08-niveaux-isolation.md) |
 | Lab associe | [Lab 07 — Index avances en pratique](../labs/lab-07.md) |
 
 ---
 
-> **Ce qu'il faut retenir** : PostgreSQL offre une palette d'index specialises pour chaque type de donnees et de requete. Le GIN excelle pour les donnees composites (JSONB, arrays, full-text). Le GiST est le choix pour les ranges et la geometrie. Le BRIN offre un ratio taille/performance imbattable pour les time-series. Les covering indexes avec INCLUDE permettent l'Index Only Scan sans alourdir l'arbre de recherche. Choisis le bon index en fonction de tes donnees et de tes requetes, pas par habitude.
+> **Ce qu'il faut retenir** : PostgreSQL offre une palette d'index specialises pour chaque type de donnees et de requête. Le GIN excelle pour les donnees composites (JSONB, arrays, full-text). Le GiST est le choix pour les ranges et la geometrie. Le BRIN offre un ratio taille/performance imbattable pour les time-series. Les covering indexes avec INCLUDE permettent l'Index Only Scan sans alourdir l'arbre de recherche. Choisis le bon index en fonction de tes donnees et de tes requêtes, pas par habitude.
+
+---
+
+<!-- parcours-recommande -->
+
+::: tip Parcours recommandé
+1. **Screencast** : [screencast 07 index avances](../screencasts/screencast-07-index-avances.md)
+2. **Lab** : [lab-07-index-gin-gist-brin](../labs/lab-07-index-gin-gist-brin/README)
+3. **Visualisation** : [B-tree Index](../visualizations/btree-index.html)
+4. **Quiz** : [quiz 07 index avances](../quizzes/quiz-07-index-avances.html)
+:::

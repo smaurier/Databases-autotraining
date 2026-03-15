@@ -2,10 +2,10 @@
 
 ## Objectifs
 
-- Explorer en profondeur le planificateur de requetes PostgreSQL
-- Comprendre les differents types de scan (Seq, Index, Bitmap, Index Only)
-- Comprendre les strategies de jointure (Nested Loop, Hash Join, Merge Join)
-- Analyser les buffers et les temps de planification vs execution
+- Explorer en profondeur le planificateur de requêtes PostgreSQL
+- Comprendre les différents types de scan (Seq, Index, Bitmap, Index Only)
+- Comprendre les stratégies de jointure (Nested Loop, Hash Join, Merge Join)
+- Analyser les buffers et les temps de planification vs exécution
 
 ## Pre-requis
 
@@ -47,4 +47,4 @@ CREATE TABLE orders    (id SERIAL, customer_id INT, product_id INT,
 | 5 | Comparer Nested Loop vs Hash Join |
 | 6 | EXPLAIN ANALYZE avec BUFFERS |
 | 7 | Index Only Scan avec covering index |
-| 8 | Temps de planification vs execution |
+| 8 | Temps de planification vs exécution |

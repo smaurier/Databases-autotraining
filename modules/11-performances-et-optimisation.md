@@ -1,6 +1,6 @@
 # Module 11 — Performances & Optimisation
 
-> **Objectif** : Identifier les goulots d'etranglement, optimiser les connexions, le bulk loading, le VACUUM, le partitionnement et les parametres cles de PostgreSQL.
+> **Objectif** : Identifier les goulots d'etranglement, optimiser les connexions, le bulk loading, le VACUUM, le partitionnement et les paramètres clés de PostgreSQL.
 >
 > **Difficulte** : ⭐⭐⭐⭐
 
@@ -8,7 +8,7 @@
 
 ## 1. Les couches de performance
 
-Avant d'optimiser, il faut comprendre **ou** se situe le probleme. Une requete traverse plusieurs couches :
+Avant d'optimiser, il faut comprendre **où** se situe le problème. Une requête traverse plusieurs couches :
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -30,24 +30,24 @@ Avant d'optimiser, il faut comprendre **ou** se situe le probleme. Une requete t
 └─────────────────────────────────────────────────────────────┘
 ```
 
-> **Analogie** : Optimiser uniquement les requetes SQL, c'est comme acheter un moteur de Formule 1 pour une voiture avec des roues carrees. Il faut regarder la **chaine complete**.
+> **Analogie** : Optimiser uniquement les requêtes SQL, c'est comme acheter un moteur de Formule 1 pour une voiture avec des roues carrees. Il faut regarder la **chaine complete**.
 
 | Couche | Temps typique | Optimisation |
 |--------|--------------|-------------|
-| Reseau | 1-50ms | Connection pooling, requetes en batch |
+| Réseau | 1-50ms | Connection pooling, requêtes en batch |
 | Connexion | 50-100ms | Connection pooling (PgBouncer) |
 | Parsing | < 1ms | Prepared statements |
 | Planning | 1-10ms | Statistiques a jour, prepared statements |
-| Execution | 1ms - minutes | Index, requetes optimisees |
+| Exécution | 1ms - minutes | Index, requêtes optimisees |
 | I/O | 0.1ms (SSD) - 10ms (HDD) | shared_buffers, cache OS |
 
 ---
 
 ## 2. Connection pooling
 
-### 2.1 Le probleme
+### 2.1 Le problème
 
-Chaque connexion a PostgreSQL cree un **nouveau processus** sur le serveur (fork). C'est couteux :
+Chaque connexion a PostgreSQL créé un **nouveau processus** sur le serveur (fork). C'est couteux :
 
 ```
 Sans pooling (100 requetes/s) :
@@ -138,9 +138,9 @@ Exemple :
 
 | max | Situation | Consequence |
 |-----|-----------|-------------|
-| Trop petit (2-3) | Beaucoup de requetes | Attente dans le pool |
+| Trop petit (2-3) | Beaucoup de requêtes | Attente dans le pool |
 | Optimal (5-20) | Equilibre | Bonne utilisation des ressources |
-| Trop grand (100+) | Peu de requetes | Gaspillage de RAM, context switching |
+| Trop grand (100+) | Peu de requêtes | Gaspillage de RAM, context switching |
 
 > **Piege classique** : Plus de connexions ne signifie PAS plus de performance. Au-dela d'un certain seuil, les context switches entre processus PostgreSQL **degradent** les performances.
 
@@ -148,15 +148,15 @@ Exemple :
 
 ## 3. Prepared statements
 
-### 3.1 Le probleme du re-planning
+### 3.1 Le problème du re-planning
 
-Chaque fois que PostgreSQL recoit une requete, il doit :
+Chaque fois que PostgreSQL recoit une requête, il doit :
 1. **Parser** le SQL (syntaxe)
 2. **Analyser** (semantique, permissions)
-3. **Planifier** (choisir le meilleur plan d'execution)
-4. **Executer** le plan
+3. **Planifier** (choisir le meilleur plan d'exécution)
+4. **Exécuter** le plan
 
-Les etapes 1-3 sont couteuses. Si vous executez la meme requete 10 000 fois avec des parametres differents, c'est du gaspillage.
+Les étapes 1-3 sont couteuses. Si vous executez la même requête 10 000 fois avec des paramètres différents, c'est du gaspillage.
 
 ### 3.2 PREPARE / EXECUTE en SQL
 
@@ -214,9 +214,9 @@ async function getUserFast(id: number): Promise<User | undefined> {
 
 | Scenario | Prepared ? | Raison |
 |---|---|---|
-| Requete executee > 100 fois | **Oui** | Gain de planning significatif |
-| Requete ad-hoc unique | Non | Pas de reutilisation |
-| Requete avec parametres dynamiques (colonnes, tables) | Non | Impossible a preparer |
+| Requête executee > 100 fois | **Oui** | Gain de planning significatif |
+| Requête ad-hoc unique | Non | Pas de reutilisation |
+| Requête avec paramètres dynamiques (colonnes, tables) | Non | Impossible a preparer |
 | Batch processing en boucle | **Oui** | Gros gain |
 
 ---
@@ -254,7 +254,7 @@ await pool.query(
 // Temps : ~50ms pour 1000 lignes (100x plus rapide)
 ```
 
-### 4.2 unnest() pour les batch inserts parametres
+### 4.2 unnest() pour les batch inserts paramètres
 
 ```typescript
 // ENCORE MIEUX : unnest() avec arrays
@@ -317,9 +317,9 @@ async function bulkInsertUsers(users: UserInput[]): Promise<void> {
 }
 ```
 
-### 4.5 Comparaison des methodes
+### 4.5 Comparaison des méthodes
 
-| Methode | 1000 lignes | 100K lignes | 1M lignes |
+| Méthode | 1000 lignes | 100K lignes | 1M lignes |
 |---------|------------|------------|----------|
 | INSERT en boucle | 5s | 8min | 80min |
 | INSERT multi-valeurs | 50ms | 5s | 50s |
@@ -332,7 +332,7 @@ async function bulkInsertUsers(users: UserInput[]): Promise<void> {
 
 ### 5.1 Dead tuples et table bloat
 
-> **Analogie** : Imaginez un immeuble de 100 appartements. Quand un locataire demenage (DELETE), l'appartement reste vide mais occupe toujours de l'espace dans l'immeuble. Quand un locataire change de numero de telephone (UPDATE), PostgreSQL "demenage" le locataire dans un nouvel appartement et laisse l'ancien vide. Apres des milliers de demenagements, l'immeuble est plein d'appartements vides. C'est le **bloat**.
+> **Analogie** : Imaginez un immeuble de 100 appartements. Quand un locataire demenage (DELETE), l'appartement reste vide mais occupe toujours de l'espace dans l'immeuble. Quand un locataire change de numéro de telephone (UPDATE), PostgreSQL "demenage" le locataire dans un nouvel appartement et laisse l'ancien vide. Après des milliers de demenagements, l'immeuble est plein d'appartements vides. C'est le **bloat**.
 
 ```
 Table "comptes" apres beaucoup d'UPDATEs :
@@ -366,7 +366,7 @@ VACUUM VERBOSE comptes;
 | Caracteristique | VACUUM | VACUUM FULL |
 |----------------|--------|-------------|
 | Lock | Aucun (concurrent !) | **ACCESS EXCLUSIVE** (bloque tout) |
-| Espace libere | Marque comme reutilisable | **Retourne a l'OS** |
+| Espace libere | Marque comme réutilisable | **Retourne a l'OS** |
 | Taille fichier | Inchangee | Reduite |
 | Vitesse | Rapide | Lent (reecrit toute la table) |
 | Utilisation | Regulier (automatique) | Exceptionnel |
@@ -379,11 +379,11 @@ VACUUM FULL comptes;
 -- Mais la table etait INACCESSIBLE pendant l'operation
 ```
 
-> **Piege classique** : Ne faites JAMAIS `VACUUM FULL` en production sur une grosse table sans maintenance window. Utilisez `pg_repack` a la place (pas de lock exclusif).
+> **Piege classique** : Ne faites JAMAIS `VACUUM FULL` en production sur une grosse table sans maintenance window. Utilisez `pg_repack` à la place (pas de lock exclusif).
 
 ### 5.4 Autovacuum — Le pilote automatique
 
-PostgreSQL lance automatiquement VACUUM grace a l'**autovacuum daemon**.
+PostgreSQL lance automatiquement VACUUM grâce à l'**autovacuum daemon**.
 
 ```sql
 -- Voir la configuration
@@ -445,7 +445,7 @@ LIMIT 20;
 
 ### 6.1 Pourquoi c'est crucial
 
-Le **query planner** de PostgreSQL choisit le meilleur plan d'execution en se basant sur des **statistiques** : nombre de lignes, distribution des valeurs, valeurs les plus frequentes, etc.
+Le **query planner** de PostgreSQL choisit le meilleur plan d'exécution en se basant sur des **statistiques** : nombre de lignes, distribution des valeurs, valeurs les plus frequentes, etc.
 
 Si les statistiques sont obsoletes, le planner prend de mauvaises decisions :
 
@@ -472,9 +472,9 @@ ANALYZE;
 
 | Situation | Action |
 |-----------|--------|
-| Apres un bulk COPY/INSERT | `ANALYZE table_name;` |
-| Apres une migration (ALTER TABLE) | `ANALYZE table_name;` |
-| Requete soudainement lente | Verifier `last_autoanalyze`, puis `ANALYZE` |
+| Après un bulk COPY/INSERT | `ANALYZE table_name;` |
+| Après une migration (ALTER TABLE) | `ANALYZE table_name;` |
+| Requête soudainement lente | Vérifier `last_autoanalyze`, puis `ANALYZE` |
 | En continu | L'autovacuum s'en charge |
 
 ### 6.3 Voir les statistiques
@@ -514,7 +514,7 @@ ORDER BY pg_total_relation_size(relid) DESC
 LIMIT 10;
 ```
 
-### 7.2 Extension pgstattuple (plus precis)
+### 7.2 Extension pgstattuple (plus précis)
 
 ```sql
 -- Installer l'extension
@@ -535,11 +535,11 @@ SELECT * FROM pgstattuple('comptes');
 
 ### 7.3 Resoudre le bloat
 
-| Methode | Lock | Vitesse | Production ? |
+| Méthode | Lock | Vitesse | Production ? |
 |---------|------|---------|-------------|
 | VACUUM | Aucun | Rapide | Oui (regulier) |
 | VACUUM FULL | ACCESS EXCLUSIVE | Lent | Non (downtime) |
-| pg_repack | Tres leger | Moyen | **Oui** (recommande) |
+| pg_repack | Très leger | Moyen | **Oui** (recommande) |
 | CLUSTER | ACCESS EXCLUSIVE | Lent | Non (downtime) |
 
 ```sql
@@ -664,7 +664,7 @@ ALTER TABLE events DETACH PARTITION events_2024_01;
 | Critere | Partitionner | Ne pas partitionner |
 |---------|-------------|-------------------|
 | Taille table | > 10 GB | < 1 GB |
-| Pattern de requetes | Toujours filtre sur la cle | Requetes variees |
+| Pattern de requêtes | Toujours filtre sur la clé | Requetes variees |
 | Purge de donnees | Frequente (DROP vs DELETE) | Rare |
 | Nombre de partitions | < 100 | > 1000 (overhead) |
 
@@ -778,11 +778,11 @@ FROM pg_stat_bgwriter;
 
 ---
 
-## 10. Tuning des parametres cles
+## 10. Tuning des paramètres clés
 
 ### 10.1 shared_buffers
 
-Le cache de pages en memoire partagee. C'est le parametre **le plus important**.
+Le cache de pages en mémoire partagee. C'est le paramètre **le plus important**.
 
 ```sql
 SHOW shared_buffers;  -- 128MB (defaut, beaucoup trop bas !)
@@ -795,7 +795,7 @@ ALTER SYSTEM SET shared_buffers = '4GB';
 
 ### 10.2 work_mem
 
-Memoire allouee par **operation de tri/hash** (par requete, pas global).
+Mémoire allouee par **operation de tri/hash** (par requête, pas global).
 
 ```sql
 SHOW work_mem;  -- 4MB (defaut)
@@ -809,7 +809,7 @@ SELECT pg_reload_conf();
 
 ### 10.3 maintenance_work_mem
 
-Memoire pour les operations de maintenance (VACUUM, CREATE INDEX, etc.).
+Mémoire pour les operations de maintenance (VACUUM, CREATE INDEX, etc.).
 
 ```sql
 SHOW maintenance_work_mem;  -- 64MB (defaut)
@@ -821,7 +821,7 @@ SELECT pg_reload_conf();
 
 ### 10.4 effective_cache_size
 
-Estimation de la memoire totale disponible pour le cache (shared_buffers + cache OS).
+Estimation de la mémoire totale disponible pour le cache (shared_buffers + cache OS).
 
 ```sql
 SHOW effective_cache_size;  -- 4GB (defaut)
@@ -844,7 +844,7 @@ ALTER SYSTEM SET random_page_cost = 1.1;
 SELECT pg_reload_conf();
 ```
 
-> **Point cle** : Sur SSD, les lectures aleatoires sont presque aussi rapides que les lectures sequentielles. Baisser `random_page_cost` pousse le planner a utiliser **plus d'index scans**.
+> **Point clé** : Sur SSD, les lectures aleatoires sont presque aussi rapides que les lectures sequentielles. Baisser `random_page_cost` pousse le planner à utiliser **plus d'index scans**.
 
 ### 10.6 max_connections
 
@@ -857,9 +857,9 @@ ALTER SYSTEM SET max_connections = 50;
 -- Necessite un RESTART
 ```
 
-### 10.7 Tableau recapitulatif
+### 10.7 Tableau récapitulatif
 
-| Parametre | Defaut | SSD 16GB RAM | SSD 64GB RAM | Restart ? |
+| Paramètre | Defaut | SSD 16GB RAM | SSD 64GB RAM | Restart ? |
 |-----------|--------|-------------|-------------|-----------|
 | shared_buffers | 128MB | 4GB | 16GB | **Oui** |
 | work_mem | 4MB | 64MB | 256MB | Non |
@@ -874,14 +874,14 @@ ALTER SYSTEM SET max_connections = 50;
 
 ## 11. Exercice mental
 
-> **Exercice mental** : Votre application fait 10 000 INSERTs/seconde dans une table de logs. Apres quelques jours, les SELECTs deviennent de plus en plus lents. Que diagnostiqueriez-vous et comment resoudriez-vous le probleme ?
+> **Exercice mental** : Votre application fait 10 000 INSERTs/seconde dans une table de logs. Après quelques jours, les SELECTs deviennent de plus en plus lents. Que diagnostiqueriez-vous et comment resoudriez-vous le problème ?
 
 <details>
 <summary>Reponse</summary>
 
 **Diagnostic** :
 1. **Table bloat** : 10K inserts/s = beaucoup d'activite. Si des UPDATE/DELETE accompagnent, le bloat augmente
-2. **Autovacuum depasse** : Avec le seuil par defaut (20%), sur 100M de lignes, il faut 20M dead tuples pour declencher VACUUM
+2. **Autovacuum dépasse** : Avec le seuil par defaut (20%), sur 100M de lignes, il faut 20M dead tuples pour declencher VACUUM
 3. **Statistiques obsoletes** : ANALYZE peut ne pas suivre le rythme
 4. **Index bloat** : Les index aussi peuvent etre bloates
 
@@ -889,8 +889,8 @@ ALTER SYSTEM SET max_connections = 50;
 1. **Tuner l'autovacuum** pour cette table : `scale_factor = 0.01`
 2. **Partitionner** par date : DROP les vieilles partitions (instantane)
 3. **COPY** au lieu de INSERT individuel pour le bulk
-4. Verifier `pg_stat_user_tables` pour le ratio dead_tup
-5. Lancer `ANALYZE` manuellement si necessaire
+4. Vérifier `pg_stat_user_tables` pour le ratio dead_tup
+5. Lancer `ANALYZE` manuellement si nécessaire
 </details>
 
 ---
@@ -925,7 +925,7 @@ ALTER SYSTEM SET max_connections = 50;
 
 ## Navigation
 
-| Precedent | Suivant |
+| Précédent | Suivant |
 |---|---|
 | [Module 10 — Deadlocks](./10-deadlocks.md) | [Module 12 — Fonctions avancees SQL](./12-fonctions-avancees-sql.md) |
 
@@ -933,4 +933,14 @@ ALTER SYSTEM SET max_connections = 50;
 
 ---
 
-> *"La performance n'est pas une feature qu'on ajoute a la fin. C'est une propriete emergente d'une architecture bien pensee."*
+> *"La performance n'est pas une feature qu'on ajoute à la fin. C'est une propriété emergente d'une architecture bien pensee."*
+
+---
+
+<!-- parcours-recommande -->
+
+::: tip Parcours recommandé
+1. **Screencast** : [screencast 11 performances et optimisation](../screencasts/screencast-11-performances-et-optimisation.md)
+2. **Lab** : [lab-11-performances](../labs/lab-11-performances/README)
+3. **Quiz** : [quiz 11 performances et optimisation](../quizzes/quiz-11-performances-et-optimisation.html)
+:::

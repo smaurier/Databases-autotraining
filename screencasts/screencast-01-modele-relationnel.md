@@ -16,7 +16,7 @@
 
 ### [00:00-02:00] Introduction aux tables et types de données
 
-> Dans ce module, on va poser les bases du modèle relationnel. En PostgreSQL, tout est organisé en tables — des lignes et des colonnes. Chaque colonne a un type de données bien défini, et c'est cette rigueur qui garantit l'intégrité de nos données.
+> Dans ce module, on va poser les bases du modèle relationnel. En PostgreSQL, tout est organisé en tables — des lignes et des colonnes. Chaque colonne à un type de données bien défini, et c'est cette rigueur qui garantit l'intégrité de nos données.
 
 **Action** : Afficher un schéma simple d'une table avec colonnes typées (slide ou dessin).
 
@@ -177,7 +177,7 @@ ls labs/lab-01-premiers-pas-psql/
 
 **Action** : Ouvrir le README du lab et parcourir les instructions.
 
-> Le lab vous demande de créer un schéma basique avec des tables et des contraintes. Voici un aperçu de ce que vous allez faire.
+> Le lab vous demandé de créer un schéma basique avec des tables et des contraintes. Voici un aperçu de ce que vous allez faire.
 
 ```sql
 -- Exemple de ce que le lab demande

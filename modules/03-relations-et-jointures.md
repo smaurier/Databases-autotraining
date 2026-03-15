@@ -1,8 +1,8 @@
 # Module 03 — Relations & Jointures
 
-> **Objectif** : Comprendre les cles etrangeres, les differents types de relations (1:1, 1:N, N:M), maitriser toutes les variantes de JOIN et savoir construire des requetes multi-tables performantes.
+> **Objectif** : Comprendre les clés etrangeres, les différents types de relations (1:1, 1:N, N:M), maîtriser toutes les variantes de JOIN et savoir construire des requêtes multi-tables performantes.
 >
-> **Difficulte** : ⭐⭐ (intermediaire)
+> **Difficulte** : ⭐⭐ (intermédiaire)
 
 ---
 
@@ -10,9 +10,9 @@
 
 ### 1.1 Principe
 
-Une **cle etrangere** (Foreign Key, FK) est une contrainte qui garantit qu'une valeur dans une colonne **existe** dans une autre table. C'est le mecanisme fondamental qui relie les tables entre elles.
+Une **clé etrangere** (Foreign Key, FK) est une contrainte qui garantit qu'une valeur dans une colonne **existe** dans une autre table. C'est le mécanisme fondamental qui relie les tables entre elles.
 
-> **Analogie** : Imagine un bon de commande papier. La case "Client n°" ne peut contenir qu'un numero qui existe dans le registre des clients. Si tu ecris un numero inexistant, le comptable rejette le bon. La cle etrangere, c'est le comptable automatique.
+> **Analogie** : Imagine un bon de commande papier. La case "Client n°" ne peut contenir qu'un numéro qui existe dans le registre des clients. Si tu ecris un numéro inexistant, le comptable rejette le bon. La clé etrangere, c'est le comptable automatique.
 
 ```sql
 -- La table "parent" (referencee)
@@ -63,7 +63,7 @@ Que se passe-t-il quand on supprime ou modifie la ligne referencee (le departeme
 | Action | Comportement | Cas d'usage |
 |---|---|---|
 | `RESTRICT` (defaut) | **Interdit** la suppression si des lignes referentes existent | Proteger les donnees critiques |
-| `NO ACTION` | Comme RESTRICT mais verifie a la fin de la transaction | Verification differee |
+| `NO ACTION` | Comme RESTRICT mais vérifié à la fin de la transaction | Vérification differee |
 | `CASCADE` | **Supprime** automatiquement les lignes referentes | Donnees dependantes (commande → lignes) |
 | `SET NULL` | Met la FK a `NULL` dans les lignes referentes | Conserver l'historique (employe → ancien departement) |
 | `SET DEFAULT` | Met la FK a sa valeur `DEFAULT` | Rare, valeur par defaut significative |
@@ -90,7 +90,7 @@ CREATE TABLE emp_restrict (
 );
 ```
 
-> **Piege classique** : `ON DELETE CASCADE` est pratique mais dangereux. Supprimer un seul departement peut entrainer la suppression de centaines d'employes. Utilise-le pour les relations de composition (une commande et ses lignes), mais pas pour les relations d'association faible. En cas de doute, utilise `RESTRICT` et gere les suppressions explicitement dans ton code.
+> **Piege classique** : `ON DELETE CASCADE` est pratique mais dangereux. Supprimer un seul departement peut entrainer la suppression de centaines d'employes. Utilise-le pour les relations de composition (une commande et ses lignes), mais pas pour les relations d'association faible. En cas de doute, utilise `RESTRICT` et géré les suppressions explicitement dans ton code.
 
 ```
  ON DELETE CASCADE — Attention danger !
@@ -112,7 +112,7 @@ CREATE TABLE emp_restrict (
 
 ## 2. Types de relations
 
-### 2.1 Relation 1:1 (un a un)
+### 2.1 Relation 1:1 (un à un)
 
 Chaque ligne de la table A correspond a exactement une ligne de la table B, et inversement.
 
@@ -146,10 +146,10 @@ CREATE TABLE fiche_paie (
                      └─────────────┘
 ```
 
-> **Exercice mental** : Quand utiliser une relation 1:1 plutot que tout mettre dans la meme table ? Reponses possibles :
+> **Exercice mental** : Quand utiliser une relation 1:1 plutot que tout mettre dans la même table ? Reponses possibles :
 > - **Separation des donnees sensibles** (salaire, IBAN separes des donnees publiques)
-> - **Colonnes rarement lues** (eviter de charger des colonnes lourdes a chaque requete)
-> - **Schemas differents** (une table "publique", une table "privee" avec des permissions differentes)
+> - **Colonnes rarement lues** (éviter de charger des colonnes lourdes à chaque requête)
+> - **Schemas différents** (une table "publique", une table "privee" avec des permissions différentes)
 
 ### 2.2 Relation 1:N (un a plusieurs)
 
@@ -186,7 +186,7 @@ CREATE TABLE employe (
 
 ### 2.3 Relation N:M (plusieurs a plusieurs)
 
-Un etudiant suit plusieurs cours, et chaque cours a plusieurs etudiants. Ce type de relation necessite une **table de jonction** (ou table d'association).
+Un etudiant suit plusieurs cours, et chaque cours a plusieurs etudiants. Ce type de relation nécessité une **table de jonction** (où table d'association).
 
 ```sql
 -- Les deux tables principales
@@ -226,7 +226,7 @@ CREATE TABLE inscription (
                      PK = (etudiant_id, cours_id)
 ```
 
-> **Ce qu'il faut retenir** : La table de jonction porte souvent des **attributs propres a la relation** : la date d'inscription, la note, le role, etc. Ce ne sont pas des attributs de l'etudiant ni du cours, mais de la **relation entre les deux**.
+> **Ce qu'il faut retenir** : La table de jonction porte souvent des **attributs propres à la relation** : la date d'inscription, la note, le role, etc. Ce ne sont pas des attributs de l'etudiant ni du cours, mais de la **relation entre les deux**.
 
 ---
 
@@ -239,9 +239,9 @@ CREATE TABLE inscription (
 | `table1_table2` | `etudiant_cours` | Simple, aleatoire |
 | Nom semantique | `inscription` | **Recommande** quand un nom metier existe |
 | `table1_has_table2` | `etudiant_has_cours` | Convention Ruby on Rails |
-| Verbe | `suit` | Trop abstrait, a eviter |
+| Verbe | `suit` | Trop abstrait, a éviter |
 
-### 3.2 Exemple complet : systeme de tags
+### 3.2 Exemple complet : système de tags
 
 ```sql
 -- Articles de blog
@@ -325,7 +325,7 @@ INNER JOIN departement d ON e.departement_id = d.id;
    B seul = lignes de B sans correspondance dans A (exclues)
 ```
 
-### 4.2 Exemple detaille
+### 4.2 Exemple détaillé
 
 ```sql
 -- Donnees
@@ -359,7 +359,7 @@ INNER JOIN departement d ON e.departement_id = d.id;
 
 ### 5.1 Principe
 
-Le `LEFT JOIN` retourne **toutes** les lignes de la table de gauche, meme si elles n'ont pas de correspondance dans la table de droite. Les colonnes de la table de droite sont remplies avec `NULL` quand il n'y a pas de correspondance.
+Le `LEFT JOIN` retourne **toutes** les lignes de la table de gauche, même si elles n'ont pas de correspondance dans la table de droite. Les colonnes de la table de droite sont remplies avec `NULL` quand il n'y a pas de correspondance.
 
 ```sql
 -- Tous les employes, meme ceux sans departement
@@ -393,7 +393,7 @@ LEFT JOIN departement d ON e.departement_id = d.id;
 
 ### 5.2 Trouver les lignes SANS correspondance
 
-Un pattern tres courant avec `LEFT JOIN` est de trouver les lignes "orphelines" :
+Un pattern très courant avec `LEFT JOIN` est de trouver les lignes "orphelines" :
 
 ```sql
 -- Employes qui n'ont PAS de departement
@@ -409,7 +409,7 @@ LEFT JOIN employe e ON d.id = e.departement_id
 WHERE e.id IS NULL;
 ```
 
-> **Analogie** : Le `LEFT JOIN`, c'est comme un appel nominal en classe. Tous les eleves de la liste (table gauche) sont appeles. Si un eleve n'a pas de groupe de projet (table droite), il apparait quand meme, mais avec "aucun groupe" en face.
+> **Analogie** : Le `LEFT JOIN`, c'est comme un appel nominal en classe. Tous les eleves de la liste (table gauche) sont appeles. Si un eleve n'a pas de groupe de projet (table droite), il apparait quand même, mais avec "aucun groupe" en face.
 
 ---
 
@@ -417,7 +417,7 @@ WHERE e.id IS NULL;
 
 ### 6.1 Principe
 
-Le `RIGHT JOIN` est le miroir du `LEFT JOIN` : il retourne toutes les lignes de la table de **droite**, meme sans correspondance dans la table de gauche.
+Le `RIGHT JOIN` est le miroir du `LEFT JOIN` : il retourne toutes les lignes de la table de **droite**, même sans correspondance dans la table de gauche.
 
 ```sql
 -- Tous les departements, meme ceux sans employes
@@ -448,7 +448,7 @@ RIGHT JOIN departement d ON e.departement_id = d.id;
    ░░░ = RIGHT JOIN (correspondances de A + toutes les lignes de B)
 ```
 
-> **Ce qu'il faut retenir** : En pratique, le `RIGHT JOIN` est **rarement utilise**. On prefere inverser l'ordre des tables et utiliser un `LEFT JOIN`, car c'est plus lisible. `A RIGHT JOIN B` est equivalent a `B LEFT JOIN A`.
+> **Ce qu'il faut retenir** : En pratique, le `RIGHT JOIN` est **rarement utilise**. On préféré inverser l'ordre des tables et utiliser un `LEFT JOIN`, car c'est plus lisible. `A RIGHT JOIN B` est équivalent a `B LEFT JOIN A`.
 
 ---
 
@@ -510,7 +510,7 @@ WHERE a.email IS NULL OR b.email IS NULL;
 
 ### 8.1 Principe
 
-Le `CROSS JOIN` combine **chaque ligne** de la table A avec **chaque ligne** de la table B. Si A a 10 lignes et B a 5 lignes, le resultat a 10 × 5 = 50 lignes.
+Le `CROSS JOIN` combine **chaque ligne** de la table A avec **chaque ligne** de la table B. Si A a 10 lignes et B a 5 lignes, le résultat a 10 × 5 = 50 lignes.
 
 ```sql
 -- Syntaxe explicite
@@ -538,7 +538,7 @@ FROM taille t, couleur c;
                           └────────────────┘
 ```
 
-> **Piege classique** : Le `CROSS JOIN` est rarement ce que tu veux. Si tu as oublie la clause `ON` dans un `JOIN`, tu obtiens un produit cartesien accidentel. Sur deux tables de 10 000 lignes chacune, le resultat fait 100 000 000 lignes !
+> **Piege classique** : Le `CROSS JOIN` est rarement ce que tu veux. Si tu as oublie la clause `ON` dans un `JOIN`, tu obtiens un produit cartesien accidentel. Sur deux tables de 10 000 lignes chacune, le résultat fait 100 000 000 lignes !
 
 ### 8.2 Cas d'usage : generateur de combinaisons
 
@@ -566,7 +566,7 @@ ORDER BY m.debut_mois, c.categorie;
 
 ### 9.1 Principe
 
-Un self-join est une jointure d'une table avec **elle-meme**. Le cas classique est une hierarchie (employe → manager).
+Un self-join est une jointure d'une table avec **elle-même**. Le cas classique est une hiérarchie (employe → manager).
 
 ```sql
 -- Table avec auto-reference
@@ -617,7 +617,7 @@ LEFT JOIN personnel m ON e.manager_id = m.id;
     (Dev Junior)
 ```
 
-### 9.2 Requete recursive (CTE recursive)
+### 9.2 Requête recursive (CTE recursive)
 
 ```sql
 -- Trouver toute la chaine hierarchique d'un employe
@@ -681,7 +681,7 @@ LEFT JOIN projet p ON ep.projet_id = p.id
 ORDER BY e.nom, p.titre;
 ```
 
-> **Piege classique** : Quand tu enchaines des joins, l'ordre compte pour la lisibilite. Place les `INNER JOIN` d'abord (ils filtrent), puis les `LEFT JOIN` (ils conservent). Si tu mets un `INNER JOIN` apres un `LEFT JOIN` sur la meme branche, les NULL du LEFT JOIN seront elimines par l'INNER JOIN, annulant l'effet du LEFT.
+> **Piege classique** : Quand tu enchaines des joins, l'ordre compte pour la lisibilite. Place les `INNER JOIN` d'abord (ils filtrent), puis les `LEFT JOIN` (ils conservent). Si tu mets un `INNER JOIN` après un `LEFT JOIN` sur la même branche, les NULL du LEFT JOIN seront elimines par l'INNER JOIN, annulant l'effet du LEFT.
 
 ```sql
 -- PROBLEME : le INNER JOIN sur projet annule le LEFT JOIN sur employe_projet
@@ -760,7 +760,7 @@ ORDER BY total_depense DESC;
 
 ### 11.1 Pourquoi l'ordre peut compter
 
-Theoriquement, le query planner de PostgreSQL est libre de reordonner les joins pour trouver le plan optimal. En pratique, il existe des cas ou l'ordre des tables influence le plan :
+Theoriquement, le query planner de PostgreSQL est libre de reordonner les joins pour trouver le plan optimal. En pratique, il existe des cas où l'ordre des tables influence le plan :
 
 | Facteur | Impact |
 |---|---|
@@ -788,7 +788,7 @@ CREATE INDEX idx_employe_actif ON employe(est_actif) WHERE est_actif = true;
 
 ---
 
-## 12. Node.js : executer des jointures complexes avec pg
+## 12. Node.js : exécuter des jointures complexes avec pg
 
 ```typescript
 // fichier : jointures.mjs
@@ -890,19 +890,19 @@ main();
 
 ---
 
-## 13. Exercice mental : modeliser un systeme e-commerce
+## 13. Exercice mental : modeliser un système e-commerce
 
 Concois le schema d'une boutique en ligne avec les entites suivantes :
 
 1. **Clients** : id, nom, prenom, email (unique), adresse, ville, code_postal
 2. **Produits** : id, nom, description, prix, stock, categorie_id
-3. **Categories** : id, nom, description, categorie_parente_id (hierarchie)
+3. **Categories** : id, nom, description, categorie_parente_id (hiérarchie)
 4. **Commandes** : id, client_id, date, statut, adresse_livraison
 5. **Lignes de commande** : commande_id, produit_id, quantite, prix_unitaire
 
 Questions a te poser :
 - Quels types de relations existent entre ces tables ?
-- Quelles contraintes CHECK sont necessaires ?
+- Quelles contraintes CHECK sont nécessaires ?
 - Quel ON DELETE choisir pour chaque FK ?
 
 ### Solution
@@ -978,7 +978,7 @@ CREATE TABLE ligne_commande (
 
 ---
 
-## 14. Tableau recapitulatif de tous les types de JOIN
+## 14. Tableau récapitulatif de tous les types de JOIN
 
 | Type de JOIN | Lignes retournees | SQL |
 |---|---|---|
@@ -987,10 +987,10 @@ CREATE TABLE ligne_commande (
 | `RIGHT JOIN` | Correspondances A (NULL si absent) + tout B | `A RIGHT JOIN B ON ...` |
 | `FULL OUTER JOIN` | Tout A + tout B (NULL des deux cotes si absent) | `A FULL OUTER JOIN B ON ...` |
 | `CROSS JOIN` | Produit cartesien (A × B) | `A CROSS JOIN B` |
-| Self-join | Table jointe avec elle-meme | `A a1 JOIN A a2 ON ...` |
-| `NATURAL JOIN` | Join automatique sur colonnes de meme nom | **A eviter** (fragile) |
+| Self-join | Table jointe avec elle-même | `A a1 JOIN A a2 ON ...` |
+| `NATURAL JOIN` | Join automatique sur colonnes de même nom | **A éviter** (fragile) |
 
-> **Piege classique** : N'utilise JAMAIS `NATURAL JOIN` en production. Il joint automatiquement sur toutes les colonnes de meme nom. Si tu ajoutes une colonne `nom` dans les deux tables, le join change de comportement sans avertissement. Toujours specifier explicitement la clause `ON`.
+> **Piege classique** : N'utilise JAMAIS `NATURAL JOIN` en production. Il joint automatiquement sur toutes les colonnes de même nom. Si tu ajoutes une colonne `nom` dans les deux tables, le join change de comportement sans avertissement. Toujours spécifier explicitement la clause `ON`.
 
 ---
 
@@ -998,10 +998,20 @@ CREATE TABLE ligne_commande (
 
 | | Lien |
 |---|---|
-| Module precedent | [Module 02 — CRUD & Requetes SQL](./02-crud-et-requetes.md) |
+| Module précédent | [Module 02 — CRUD & Requetes SQL](./02-crud-et-requetes.md) |
 | Module suivant | [Module 04 — Transactions & ACID](./04-transactions-et-acid.md) |
 | Lab associe | [Lab 03 — Jointures et relations](../labs/lab-03.md) |
 
 ---
 
-> **Ce qu'il faut retenir** : Les jointures sont le coeur du modele relationnel. `INNER JOIN` pour les correspondances strictes, `LEFT JOIN` pour conserver toutes les lignes d'une table, `FULL OUTER JOIN` pour la reconciliation. Les cles etrangeres garantissent l'integrite referentielle. Les tables de jonction materialisent les relations N:M. Toujours mettre un index sur les colonnes de jointure.
+> **Ce qu'il faut retenir** : Les jointures sont le coeur du modèle relationnel. `INNER JOIN` pour les correspondances strictes, `LEFT JOIN` pour conserver toutes les lignes d'une table, `FULL OUTER JOIN` pour la reconciliation. Les clés etrangeres garantissent l'integrite referentielle. Les tables de jonction materialisent les relations N:M. Toujours mettre un index sur les colonnes de jointure.
+
+---
+
+<!-- parcours-recommande -->
+
+::: tip Parcours recommandé
+1. **Screencast** : [screencast 03 relations et jointures](../screencasts/screencast-03-relations-et-jointures.md)
+2. **Lab** : [lab-03-jointures-en-pratique](../labs/lab-03-jointures-en-pratique/README)
+3. **Quiz** : [quiz 03 relations et jointures](../quizzes/quiz-03-relations-et-jointures.html)
+:::

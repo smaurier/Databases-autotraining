@@ -1,8 +1,8 @@
 # Module 04 — Transactions & ACID
 
-> **Objectif** : Comprendre les proprietes ACID, maitriser les transactions en SQL et en Node.js, decouvrir le WAL (Write-Ahead Log) et le mecanisme de crash recovery de PostgreSQL.
+> **Objectif** : Comprendre les propriétés ACID, maîtriser les transactions en SQL et en Node.js, découvrir le WAL (Write-Ahead Log) et le mécanisme de crash recovery de PostgreSQL.
 >
-> **Difficulte** : ⭐⭐ (intermediaire)
+> **Difficulte** : ⭐⭐ (intermédiaire)
 
 ---
 
@@ -16,7 +16,7 @@ Une **transaction** est un groupe d'operations SQL qui forment une **unite logiq
 > 1. Debiter 100 EUR de A
 > 2. Crediter 100 EUR sur B
 >
-> Si le systeme plante entre les deux operations, l'argent ne doit ni disparaitre ni etre duplique. La transaction garantit que c'est **tout ou rien**.
+> Si le système plante entre les deux operations, l'argent ne doit ni disparaitre ni etre duplique. La transaction garantit que c'est **tout ou rien**.
 
 ```sql
 -- Transaction de virement bancaire
@@ -95,9 +95,9 @@ COMMIT;  -- PostgreSQL fait automatiquement un ROLLBACK ici
 
 ### 2.2 Consistency (Coherence)
 
-La base de donnees passe d'un **etat valide** a un autre **etat valide**. Les contraintes (NOT NULL, CHECK, FK, UNIQUE) sont toujours respectees apres un COMMIT.
+La base de donnees passe d'un **état valide** à un autre **état valide**. Les contraintes (NOT NULL, CHECK, FK, UNIQUE) sont toujours respectees après un COMMIT.
 
-> **Analogie** : Les regles du jeu d'echecs. Apres chaque coup, le plateau doit etre dans un etat legal. Un joueur ne peut pas poser un pion sur une case deja occupee par son propre pion. La base de donnees, c'est pareil : les contraintes sont les regles du jeu.
+> **Analogie** : Les regles du jeu d'echecs. Après chaque coup, le plateau doit etre dans un état legal. Un joueur ne peut pas poser un pion sur une case déjà occupee par son propre pion. La base de donnees, c'est pareil : les contraintes sont les regles du jeu.
 
 ```sql
 -- La coherence est garantie par les contraintes
@@ -117,9 +117,9 @@ ROLLBACK;
 
 ### 2.3 Isolation
 
-Les transactions concurrentes **ne se voient pas** pendant leur execution. Chaque transaction travaille comme si elle etait seule.
+Les transactions concurrentes **ne se voient pas** pendant leur exécution. Chaque transaction travaille comme si elle etait seule.
 
-> **Analogie** : Deux cuisiniers travaillent dans la meme cuisine mais avec des plans de travail separes. Chacun prepare son plat sans voir ce que l'autre fait. Quand un cuisinier a fini (COMMIT), son plat est servi et visible par tous.
+> **Analogie** : Deux cuisiniers travaillent dans la même cuisine mais avec des plans de travail separes. Chacun prepare son plat sans voir ce que l'autre fait. Quand un cuisinier a fini (COMMIT), son plat est servi et visible par tous.
 
 ```sql
 -- Session 1                        -- Session 2
@@ -141,9 +141,9 @@ COMMIT;
 
 ### 2.4 Durability (Durabilite)
 
-Une fois qu'une transaction est `COMMIT`, les donnees sont **definitivement** stockees, meme en cas de crash, panne de courant, ou defaillance materielle.
+Une fois qu'une transaction est `COMMIT`, les donnees sont **definitivement** stockees, même en cas de crash, panne de courant, ou defaillance materielle.
 
-> **Analogie** : Le journal de bord du capitaine. Chaque evenement important est ecrit dans le journal AVANT d'etre execute. Meme si le bateau coule, on peut reconstituer ce qui s'est passe en lisant le journal (qui est dans un coffre etanche). Dans PostgreSQL, ce journal s'appelle le **WAL** (Write-Ahead Log).
+> **Analogie** : Le journal de bord du capitaine. Chaque événement important est écrit dans le journal AVANT d'etre exécuté. Même si le bateau coule, on peut reconstituer ce qui s'est passe en lisant le journal (qui est dans un coffre etanche). Dans PostgreSQL, ce journal s'appelle le **WAL** (Write-Ahead Log).
 
 ```
  COMMIT et durabilite :
@@ -159,12 +159,12 @@ Une fois qu'une transaction est `COMMIT`, les donnees sont **definitivement** st
  → Les donnees sont restaurees a leur etat post-COMMIT
 ```
 
-### 2.5 Tableau recapitulatif ACID
+### 2.5 Tableau récapitulatif ACID
 
-| Propriete | Garantie | Mecanisme PostgreSQL | Analogie |
+| Propriété | Garantie | Mécanisme PostgreSQL | Analogie |
 |---|---|---|---|
 | **Atomicity** | Tout ou rien | Transaction log + ROLLBACK | Colis complet ou retour |
-| **Consistency** | Etat valide → etat valide | Contraintes (CHECK, FK, NOT NULL...) | Regles du jeu d'echecs |
+| **Consistency** | État valide → état valide | Contraintes (CHECK, FK, NOT NULL...) | Regles du jeu d'echecs |
 | **Isolation** | Transactions invisibles entre elles | MVCC (Multi-Version Concurrency Control) | Plans de travail separes |
 | **Durability** | COMMIT = permanent | WAL (Write-Ahead Log) | Journal de bord du capitaine |
 
@@ -225,7 +225,7 @@ INSERT INTO produit (nom, prix) VALUES ('Autre', 20);
 ROLLBACK;  -- seule option possible maintenant
 ```
 
-> **Piege classique** : En PostgreSQL, apres une erreur dans une transaction, **toutes les commandes suivantes sont rejetees** jusqu'au `ROLLBACK`. C'est different de MySQL qui peut continuer apres une erreur. Tu DOIS faire un `ROLLBACK` pour "nettoyer" l'etat d'erreur.
+> **Piege classique** : En PostgreSQL, après une erreur dans une transaction, **toutes les commandes suivantes sont rejetees** jusqu'au `ROLLBACK`. C'est différent de MySQL qui peut continuer après une erreur. Tu DOIS faire un `ROLLBACK` pour "nettoyer" l'état d'erreur.
 
 ---
 
@@ -233,7 +233,7 @@ ROLLBACK;  -- seule option possible maintenant
 
 ### 4.1 Principe
 
-Un `SAVEPOINT` cree un point de sauvegarde a l'interieur d'une transaction. Tu peux revenir a ce point (`ROLLBACK TO`) sans annuler toute la transaction.
+Un `SAVEPOINT` créé un point de sauvegarde a l'interieur d'une transaction. Tu peux revenir a ce point (`ROLLBACK TO`) sans annuler toute la transaction.
 
 > **Analogie** : C'est comme les points de sauvegarde dans un jeu video. Si tu meurs au niveau 5, tu reviens au dernier checkpoint (niveau 3) au lieu de recommencer depuis le debut.
 
@@ -338,7 +338,7 @@ COMMIT;
 
 ### 6.1 Principe fondamental
 
-Le WAL est le mecanisme qui garantit la **durabilite** (le D de ACID). La regle est simple :
+Le WAL est le mécanisme qui garantit la **durabilite** (le D de ACID). La regle est simple :
 
 > **Avant de modifier les donnees sur disque, ecris d'abord la modification dans le journal (WAL).**
 
@@ -376,7 +376,7 @@ Le WAL est le mecanisme qui garantit la **durabilite** (le D de ACID). La regle 
                Donnees intactes !
 ```
 
-> **Analogie** : Le journal de bord du capitaine. Avant chaque manoeuvre, le capitaine ecrit dans son journal : "A 14h30, virer a babord de 30 degres". Si le capitaine est frappe d'amnesie, on peut relire le journal et reproduire toutes les manoeuvres exactement.
+> **Analogie** : Le journal de bord du capitaine. Avant chaque manoeuvre, le capitaine écrit dans son journal : "A 14h30, virer a babord de 30 degres". Si le capitaine est frappe d'amnesie, on peut relire le journal et reproduire toutes les manoeuvres exactement.
 
 ### 6.2 Structure du WAL
 
@@ -403,17 +403,17 @@ Le WAL est le mecanisme qui garantit la **durabilite** (le D de ACID). La regle 
 
 ### 6.3 Parametres WAL importants
 
-| Parametre | Valeur par defaut | Role |
+| Paramètre | Valeur par defaut | Role |
 |---|---|---|
 | `wal_level` | `replica` | Niveau de detail du WAL (minimal, replica, logical) |
-| `fsync` | `on` | Force l'ecriture physique sur disque (JAMAIS desactiver en prod !) |
-| `synchronous_commit` | `on` | Attend la confirmation d'ecriture WAL avant COMMIT |
-| `wal_buffers` | `~3% de shared_buffers` | Taille du buffer WAL en memoire |
+| `fsync` | `on` | Force l'écriture physique sur disque (JAMAIS désactiver en prod !) |
+| `synchronous_commit` | `on` | Attend la confirmation d'écriture WAL avant COMMIT |
+| `wal_buffers` | `~3% de shared_buffers` | Taille du buffer WAL en mémoire |
 | `max_wal_size` | `1GB` | Taille max des WAL avant un checkpoint force |
 | `min_wal_size` | `80MB` | Taille min a conserver |
 | `checkpoint_timeout` | `5min` | Intervalle max entre deux checkpoints |
 
-> **Piege classique** : Certains tutoriels recommandent de mettre `fsync = off` pour accelerer les benchmarks. C'est extremement dangereux en production : en cas de coupure de courant, tu peux perdre TOUTES tes donnees. Ne JAMAIS desactiver `fsync` sauf pour des bases de donnees jetables (tests, dev).
+> **Piege classique** : Certains tutoriels recommandent de mettre `fsync = off` pour accelerer les benchmarks. C'est extremement dangereux en production : en cas de coupure de courant, tu peux perdre TOUTES tes donnees. Ne JAMAIS désactiver `fsync` sauf pour des bases de donnees jetables (tests, dev).
 
 ### 6.4 Le processus WAL Writer
 
@@ -447,7 +447,7 @@ Le WAL est le mecanisme qui garantit la **durabilite** (le D de ACID). La regle 
 
 ## 7. Gestion d'erreurs dans les transactions PostgreSQL
 
-### 7.1 L'etat "aborted"
+### 7.1 L'état "aborted"
 
 ```sql
 BEGIN;
@@ -465,9 +465,9 @@ SELECT 1;
 ROLLBACK;
 ```
 
-> **Ce qu'il faut retenir** : En PostgreSQL, une erreur dans une transaction **empeche toutes les commandes suivantes**. C'est plus strict que MySQL ou Oracle. C'est un choix de design delibere : il vaut mieux forcer le developpeur a gerer l'erreur plutot que de laisser passer des operations sur des donnees potentiellement incoherentes.
+> **Ce qu'il faut retenir** : En PostgreSQL, une erreur dans une transaction **empeche toutes les commandes suivantes**. C'est plus strict que MySQL ou Oracle. C'est un choix de design delibere : il vaut mieux forcer le développeur a gérer l'erreur plutot que de laisser passer des operations sur des donnees potentiellement incoherentes.
 
-### 7.2 Pattern : SAVEPOINT pour gerer les erreurs partielles
+### 7.2 Pattern : SAVEPOINT pour gérer les erreurs partielles
 
 ```sql
 BEGIN;
@@ -600,7 +600,7 @@ async function main() {
 main();
 ```
 
-### 8.2 Helper generique : withTransaction()
+### 8.2 Helper générique : withTransaction()
 
 ```typescript
 // fichier : helpers/transaction.mjs
@@ -740,7 +740,7 @@ main();
  └──────────────────────────────────────────────────┘
 ```
 
-> **Piege classique** : Oublier `client.release()` dans le `finally`. Si tu oublies, la connexion n'est jamais rendue au pool, et apres `max` connexions non liberees, l'application se bloque en attendant une connexion disponible. Utilise TOUJOURS un bloc `try`/`finally`.
+> **Piege classique** : Oublier `client.release()` dans le `finally`. Si tu oublies, la connexion n'est jamais rendue au pool, et après `max` connexions non liberees, l'application se bloque en attendant une connexion disponible. Utilise TOUJOURS un bloc `try`/`finally`.
 
 ---
 
@@ -801,15 +801,15 @@ SET idle_in_transaction_session_timeout = '5min';
 -- idle_in_transaction_session_timeout = 300000  -- 5 minutes en ms
 ```
 
-> **Ce qu'il faut retenir** : Garde tes transactions aussi **courtes que possible**. Ne fais JAMAIS d'operations non-base-de-donnees (appels HTTP, attente utilisateur, etc.) a l'interieur d'une transaction. Prends les donnees, fais les calculs en memoire, puis ouvre une transaction juste pour les ecritures.
+> **Ce qu'il faut retenir** : Garde tes transactions aussi **courtes que possible**. Ne fais JAMAIS d'operations non-base-de-donnees (appels HTTP, attente utilisateur, etc.) a l'interieur d'une transaction. Prends les donnees, fais les calculs en mémoire, puis ouvre une transaction juste pour les ecritures.
 
 ---
 
 ## 10. Crash recovery : comment PostgreSQL redemarre
 
-### 10.1 Le processus de recuperation
+### 10.1 Le processus de récupération
 
-Quand PostgreSQL redemarre apres un crash (ou un arret brutal), il execute automatiquement la **crash recovery** :
+Quand PostgreSQL redemarre après un crash (où un arret brutal), il exécuté automatiquement la **crash recovery** :
 
 ```
  Crash Recovery :
@@ -889,11 +889,11 @@ SELECT * FROM pg_stat_bgwriter;
 
 1. **Une transaction INSERT + UPDATE echoue a l'UPDATE.** Que se passe-t-il avec l'INSERT ? (Reponse : l'INSERT est aussi annule, car la transaction est atomique)
 
-2. **Tu fais un COMMIT, puis le serveur crash 1 seconde apres.** Les donnees sont-elles perdues ? (Reponse : non, car le WAL a ete ecrit sur disque AVANT le COMMIT)
+2. **Tu fais un COMMIT, puis le serveur crash 1 seconde après.** Les donnees sont-elles perdues ? (Reponse : non, car le WAL a ete écrit sur disque AVANT le COMMIT)
 
-3. **Tu as une transaction ouverte depuis 2 heures en "idle in transaction".** Quels sont les problemes potentiels ? (Reponse : table bloat, lock contention, risque de transaction ID wraparound)
+3. **Tu as une transaction ouverte depuis 2 heures en "idle in transaction".** Quels sont les problèmes potentiels ? (Reponse : table bloat, lock contention, risque de transaction ID wraparound)
 
-4. **Pourquoi faut-il utiliser `pool.connect()` et pas `pool.query()` pour les transactions en Node.js ?** (Reponse : `pool.query()` prend une connexion differente a chaque appel, donc les commandes BEGIN/INSERT/COMMIT pourraient s'executer sur des connexions differentes)
+4. **Pourquoi faut-il utiliser `pool.connect()` et pas `pool.query()` pour les transactions en Node.js ?** (Reponse : `pool.query()` prend une connexion différente à chaque appel, donc les commandes BEGIN/INSERT/COMMIT pourraient s'exécuter sur des connexions différentes)
 
 ---
 
@@ -901,10 +901,21 @@ SELECT * FROM pg_stat_bgwriter;
 
 | | Lien |
 |---|---|
-| Module precedent | [Module 03 — Relations & Jointures](./03-relations-et-jointures.md) |
+| Module précédent | [Module 03 — Relations & Jointures](./03-relations-et-jointures.md) |
 | Module suivant | [Module 05 — Index : les fondamentaux](./05-index-fondamentaux.md) |
 | Lab associe | [Lab 04 — Transactions et gestion d'erreurs](../labs/lab-04.md) |
 
 ---
 
-> **Ce qu'il faut retenir** : Les transactions garantissent ACID : Atomicite (tout ou rien), Coherence (contraintes respectees), Isolation (transactions invisibles entre elles), Durabilite (COMMIT = permanent grace au WAL). En Node.js, utilise toujours un Client dedie (`pool.connect()`) pour les transactions, et un helper `withTransaction()` pour eviter les oublis de ROLLBACK ou release. Garde les transactions courtes pour eviter le bloat et les blocages.
+> **Ce qu'il faut retenir** : Les transactions garantissent ACID : Atomicite (tout ou rien), Coherence (contraintes respectees), Isolation (transactions invisibles entre elles), Durabilite (COMMIT = permanent grace au WAL). En Node.js, utilise toujours un Client dedie (`pool.connect()`) pour les transactions, et un helper `withTransaction()` pour éviter les oublis de ROLLBACK ou release. Garde les transactions courtes pour éviter le bloat et les blocages.
+
+---
+
+<!-- parcours-recommande -->
+
+::: tip Parcours recommandé
+1. **Screencast** : [screencast 04 transactions et acid](../screencasts/screencast-04-transactions-et-acid.md)
+2. **Lab** : [lab-04-transactions](../labs/lab-04-transactions/README)
+3. **Visualisation** : [WAL & Transaction](../visualizations/wal-transaction.html)
+4. **Quiz** : [quiz 04 transactions et acid](../quizzes/quiz-04-transactions-et-acid.html)
+:::

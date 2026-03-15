@@ -1,14 +1,14 @@
-# Module 14 — Securite & Administration
+# Module 14 — Sécurité & Administration
 
-> **Objectif** : Securiser votre base PostgreSQL de bout en bout — authentification, roles, privileges, Row Level Security — et maitriser les taches d'administration essentielles.
+> **Objectif** : Securiser votre base PostgreSQL de bout en bout — authentification, roles, privileges, Row Level Security — et maîtriser les taches d'administration essentielles.
 >
 > **Difficulte** : ⭐⭐⭐⭐
 
 ---
 
-## 1. Modele de securite PostgreSQL
+## 1. Modèle de sécurité PostgreSQL
 
-La securite dans PostgreSQL s'organise en **couches concentriques** :
+La sécurité dans PostgreSQL s'organise en **couches concentriques** :
 
 ```
 ┌───────────────────────────────────────────────────────┐
@@ -29,7 +29,7 @@ La securite dans PostgreSQL s'organise en **couches concentriques** :
 └───────────────────────────────────────────────────────┘
 ```
 
-> **Analogie** : Imaginez un immeuble de bureaux. Le firewall est la grille exterieure. pg_hba.conf est le badge d'acces a la porte. GRANT/REVOKE est la cle de chaque bureau. RLS est le coffre-fort dans le bureau : meme si vous avez la cle, vous ne voyez que vos propres documents.
+> **Analogie** : Imaginez un immeuble de bureaux. Le firewall est la grille exterieure. pg_hba.conf est le badge d'acces à la porte. GRANT/REVOKE est la clé de chaque bureau. RLS est le coffre-fort dans le bureau : même si vous avez la clé, vous ne voyez que vos propres documents.
 
 ---
 
@@ -37,7 +37,7 @@ La securite dans PostgreSQL s'organise en **couches concentriques** :
 
 ### 2.1 Le fichier pg_hba.conf
 
-`pg_hba.conf` (Host-Based Authentication) est le **gardien** de PostgreSQL. Il definit qui peut se connecter, depuis ou, et comment.
+`pg_hba.conf` (Host-Based Authentication) est le **gardien** de PostgreSQL. Il définit qui peut se connecter, depuis ou, et comment.
 
 ```sql
 -- Trouver l'emplacement du fichier
@@ -62,19 +62,19 @@ host      all         all         0.0.0.0/0       reject
 | TYPE | Type de connexion | local, host, hostssl, hostnossl |
 | DATABASE | Base(s) cible(s) | all, mydb, "db1,db2" |
 | USER | Utilisateur(s) | all, myuser, +mygroup |
-| ADDRESS | Adresse IP / reseau | 127.0.0.1/32, 10.0.0.0/24 |
-| METHOD | Methode d'authentification | trust, password, md5, scram-sha-256, peer, cert |
+| ADDRESS | Adresse IP / réseau | 127.0.0.1/32, 10.0.0.0/24 |
+| METHOD | Méthode d'authentification | trust, password, md5, scram-sha-256, peer, cert |
 
-### 2.3 Methodes d'authentification
+### 2.3 Méthodes d'authentification
 
-| Methode | Securite | Description |
+| Méthode | Sécurité | Description |
 |---------|----------|-------------|
 | `trust` | **Aucune** | Pas de mot de passe (dev uniquement !) |
-| `password` | Faible | Mot de passe en clair sur le reseau |
+| `password` | Faible | Mot de passe en clair sur le réseau |
 | `md5` | Moyenne | Hash MD5 (obsolete mais courant) |
 | `scram-sha-256` | **Forte** | Standard actuel recommande |
 | `peer` | Forte | Authentification OS (local uniquement) |
-| `cert` | **Tres forte** | Certificat SSL client |
+| `cert` | **Très forte** | Certificat SSL client |
 | `reject` | - | Refus systematique |
 
 ```
@@ -88,7 +88,7 @@ host      all         all         0.0.0.0/0       reject
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### 2.4 Exemple de pg_hba.conf securise
+### 2.4 Exemple de pg_hba.conf sécurisé
 
 ```
 # Connexions locales : authentification OS
@@ -119,7 +119,7 @@ SELECT pg_reload_conf();
 -- Ou depuis le shell : pg_ctl reload
 ```
 
-> **Piege classique** : Les regles sont evaluees de **haut en bas**. La premiere regle qui correspond est utilisee. Si vous mettez `reject` en premier, plus personne ne peut se connecter !
+> **Piege classique** : Les regles sont evaluees de **haut en bas**. La première regle qui correspond est utilisee. Si vous mettez `reject` en premier, plus personne ne peut se connecter !
 
 ---
 
@@ -162,12 +162,12 @@ CREATE ROLE admin_user WITH
 |----------|-------------|--------|
 | LOGIN | Peut se connecter | Non (NOLOGIN) |
 | SUPERUSER | Ignore toutes les verifications | Non |
-| CREATEDB | Peut creer des bases | Non |
-| CREATEROLE | Peut creer d'autres roles | Non |
+| CREATEDB | Peut créer des bases | Non |
+| CREATEROLE | Peut créer d'autres roles | Non |
 | REPLICATION | Peut se connecter en mode replication | Non |
 | INHERIT | Herite des privileges des roles membres | Oui |
 
-### 3.3 Heritage de roles
+### 3.3 Héritage de roles
 
 ```sql
 -- Creer une hierarchie de roles
@@ -245,11 +245,11 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO writers;
 | UPDATE | Modifier | Incrementer | - | - |
 | DELETE | Supprimer | - | - | - |
 | TRUNCATE | Vider | - | - | - |
-| REFERENCES | Creer FK | - | - | - |
-| TRIGGER | Creer trigger | - | - | - |
-| CREATE | - | - | Creer objets | - |
+| REFERENCES | Créer FK | - | - | - |
+| TRIGGER | Créer trigger | - | - | - |
+| CREATE | - | - | Créer objets | - |
 | USAGE | - | Utiliser | Acceder | - |
-| EXECUTE | - | - | - | Executer |
+| EXECUTE | - | - | - | Exécuter |
 | ALL | Tout | Tout | Tout | Tout |
 
 ### 4.3 Default privileges
@@ -339,7 +339,7 @@ const migrationPool = new Pool({
 
 RLS permet de filtrer les lignes **au niveau de la base de donnees**. Chaque utilisateur ne voit que les lignes qui le concernent.
 
-> **Analogie** : Imaginez un classeur partage dans une entreprise. Sans RLS, tout le monde voit tous les documents. Avec RLS, chaque employe ouvre le meme classeur mais ne voit que SES documents. Le filtrage est transparent et impossible a contourner.
+> **Analogie** : Imaginez un classeur partage dans une entreprise. Sans RLS, tout le monde voit tous les documents. Avec RLS, chaque employe ouvre le même classeur mais ne voit que SES documents. Le filtrage est transparent et impossible a contourner.
 
 ### 5.2 Activer RLS
 
@@ -361,7 +361,7 @@ ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
 -- Apres activation, PERSONNE ne voit rien (sauf les SUPERUSERS)
 ```
 
-### 5.3 Creer des policies
+### 5.3 Créer des policies
 
 ```sql
 -- Policy pour SELECT : chaque tenant voit ses documents
@@ -391,7 +391,7 @@ CREATE POLICY tenant_delete ON documents
 | Clause | Appliquee a | Effet |
 |--------|-------------|-------|
 | `USING` | SELECT, UPDATE (lecture), DELETE | Filtre les lignes **visibles** |
-| `WITH CHECK` | INSERT, UPDATE (ecriture) | Verifie les lignes **ecrites** |
+| `WITH CHECK` | INSERT, UPDATE (écriture) | Verifie les lignes **ecrites** |
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -477,7 +477,7 @@ CREATE POLICY manager_view ON documents
     );
 ```
 
-> **Point cle** : Quand plusieurs policies existent pour le meme role et la meme operation, elles sont combinees avec **OR** (mode PERMISSIVE par defaut). Avec `CREATE POLICY ... AS RESTRICTIVE`, elles sont combinees avec **AND**.
+> **Point clé** : Quand plusieurs policies existent pour le même role et la même operation, elles sont combinees avec **OR** (mode PERMISSIVE par defaut). Avec `CREATE POLICY ... AS RESTRICTIVE`, elles sont combinees avec **AND**.
 
 ### 5.7 Bypass RLS
 
@@ -534,7 +534,7 @@ Base de donnees "mydb"
     └── Table orders   (memes noms, donnees differentes)
 ```
 
-### 6.2 Creer et utiliser des schemas
+### 6.2 Créer et utiliser des schemas
 
 ```sql
 -- Creer un schema
@@ -873,7 +873,7 @@ setInterval(async () => {
 
 ### 9.1 pg_stat_statements
 
-Deja couvert en detail — indispensable pour le monitoring.
+Déjà couvert en detail — indispensable pour le monitoring.
 
 ### 9.2 pgcrypto
 
@@ -1000,13 +1000,13 @@ pg_repack -U postgres -d mydb -t users --only-indexes
 
 ## 11. Exercice mental
 
-> **Exercice mental** : Vous construisez une application SaaS multi-tenant. 500 clients partagent la meme base de donnees. Comment organiseriez-vous la securite ? Quelles sont les options et leurs trade-offs ?
+> **Exercice mental** : Vous construisez une application SaaS multi-tenant. 500 clients partagent la même base de donnees. Comment organiseriez-vous la sécurité ? Quelles sont les options et leurs trade-offs ?
 
 <details>
 <summary>Reponse</summary>
 
 **Option 1 : RLS (Row Level Security)**
-- Une seule table `users`, chaque ligne a un `tenant_id`
+- Une seule table `users`, chaque ligne à un `tenant_id`
 - Policies RLS filtrent par tenant
 - Avantages : simple, un seul schema, maintenance facile
 - Inconvenients : risque de fuite si mauvaise config, index plus gros
@@ -1020,7 +1020,7 @@ pg_repack -U postgres -d mydb -t users --only-indexes
 **Option 3 : Base par tenant**
 - Une base PostgreSQL par client
 - Avantages : isolation maximale, backup/restore independant
-- Inconvenients : 500 connexions, maintenance tres lourde
+- Inconvenients : 500 connexions, maintenance très lourde
 
 **Recommandation** : RLS pour la majorite des cas. Schema par tenant pour les gros clients qui demandent une isolation forte.
 </details>
@@ -1059,7 +1059,7 @@ pg_repack -U postgres -d mydb -t users --only-indexes
 
 ## Navigation
 
-| Precedent | Suivant |
+| Précédent | Suivant |
 |---|---|
 | [Module 13 — JSONB & Types avances](./13-jsonb-et-types-avances.md) | [Module 15 — Projet final](./15-projet-final.md) |
 
@@ -1067,4 +1067,14 @@ pg_repack -U postgres -d mydb -t users --only-indexes
 
 ---
 
-> *"La securite n'est pas un produit, c'est un processus. Chaque couche que vous ajoutez reduit la surface d'attaque."*
+> *"La sécurité n'est pas un produit, c'est un processus. Chaque couche que vous ajoutez reduit la surface d'attaque."*
+
+---
+
+<!-- parcours-recommande -->
+
+::: tip Parcours recommandé
+1. **Screencast** : [screencast 14 sécurité rls](../screencasts/screencast-14-securite-rls.md)
+2. **Lab** : [lab-14-sécurité-rls](../labs/lab-14-securite-rls/README)
+3. **Quiz** : [quiz 14 sécurité et administration](../quizzes/quiz-14-securite-et-administration.html)
+:::

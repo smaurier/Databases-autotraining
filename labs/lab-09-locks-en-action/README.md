@@ -4,7 +4,7 @@
 
 - Comprendre le verrouillage de lignes avec `SELECT ... FOR UPDATE`
 - Observer le blocage entre clients concurrents
-- Utiliser `NOWAIT` et `SKIP LOCKED` pour gerer les conflits
+- Utiliser `NOWAIT` et `SKIP LOCKED` pour gérer les conflits
 - Explorer les verrous dans `pg_locks` et `pg_stat_activity`
 - Decouvrir `FOR SHARE` pour les lectures partagees
 - Mettre en oeuvre les advisory locks pour le verrouillage applicatif
@@ -29,13 +29,13 @@ CREATE TABLE seats (
 
 ## Tests (8)
 
-1. **FOR UPDATE** — Verrouiller une place et verifier le verrouillage
+1. **FOR UPDATE** — Verrouiller une place et vérifier le verrouillage
 2. **Blocage entre clients** — Client 1 verrouille, Client 2 est bloque
-3. **FOR UPDATE NOWAIT** — Erreur immediate si la place est deja verrouillee
+3. **FOR UPDATE NOWAIT** — Erreur immediate si la place est déjà verrouillee
 4. **SKIP LOCKED** — Sauter les places verrouillees et obtenir la suivante
 5. **Observer pg_locks** — Requeter pg_locks avec pg_stat_activity
-6. **FOR SHARE** — Lectures partagees autorisees, ecriture bloquee
-7. **Advisory locks** — Verrou applicatif au niveau evenement
+6. **FOR SHARE** — Lectures partagees autorisees, écriture bloquee
+7. **Advisory locks** — Verrou applicatif au niveau événement
 8. **Fonction de reservation** — FOR UPDATE + mise a jour du statut
 
 ## Lancer le lab

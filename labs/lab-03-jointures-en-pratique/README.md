@@ -2,10 +2,10 @@
 
 ## Objectifs
 
-- Maitriser les differents types de jointures (INNER, LEFT, RIGHT, FULL OUTER)
+- Maîtriser les différents types de jointures (INNER, LEFT, RIGHT, FULL OUTER)
 - Comprendre les tables de jonction (many-to-many)
 - Combiner jointures avec GROUP BY et agregations
-- Comparer sous-requetes et jointures
+- Comparer sous-requêtes et jointures
 
 ## Pre-requis
 
@@ -64,4 +64,4 @@ CREATE TABLE book_categories (
 | 7 | Multi-table JOIN (auteurs + livres + categories) |
 | 8 | COUNT livres par auteur (GROUP BY + JOIN) |
 | 9 | Auteurs sans livres (LEFT JOIN WHERE NULL) |
-| 10 | Comparaison sous-requete vs JOIN |
+| 10 | Comparaison sous-requête vs JOIN |

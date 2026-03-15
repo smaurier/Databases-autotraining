@@ -1,6 +1,6 @@
 # Module 12 — Fonctions avancees SQL
 
-> **Objectif** : Maitriser les Window Functions, les CTEs (y compris recursives), les LATERAL joins et les outils analytiques avances de PostgreSQL.
+> **Objectif** : Maîtriser les Window Functions, les CTEs (y compris recursives), les LATERAL joins et les outils analytiques avances de PostgreSQL.
 >
 > **Difficulte** : ⭐⭐⭐
 
@@ -10,9 +10,9 @@
 
 ### 1.1 Le concept
 
-Les **Window Functions** (fonctions de fenetrage) permettent de faire des calculs sur un ensemble de lignes **sans reduire le nombre de lignes** du resultat. Contrairement a GROUP BY qui agrege les lignes, une Window Function les **enrichit**.
+Les **Window Functions** (fonctions de fenetrage) permettent de faire des calculs sur un ensemble de lignes **sans reduire le nombre de lignes** du résultat. Contrairement a GROUP BY qui agrege les lignes, une Window Function les **enrichit**.
 
-> **Analogie** : Imaginez un classement de marathon. Avec GROUP BY, vous obtenez le temps moyen par categorie. Avec une Window Function, chaque coureur garde sa ligne **et** voit son rang, le temps du precedent, le cumul des temps, etc.
+> **Analogie** : Imaginez un classement de marathon. Avec GROUP BY, vous obtenez le temps moyen par categorie. Avec une Window Function, chaque coureur garde sa ligne **et** voit son rang, le temps du précédent, le cumul des temps, etc.
 
 ```
 GROUP BY (agrege) :                 Window Function (enrichit) :
@@ -28,7 +28,7 @@ GROUP BY (agrege) :                 Window Function (enrichit) :
                                      5 lignes → 5 lignes (enrichies)
 ```
 
-### 1.2 Syntaxe generale
+### 1.2 Syntaxe générale
 
 ```sql
 fonction_fenetre() OVER (
@@ -38,9 +38,9 @@ fonction_fenetre() OVER (
 )
 ```
 
-| Element | Role | Analogie |
+| Élément | Role | Analogie |
 |---------|------|----------|
-| `OVER (...)` | Definit la "fenetre" | Le cadre de la photo |
+| `OVER (...)` | Definit la "fenêtre" | Le cadre de la photo |
 | `PARTITION BY` | Regroupe (comme GROUP BY mais sans agreger) | Les categories |
 | `ORDER BY` | Trie a l'interieur de chaque partition | L'ordre de classement |
 | Frame clause | Delimite les lignes a considerer | Le zoom |
@@ -72,9 +72,9 @@ INSERT INTO ventes (vendeur, region, montant, date_vente) VALUES
 
 ---
 
-### 1.4 ROW_NUMBER() — Numerotation
+### 1.4 ROW_NUMBER() — Numérotation
 
-Attribue un numero unique a chaque ligne dans la partition.
+Attribue un numéro unique à chaque ligne dans la partition.
 
 ```sql
 -- Numerotation par region, tri par montant decroissant
@@ -140,7 +140,7 @@ FROM ventes;
 | RANK() | 7, 7 | **9** (saute le 8) |
 | DENSE_RANK() | 7, 7 | **8** (pas de saut) |
 
-### 1.6 LAG() et LEAD() — Lignes precedente/suivante
+### 1.6 LAG() et LEAD() — Lignes précédente/suivante
 
 ```sql
 -- Comparer chaque vente avec la precedente du meme vendeur
@@ -225,7 +225,7 @@ WINDOW w AS (
 );
 ```
 
-> **Piege classique** : `LAST_VALUE` retourne souvent la ligne courante car le frame par defaut est `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`. Il faut explicitement specifier `ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING`.
+> **Piege classique** : `LAST_VALUE` retourne souvent la ligne courante car le frame par defaut est `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`. Il faut explicitement spécifier `ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING`.
 
 ### 1.9 Window frames
 
@@ -245,8 +245,8 @@ FROM ventes;
 
 | Frame | Signification |
 |-------|---------------|
-| `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` | Du debut a la ligne courante |
-| `ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING` | 1 avant + courante + 1 apres |
+| `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` | Du debut à la ligne courante |
+| `ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING` | 1 avant + courante + 1 après |
 | `ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING` | Toutes les lignes de la partition |
 | `ROWS BETWEEN 3 PRECEDING AND CURRENT ROW` | 3 precedentes + courante |
 
@@ -264,7 +264,7 @@ Frame ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING :
 
 ## 2. CTEs (Common Table Expressions)
 
-### 2.1 WITH ... AS — Sous-requetes nommees
+### 2.1 WITH ... AS — Sous-requêtes nommees
 
 ```sql
 -- SANS CTE (sous-requete imbriquee, difficile a lire)
@@ -327,8 +327,8 @@ SELECT * FROM stats WHERE nb > 3;
 
 | Mode | Comportement | Cas d'usage |
 |------|-------------|-------------|
-| MATERIALIZED | Execute une fois, resultat en memoire | CTE utilisee plusieurs fois, ou pour forcer un plan |
-| NOT MATERIALIZED | Inlinee (comme une sous-requete) | CTE utilisee une fois, pour que le planner optimise |
+| MATERIALIZED | Execute une fois, résultat en mémoire | CTE utilisee plusieurs fois, ou pour forcer un plan |
+| NOT MATERIALIZED | Inlinee (comme une sous-requête) | CTE utilisee une fois, pour que le planner optimise |
 | (par defaut PG 12+) | NOT MATERIALIZED si utilisee une seule fois | - |
 
 ---
@@ -337,7 +337,7 @@ SELECT * FROM stats WHERE nb > 3;
 
 ### 3.1 WITH RECURSIVE — Le concept
 
-> **Analogie** : Imaginez un arbre genealogique. Pour trouver tous les descendants d'une personne, vous devez regarder ses enfants, puis les enfants de ses enfants, etc. C'est une operation **recursive** : chaque etape decouvre de nouvelles lignes qui alimentent l'etape suivante.
+> **Analogie** : Imaginez un arbre genealogique. Pour trouver tous les descendants d'une personne, vous devez regarder ses enfants, puis les enfants de ses enfants, etc. C'est une operation **recursive** : chaque étape découvre de nouvelles lignes qui alimentent l'étape suivante.
 
 ```sql
 WITH RECURSIVE nom_cte AS (
@@ -520,7 +520,7 @@ CYCLE id SET is_cycle USING path
 SELECT * FROM graph WHERE NOT is_cycle;
 ```
 
-### 3.5 Generation de series avec CTE recursive
+### 3.5 Génération de series avec CTE recursive
 
 ```sql
 -- Generer les dates d'un mois
@@ -546,9 +546,9 @@ SELECT generate_series('2025-03-01'::date, '2025-03-31'::date, '1 day')::date;
 
 ### 4.1 Principe
 
-Un **LATERAL join** permet a une sous-requete dans FROM de **referencer** des colonnes des tables precedentes (ce qu'un JOIN normal ne peut pas faire).
+Un **LATERAL join** permet à une sous-requête dans FROM de **referencer** des colonnes des tables precedentes (ce qu'un JOIN normal ne peut pas faire).
 
-> **Analogie** : Imaginez un formulaire ou chaque champ depend du precedent. Un LATERAL join, c'est comme un champ "ville" qui depend du champ "pays" selectionne juste avant. La sous-requete peut "voir" les valeurs de la table de gauche.
+> **Analogie** : Imaginez un formulaire ou chaque champ depend du précédent. Un LATERAL join, c'est comme un champ "ville" qui depend du champ "pays" selectionne juste avant. La sous-requête peut "voir" les valeurs de la table de gauche.
 
 ```sql
 -- IMPOSSIBLE sans LATERAL :
@@ -600,13 +600,13 @@ CROSS JOIN LATERAL (
  Sud    │ Charlie  │ 2200.00 │ 2025-01-10
 ```
 
-### 4.3 LATERAL vs Window Function vs sous-requete
+### 4.3 LATERAL vs Window Function vs sous-requête
 
 | Approche | Top-N par groupe | Performance | Lisibilite |
 |----------|-----------------|-------------|------------|
 | ROW_NUMBER() + WHERE | Oui | Bonne | Moyenne |
 | LATERAL + LIMIT | Oui | **Excellente** (utilise les index) | Bonne |
-| Sous-requete correlee | Oui | Mauvaise | Mauvaise |
+| Sous-requête correlee | Oui | Mauvaise | Mauvaise |
 
 ```sql
 -- Approche Window Function (equivalent)
@@ -764,7 +764,7 @@ GROUP BY region;
 
 ## 8. GROUPING SETS, CUBE, ROLLUP
 
-### 8.1 GROUPING SETS — Plusieurs GROUP BY en une requete
+### 8.1 GROUPING SETS — Plusieurs GROUP BY en une requête
 
 ```sql
 -- Au lieu de 3 requetes separees :
@@ -828,7 +828,7 @@ ORDER BY region NULLS LAST, vendeur NULLS LAST;
 -- Inclut aussi les totaux par vendeur (toutes regions)
 ```
 
-### 8.4 GROUPING() — Distinguer NULL reel vs sous-total
+### 8.4 GROUPING() — Distinguer NULL réel vs sous-total
 
 ```sql
 SELECT
@@ -849,9 +849,9 @@ ORDER BY GROUPING(region), region, GROUPING(vendeur), vendeur;
 <details>
 <summary>Reponse</summary>
 
-1. **LAG()** pour calculer le temps entre chaque action et la precedente
-2. **CASE WHEN** pour detecter les debuts de session (ecart > 30 min)
-3. **SUM() OVER** pour creer un identifiant de session (cumul des debuts)
+1. **LAG()** pour calculer le temps entre chaque action et la précédente
+2. **CASE WHEN** pour détecter les debuts de session (ecart > 30 min)
+3. **SUM() OVER** pour créer un identifiant de session (cumul des debuts)
 4. **GROUP BY** session_id pour calculer la duree de chaque session
 5. **ROW_NUMBER()** ou **MAX()** pour trouver la plus longue
 
@@ -889,7 +889,7 @@ C'est le pattern classique de **sessionization** en analytics.
 
 ## Navigation
 
-| Precedent | Suivant |
+| Précédent | Suivant |
 |---|---|
 | [Module 11 — Performances & Optimisation](./11-performances-et-optimisation.md) | [Module 13 — JSONB & Types avances](./13-jsonb-et-types-avances.md) |
 
@@ -898,3 +898,13 @@ C'est le pattern classique de **sessionization** en analytics.
 ---
 
 > *"SQL n'est pas un langage de programmation imperatif. C'est un langage declaratif : dites QUOI, pas COMMENT. Les Window Functions en sont la plus belle illustration."*
+
+---
+
+<!-- parcours-recommande -->
+
+::: tip Parcours recommandé
+1. **Screencast** : [screencast 12 fonctions avancees sql](../screencasts/screencast-12-fonctions-avancees-sql.md)
+2. **Lab** : [lab-12-window-functions-cte](../labs/lab-12-window-functions-cte/README)
+3. **Quiz** : [quiz 12 fonctions avancees sql](../quizzes/quiz-12-fonctions-avancees-sql.html)
+:::

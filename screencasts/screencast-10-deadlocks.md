@@ -246,7 +246,7 @@ FOR UPDATE NOWAIT;
 ROLLBACK;
 
 -- SKIP LOCKED : ignorer les lignes verrouillées
--- Parfait pour les job queues où l'ordre n'est pas critique
+-- Parfait pour les job queues ou l'ordre n'est pas critique
 SELECT * FROM accounts
 WHERE balance > 0
 FOR UPDATE SKIP LOCKED

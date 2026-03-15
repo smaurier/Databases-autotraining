@@ -5,7 +5,7 @@
 - Comprendre les trois niveaux d'isolation de PostgreSQL (Read Committed, Repeatable Read, Serializable)
 - Observer les phenomenes de concurrence (non-repeatable read, phantom read)
 - Comprendre MVCC (Multi-Version Concurrency Control)
-- Gerer les erreurs de serialisation avec une logique de retry
+- Gérer les erreurs de serialisation avec une logique de retry
 
 ## Pre-requis
 

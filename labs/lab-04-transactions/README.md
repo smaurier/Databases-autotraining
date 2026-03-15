@@ -4,8 +4,8 @@
 
 - Comprendre le concept de transaction (ACID)
 - Utiliser BEGIN, COMMIT, ROLLBACK
-- Maitriser les SAVEPOINT pour les rollbacks partiels
-- Gerer les transferts bancaires de maniere atomique
+- Maîtriser les SAVEPOINT pour les rollbacks partiels
+- Gérer les transferts bancaires de manière atomique
 - Observer le comportement concurrent de deux clients
 
 ## Pre-requis
@@ -27,7 +27,7 @@ CREATE TABLE accounts (
 
 | Fichier | Description |
 |---------|-------------|
-| `walkthrough.js` | Visite guidee interactive — a executer en premier |
+| `walkthrough.js` | Visite guidee interactive — a exécuter en premier |
 | `exercise.js` | Exercice avec TODOs |
 | `solution.js` | Solution complete (6 tests) |
 
@@ -46,5 +46,5 @@ CREATE TABLE accounts (
 | 2 | Rollback sur fonds insuffisants |
 | 3 | SAVEPOINT avec rollback partiel |
 | 4 | Transferts concurrents (2 clients) |
-| 5 | Recuperation apres erreur (etat avorte) |
+| 5 | Recuperation après erreur (état avorte) |
 | 6 | Lecture du solde dans une transaction |

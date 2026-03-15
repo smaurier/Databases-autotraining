@@ -1,20 +1,20 @@
-# Module 01 — Le modele relationnel
+# Module 01 — Le modèle relationnel
 
-> **Objectif** : Comprendre les fondements du modele relationnel, maitriser les types de donnees PostgreSQL, savoir creer des tables avec les bonnes contraintes et adopter les conventions de nommage professionnelles.
+> **Objectif** : Comprendre les fondements du modèle relationnel, maîtriser les types de donnees PostgreSQL, savoir créer des tables avec les bonnes contraintes et adopter les conventions de nommage professionnelles.
 >
-> **Difficulte** : ⭐ (debutant)
+> **Difficulte** : ⭐ (débutant)
 
 ---
 
-## 1. L'invention du modele relationnel
+## 1. L'invention du modèle relationnel
 
 ### 1.1 Edgar F. Codd et la revolution de 1970
 
-En 1970, Edgar Frank Codd, mathematicien chez IBM, publie un article qui va revolutionner l'informatique : *"A Relational Model of Data for Large Shared Data Banks"*. Avant cet article, les bases de donnees utilisaient des modeles **hierarchiques** ou **reseau** — des structures rigides, difficiles a interroger et a maintenir.
+En 1970, Edgar Frank Codd, mathematicien chez IBM, publie un article qui va revolutionner l'informatique : *"A Relational Model of Data for Large Shared Data Banks"*. Avant cet article, les bases de donnees utilisaient des modèles **hierarchiques** ou **réseau** — des structures rigides, difficiles a interroger et a maintenir.
 
-> **Analogie** : Avant Codd, les bases de donnees ressemblaient a un organigramme d'entreprise : pour trouver un employe, il fallait descendre la hierarchie depuis le PDG. Si un employe changeait de service, il fallait restructurer tout l'arbre. Codd a propose de ranger les informations dans des tables plates, comme des feuilles de calcul, et de les relier par des cles — une revolution.
+> **Analogie** : Avant Codd, les bases de donnees ressemblaient à un organigramme d'entreprise : pour trouver un employe, il fallait descendre la hiérarchie depuis le PDG. Si un employe changeait de service, il fallait restructurer tout l'arbre. Codd a propose de ranger les informations dans des tables plates, comme des feuilles de calcul, et de les relier par des clés — une revolution.
 
-L'idee geniale de Codd repose sur la **theorie des ensembles** et l'**algebre relationnelle** :
+L'idee geniale de Codd repose sur la **théorie des ensembles** et l'**algebre relationnelle** :
 
 | Concept mathematique | Equivalent en base de donnees |
 |---|---|
@@ -24,17 +24,17 @@ L'idee geniale de Codd repose sur la **theorie des ensembles** et l'**algebre re
 | **Domaine** | Type de donnees (ensemble des valeurs possibles) |
 | **Cle** | Attribut(s) identifiant uniquement chaque tuple |
 
-### 1.2 Pourquoi le modele relationnel a gagne
+### 1.2 Pourquoi le modèle relationnel a gagne
 
-| Critere | Modele hierarchique | Modele reseau | Modele relationnel |
+| Critere | Modèle hiérarchique | Modèle réseau | Modèle relationnel |
 |---|---|---|---|
 | **Structure** | Arbre rigide | Graphe complexe | Tables plates |
 | **Navigation** | Parcours d'arbre obligatoire | Pointeurs entre enregistrements | SQL declaratif |
 | **Flexibilite** | Faible (restructuration couteuse) | Moyenne | Forte (vues, jointures) |
 | **Independance donnees/programme** | Non | Non | **Oui** (SQL abstrait le stockage) |
-| **Facilite d'apprentissage** | Difficile | Tres difficile | Accessible |
+| **Facilite d'apprentissage** | Difficile | Très difficile | Accessible |
 
-> **Ce qu'il faut retenir** : Le genie du modele relationnel, c'est la **separation entre la structure logique (tables) et le stockage physique (fichiers)**. Tu ecris du SQL sans te soucier de comment les donnees sont stockees sur disque. C'est le SGBDR qui s'en occupe.
+> **Ce qu'il faut retenir** : Le genie du modèle relationnel, c'est la **separation entre la structure logique (tables) et le stockage physique (fichiers)**. Tu ecris du SQL sans te soucier de comment les donnees sont stockees sur disque. C'est le SGBDR qui s'en occupe.
 
 ---
 
@@ -58,7 +58,7 @@ L'idee geniale de Codd repose sur la **theorie des ensembles** et l'**algebre re
 
 ### 2.2 Vocabulaire formel vs informel
 
-| Formel (theorie) | Informel (pratique) | PostgreSQL |
+| Formel (théorie) | Informel (pratique) | PostgreSQL |
 |---|---|---|
 | Relation | Table | `CREATE TABLE` |
 | Tuple | Ligne, enregistrement, row | Une rangee de donnees |
@@ -70,24 +70,24 @@ L'idee geniale de Codd repose sur la **theorie des ensembles** et l'**algebre re
 | Cardinalite | Nombre de lignes | `SELECT COUNT(*)` |
 | Degre | Nombre de colonnes | Nombre d'attributs |
 
-> **Piege classique** : En theorie relationnelle, une "relation" n'est PAS une relation entre tables (c'est une table elle-meme). La relation entre tables s'appelle une **association** et se materialise par une cle etrangere. Ne confonds pas les deux termes.
+> **Piege classique** : En théorie relationnelle, une "relation" n'est PAS une relation entre tables (c'est une table elle-même). La relation entre tables s'appelle une **association** et se materialise par une clé etrangere. Ne confonds pas les deux termes.
 
 ---
 
 ## 3. Types de donnees PostgreSQL
 
-PostgreSQL offre un systeme de types extremement riche. Voici les types les plus importants :
+PostgreSQL offre un système de types extremement riche. Voici les types les plus importants :
 
 ### 3.1 Types texte
 
 | Type | Description | Taille max | Cas d'usage |
 |---|---|---|---|
 | `TEXT` | Texte de longueur illimitee | ~1 Go | **Recommande par defaut** pour tout texte |
-| `VARCHAR(n)` | Texte limite a n caracteres | n caracteres | Quand une limite stricte est necessaire |
+| `VARCHAR(n)` | Texte limite a n caracteres | n caracteres | Quand une limite stricte est nécessaire |
 | `CHAR(n)` | Texte de longueur fixe (padde avec des espaces) | n caracteres | **Rarement utilise** — codes fixes (ISO) |
 | `NAME` | Type interne PostgreSQL (63 octets) | 63 octets | Noms d'objets internes uniquement |
 
-> **Ce qu'il faut retenir** : En PostgreSQL, `TEXT` et `VARCHAR` ont **exactement les memes performances**. Il n'y a AUCUN avantage de performance a utiliser `VARCHAR(255)` par rapport a `TEXT`. Utilise `TEXT` par defaut, et `VARCHAR(n)` uniquement si tu as une contrainte metier reelle sur la longueur.
+> **Ce qu'il faut retenir** : En PostgreSQL, `TEXT` et `VARCHAR` ont **exactement les memes performances**. Il n'y a AUCUN avantage de performance à utiliser `VARCHAR(255)` par rapport a `TEXT`. Utilise `TEXT` par defaut, et `VARCHAR(n)` uniquement si tu as une contrainte metier réelle sur la longueur.
 
 ```sql
 -- Toutes ces declarations sont equivalentes en performance
@@ -99,7 +99,7 @@ CREATE TABLE exemple_texte (
 );
 ```
 
-### 3.2 Types numeriques
+### 3.2 Types numériques
 
 | Type | Taille | Plage | Cas d'usage |
 |---|---|---|---|
@@ -130,10 +130,10 @@ SELECT 1050 + 2099;  -- 10.50 + 20.99 = 31.49 EUR → 3149 centimes
 
 | Type | Equivalent | Recommandation |
 |---|---|---|
-| `SERIAL` | `INTEGER` + sequence automatique | Legacy, encore tres utilise |
+| `SERIAL` | `INTEGER` + sequence automatique | Legacy, encore très utilise |
 | `BIGSERIAL` | `BIGINT` + sequence automatique | Legacy, pour grandes tables |
 | `GENERATED ALWAYS AS IDENTITY` | Standard SQL, plus strict | **Recommande (SQL standard)** |
-| `GENERATED BY DEFAULT AS IDENTITY` | Standard SQL, permet override | Quand on veut pouvoir specifier l'ID |
+| `GENERATED BY DEFAULT AS IDENTITY` | Standard SQL, permet override | Quand on veut pouvoir spécifier l'ID |
 
 ```sql
 -- Ancien style (SERIAL) — fonctionne mais n'est pas standard SQL
@@ -162,11 +162,11 @@ INSERT INTO produits_v2 (id, nom) OVERRIDING SYSTEM VALUE VALUES (999, 'Test');
 |---|---|---|---|
 | `DATE` | 4 octets | Date seule (AAAA-MM-JJ) | Dates de naissance, echeances |
 | `TIME` | 8 octets | Heure seule (HH:MM:SS.µs) | Horaires (rare) |
-| `TIMESTAMP` | 8 octets | Date + heure SANS fuseau | **A eviter** |
+| `TIMESTAMP` | 8 octets | Date + heure SANS fuseau | **A éviter** |
 | `TIMESTAMPTZ` | 8 octets | Date + heure AVEC fuseau | **Toujours utiliser celui-ci** |
 | `INTERVAL` | 16 octets | Duree (jours, heures, etc.) | Calculs de duree |
 
-> **Piege classique** : Utilise TOUJOURS `TIMESTAMPTZ` et jamais `TIMESTAMP`. PostgreSQL stocke `TIMESTAMPTZ` en UTC interne et le convertit automatiquement selon le fuseau de la session. Avec `TIMESTAMP` (sans TZ), tu perds l'information de fuseau et tu auras des bugs quand tes utilisateurs sont dans differents fuseaux horaires.
+> **Piege classique** : Utilise TOUJOURS `TIMESTAMPTZ` et jamais `TIMESTAMP`. PostgreSQL stocke `TIMESTAMPTZ` en UTC interne et le convertit automatiquement selon le fuseau de la session. Avec `TIMESTAMP` (sans TZ), tu perds l'information de fuseau et tu auras des bugs quand tes utilisateurs sont dans différents fuseaux horaires.
 
 ```sql
 -- Demontrer la difference
@@ -197,11 +197,11 @@ SELECT
 
 | Type | Description | Cas d'usage |
 |---|---|---|
-| `BOOLEAN` | `true`, `false`, `NULL` | Drapeaux, etats binaires |
+| `BOOLEAN` | `true`, `false`, `NULL` | Drapeaux, états binaires |
 | `UUID` | Identifiant universel unique (128 bits) | IDs distribues, APIs publiques |
 | `JSONB` | JSON binaire indexable | Donnees semi-structurees |
 | `BYTEA` | Donnees binaires (bytes) | Fichiers, images (deconseille) |
-| `INET` / `CIDR` | Adresses IP / reseaux | Logs, securite |
+| `INET` / `CIDR` | Adresses IP / réseaux | Logs, sécurité |
 | `ARRAY` | Tableau de n'importe quel type | Listes simples |
 
 ```sql
@@ -349,7 +349,7 @@ CREATE TABLE reservations (
 );
 ```
 
-> **Piege classique** : `UNIQUE` autorise plusieurs `NULL` dans PostgreSQL. Deux lignes peuvent avoir `phone = NULL` meme si `phone` est `UNIQUE`. C'est conforme au standard SQL : `NULL ≠ NULL`.
+> **Piege classique** : `UNIQUE` autorise plusieurs `NULL` dans PostgreSQL. Deux lignes peuvent avoir `phone = NULL` même si `phone` est `UNIQUE`. C'est conforme au standard SQL : `NULL ≠ NULL`.
 
 ### 5.3 CHECK
 
@@ -389,7 +389,7 @@ INSERT INTO commandes DEFAULT VALUES;
 
 ### 5.5 PRIMARY KEY
 
-La cle primaire est une combinaison de `NOT NULL` + `UNIQUE`. Chaque table doit avoir une et une seule cle primaire.
+La clé primaire est une combinaison de `NOT NULL` + `UNIQUE`. Chaque table doit avoir une et une seule clé primaire.
 
 ```sql
 -- Cle primaire simple (la plus courante)
@@ -407,9 +407,9 @@ CREATE TABLE cours_etudiants (
 );
 ```
 
-> **Analogie** : La cle primaire, c'est le numero de securite sociale. Chaque personne en a un, il est unique, et il ne change jamais. Dans une table, c'est l'adresse definitive de chaque ligne.
+> **Analogie** : La clé primaire, c'est le numéro de sécurité sociale. Chaque personne en à un, il est unique, et il ne change jamais. Dans une table, c'est l'adresse definitive de chaque ligne.
 
-### 5.6 Tableau recapitulatif des contraintes
+### 5.6 Tableau récapitulatif des contraintes
 
 | Contrainte | Niveau | Null autorise ? | Duplicats autorises ? | Cas d'usage |
 |---|---|---|---|---|
@@ -418,7 +418,7 @@ CREATE TABLE cours_etudiants (
 | `CHECK` | Colonne ou table | Oui | Oui | Validations metier |
 | `DEFAULT` | Colonne | — | — | Valeurs par defaut |
 | `PRIMARY KEY` | Colonne ou table | Non | Non | Identifiant unique |
-| `FOREIGN KEY` | Colonne ou table | Oui | Oui | References entre tables |
+| `FOREIGN KEY` | Colonne ou table | Oui | Oui | Références entre tables |
 
 ---
 
@@ -426,7 +426,7 @@ CREATE TABLE cours_etudiants (
 
 ### 6.1 Qu'est-ce qu'une sequence ?
 
-Une sequence est un objet PostgreSQL qui genere des nombres uniques incrementaux.
+Une sequence est un objet PostgreSQL qui généré des nombres uniques incrementaux.
 
 ```sql
 -- Creer une sequence manuellement
@@ -444,7 +444,7 @@ SELECT currval('compteur_seq');  -- 3
 ALTER SEQUENCE compteur_seq RESTART WITH 1;
 ```
 
-> **Piege classique** : Les sequences ne sont PAS transactionnelles pour la generation de valeurs. Si une transaction fait `nextval()` puis `ROLLBACK`, la valeur est "perdue" — la sequence ne revient pas en arriere. C'est normal et voulu : cela evite les blocages entre transactions concurrentes. Accepte les trous dans tes IDs.
+> **Piege classique** : Les sequences ne sont PAS transactionnelles pour la génération de valeurs. Si une transaction fait `nextval()` puis `ROLLBACK`, la valeur est "perdue" — la sequence ne revient pas en arriere. C'est normal et voulu : cela evite les blocages entre transactions concurrentes. Accepte les trous dans tes IDs.
 
 ### 6.2 SERIAL : le raccourci historique
 
@@ -483,9 +483,9 @@ CREATE TABLE t3 (
 
 | Aspect | `SERIAL` | `GENERATED ALWAYS AS IDENTITY` |
 |---|---|---|
-| Standard SQL | Non (PostgreSQL specifique) | Oui |
+| Standard SQL | Non (PostgreSQL spécifique) | Oui |
 | Insertion manuelle | Autorisee (avec risque de conflit) | Interdite (sauf `OVERRIDING SYSTEM VALUE`) |
-| `pg_dump` | La sequence peut se desynchroniser | Mieux gere |
+| `pg_dump` | La sequence peut se desynchroniser | Mieux géré |
 | Recommandation | Legacy, fonctionne bien | **Preferer pour les nouveaux projets** |
 
 ---
@@ -501,12 +501,12 @@ CREATE TABLE t3 (
 | **Tables au pluriel** (alternative) | `utilisateurs` | — | Convention aussi valide, mais sois **coherent** |
 | **Cle primaire : `id`** | `id` | `utilisateur_id`, `uid` | Simple, universel |
 | **Cle etrangere : `table_id`** | `departement_id` | `dept`, `dep_id`, `fk_dep` | Explicite et lisible |
-| **Pas d'abreviations** | `commande`, `produit` | `cmd`, `prod` | Lisibilite pour toute l'equipe |
+| **Pas d'abreviations** | `commande`, `produit` | `cmd`, `prod` | Lisibilite pour toute l'équipe |
 | **Prefixe pour les booleans** | `est_actif`, `a_paye` | `actif`, `paye` | Clarifie que c'est un boolean |
 | **Pas de mots reserves** | `commande` | `order`, `table`, `user` | Evite les conflits SQL |
 | **Pas de type dans le nom** | `email` | `email_varchar`, `str_email` | Le type est dans le schema |
 
-> **Piege classique** : Si tu utilises des majuscules dans un nom PostgreSQL, tu devras TOUJOURS le mettre entre guillemets doubles. `CREATE TABLE "MaTable" (...)` oblige a ecrire `SELECT * FROM "MaTable"` partout. Utilise snake_case et tu n'auras jamais ce probleme.
+> **Piege classique** : Si tu utilises des majuscules dans un nom PostgreSQL, tu devras TOUJOURS le mettre entre guillemets doubles. `CREATE TABLE "MaTable" (...)` oblige à écrire `SELECT * FROM "MaTable"` partout. Utilise snake_case et tu n'auras jamais ce problème.
 
 ```sql
 -- BON : snake_case, tout en minuscule
@@ -530,20 +530,20 @@ CREATE TABLE "OrderLine" (
 
 ### 7.2 Les 10 regles d'or
 
-1. **Toujours une cle primaire** — chaque table doit avoir un identifiant unique
-2. **Toujours `NOT NULL` sauf si NULL a un sens metier** — un email optionnel est acceptable, un nom NULL ne l'est pas
+1. **Toujours une clé primaire** — chaque table doit avoir un identifiant unique
+2. **Toujours `NOT NULL` sauf si NULL à un sens metier** — un email optionnel est acceptable, un nom NULL ne l'est pas
 3. **Utiliser les bons types** — `TIMESTAMPTZ` pas `TEXT` pour les dates, `NUMERIC` pas `REAL` pour l'argent
 4. **Contraintes dans la base, pas dans l'application** — ne fais pas confiance au code applicatif pour valider
-5. **Noms explicites** — un developpeur qui lit le schema doit comprendre sans documentation
-6. **Eviter les colonnes "fourre-tout"** — pas de colonne `data TEXT` qui contient du JSON en serie
-7. **Normaliser** — eviter la duplication de donnees (voir modules suivants)
-8. **Pas de donnees calculees stockees** (sauf cache) — `total = prix * quantite` se calcule a la volee
+5. **Noms explicites** — un développeur qui lit le schema doit comprendre sans documentation
+6. **Éviter les colonnes "fourre-tout"** — pas de colonne `data TEXT` qui contient du JSON en serie
+7. **Normaliser** — éviter la duplication de donnees (voir modules suivants)
+8. **Pas de donnees calculees stockees** (sauf cache) — `total = prix * quantite` se calcule à la volee
 9. **Colonnes de metadata** — `cree_le`, `modifie_le` sur les tables importantes
 10. **Commentaires sur les colonnes ambigues** — `COMMENT ON COLUMN`
 
 ---
 
-## 8. Node.js : creer des tables programmatiquement
+## 8. Node.js : créer des tables programmatiquement
 
 ### 8.1 Script de migration basique
 
@@ -646,7 +646,7 @@ async function main() {
 main();
 ```
 
-### 8.2 Verifier le schema depuis Node.js
+### 8.2 Vérifier le schema depuis Node.js
 
 ```typescript
 // fichier : check-schema.mjs
@@ -738,7 +738,7 @@ DROP TABLE departement CASCADE;
 DROP TABLE IF EXISTS employe_projet, projet, employe, departement CASCADE;
 ```
 
-> **Piege classique** : `DROP TABLE CASCADE` ne demande PAS de confirmation. Il supprime instantanement la table et toutes les dependances. En production, c'est extremement dangereux. Toujours verifier avec `\d+ nom_table` avant de supprimer.
+> **Piege classique** : `DROP TABLE CASCADE` ne demandé PAS de confirmation. Il supprime instantanement la table et toutes les dépendances. En production, c'est extremement dangereux. Toujours vérifier avec `\d+ nom_table` avant de supprimer.
 
 ### 9.2 ALTER TABLE — les modifications les plus courantes
 
@@ -780,7 +780,7 @@ ALTER TABLE employe ALTER COLUMN poste DROP DEFAULT;
 ALTER TABLE employe RENAME TO collaborateur;
 ```
 
-> **Ce qu'il faut retenir** : La plupart des `ALTER TABLE` en PostgreSQL sont **tres rapides** car elles ne modifient que le catalogue systeme (metadata), pas les donnees. Exceptions notables : `ALTER COLUMN TYPE` peut necessiter une reecriture complete de la table si le type change de facon incompatible.
+> **Ce qu'il faut retenir** : La plupart des `ALTER TABLE` en PostgreSQL sont **très rapides** car elles ne modifient que le catalogue système (metadata), pas les donnees. Exceptions notables : `ALTER COLUMN TYPE` peut necessiter une reecriture complete de la table si le type change de façon incompatible.
 
 ### 9.3 Tableau des operations ALTER et leur impact
 
@@ -802,8 +802,8 @@ ALTER TABLE employe RENAME TO collaborateur;
 Imagine que tu dois modeliser la base de donnees d'une bibliotheque municipale. Reflechis aux questions suivantes avant de regarder la solution :
 
 1. Quelles sont les entites principales ? (livres, auteurs, adherents, emprunts...)
-2. Quelles sont les relations entre elles ? (un auteur ecrit plusieurs livres, un adherent emprunte plusieurs livres...)
-3. Quelles contraintes metier faut-il appliquer ? (un emprunt a une date de retour prevue, un livre ne peut pas etre emprunte s'il est deja sorti...)
+2. Quelles sont les relations entre elles ? (un auteur écrit plusieurs livres, un adherent emprunte plusieurs livres...)
+3. Quelles contraintes metier faut-il appliquer ? (un emprunt à une date de retour prevue, un livre ne peut pas etre emprunte s'il est déjà sorti...)
 
 ### Solution proposee
 
@@ -888,10 +888,20 @@ CREATE TABLE emprunt (
 
 | | Lien |
 |---|---|
-| Module precedent | [Module 00 — Prerequis & Vue d'ensemble](./00-prerequis-et-vue-ensemble.md) |
+| Module précédent | [Module 00 — Prérequis & Vue d'ensemble](./00-prerequis-et-vue-ensemble.md) |
 | Module suivant | [Module 02 — CRUD & Requetes SQL](./02-crud-et-requetes.md) |
-| Lab associe | [Lab 01 — Creer un schema de base de donnees](../labs/lab-01.md) |
+| Lab associe | [Lab 01 — Créer un schema de base de donnees](../labs/lab-01.md) |
 
 ---
 
-> **Ce qu'il faut retenir** : Le modele relationnel repose sur des tables, des types stricts et des contraintes qui garantissent l'integrite des donnees. PostgreSQL offre un systeme de types extremement riche (TEXT, NUMERIC, TIMESTAMPTZ, UUID, JSONB, arrays...). Choisis tes types avec soin, nomme tes colonnes clairement en snake_case, et laisse la base de donnees valider tes donnees via les contraintes — c'est sa raison d'etre.
+> **Ce qu'il faut retenir** : Le modèle relationnel repose sur des tables, des types stricts et des contraintes qui garantissent l'integrite des donnees. PostgreSQL offre un système de types extremement riche (TEXT, NUMERIC, TIMESTAMPTZ, UUID, JSONB, arrays...). Choisis tes types avec soin, nomme tes colonnes clairement en snake_case, et laisse la base de donnees valider tes donnees via les contraintes — c'est sa raison d'etre.
+
+---
+
+<!-- parcours-recommande -->
+
+::: tip Parcours recommandé
+1. **Screencast** : [screencast 01 modèle relationnel](../screencasts/screencast-01-modele-relationnel.md)
+2. **Lab** : [lab-01-premiers-pas-psql](../labs/lab-01-premiers-pas-psql/README)
+3. **Quiz** : [quiz 01 modèle relationnel](../quizzes/quiz-01-modele-relationnel.html)
+:::

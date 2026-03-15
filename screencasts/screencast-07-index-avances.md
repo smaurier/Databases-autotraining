@@ -155,7 +155,7 @@ WHERE during && '[2025-06-01, 2025-06-10)'::tstzrange;
 
 ### [10:00-13:30] BRIN — Time-series et données triées
 
-> BRIN (Block Range INdex) est un index minuscule qui fonctionne quand les données sont physiquement triées sur le disque. Parfait pour les tables de logs ou d'événements où les nouvelles lignes arrivent toujours à la fin.
+> BRIN (Block Range INdex) est un index minuscule qui fonctionne quand les données sont physiquement triées sur le disque. Parfait pour les tables de logs ou d'événements ou les nouvelles lignes arrivent toujours à la fin.
 
 **Action** : Démontrer BRIN sur une table de logs.
 

@@ -153,7 +153,7 @@ node demo-hello.js
 
 **Action** : Montrer la structure du dossier `postgres-course/` dans l'éditeur : modules, labs, visualizations, screencasts.
 
-> Chaque module a un lab pratique associé. Je vous encourage à toujours faire le lab après avoir regardé le screencast correspondant. C'est en pratiquant qu'on apprend vraiment.
+> Chaque module à un lab pratique associé. Je vous encourage à toujours faire le lab après avoir regardé le screencast correspondant. C'est en pratiquant qu'on apprend vraiment.
 
 **Action** : Ouvrir rapidement un dossier lab pour montrer la structure (README, fichiers SQL, tests).
 

@@ -2,17 +2,17 @@
 
 ## Objectifs
 
-Ce lab explore les strategies de partitionnement dans PostgreSQL pour gerer de grands volumes de donnees :
+Ce lab explore les stratégies de partitionnement dans PostgreSQL pour gérer de grands volumes de donnees :
 
 - Partitionnement RANGE (par date)
 - Partitionnement LIST (par statut ou categorie)
 - Partitionnement HASH (distribution uniforme)
-- Partition pruning et verification via EXPLAIN
+- Partition pruning et vérification via EXPLAIN
 - Detachement de partitions pour archivage
 - Partition par defaut
 - Comparaison de performances partitionnee vs non-partitionnee
 
-## Concepts cles
+## Concepts clés
 
 ```sql
 -- Table partitionnee par RANGE
@@ -33,13 +33,13 @@ ALTER TABLE logs DETACH PARTITION logs_2024_01;
 
 ## Tests (10)
 
-1. **RANGE** — Creer une table partitionnee par mois
-2. **Partitions mensuelles** — Creer les 12 partitions de 2024
+1. **RANGE** — Créer une table partitionnee par mois
+2. **Partitions mensuelles** — Créer les 12 partitions de 2024
 3. **Insertion** — Distribuer des donnees dans les partitions
-4. **Partition pruning** — EXPLAIN verifie l'exclusion
+4. **Partition pruning** — EXPLAIN vérifié l'exclusion
 5. **LIST** — Partitionner par statut
 6. **HASH** — Distribution uniforme
-7. **Subplans Removed** — Verifier l'exclusion dans EXPLAIN
+7. **Subplans Removed** — Vérifier l'exclusion dans EXPLAIN
 8. **DETACH** — Detacher une partition pour archivage
 9. **Default** — Partition par defaut pour les donnees hors range
 10. **Performance** — Comparer partitionnee vs non-partitionnee sur 500K rows

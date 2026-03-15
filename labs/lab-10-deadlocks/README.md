@@ -28,13 +28,13 @@ CREATE TABLE accounts (
 ## Tests (8)
 
 1. **Provoquer un deadlock** — Deux clients verrouillent en ordre inverse
-2. **Catcher l'erreur 40P01** — Verifier le code et le message
+2. **Catcher l'erreur 40P01** — Vérifier le code et le message
 3. **Lock ordering** — Toujours verrouiller par ID croissant
 4. **NOWAIT** — Echouer rapidement au lieu de bloquer
 5. **SKIP LOCKED** — Traitement de file sans deadlock
 6. **pg_stat_database** — Compteur de deadlocks
-7. **Transfert securise** — Fonction avec ordonnancement des verrous
-8. **Traitement par lots** — UPDATE avec ORDER BY pour eviter les deadlocks
+7. **Transfert sécurisé** — Fonction avec ordonnancement des verrous
+8. **Traitement par lots** — UPDATE avec ORDER BY pour éviter les deadlocks
 
 ## Lancer le lab
 

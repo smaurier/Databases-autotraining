@@ -2,17 +2,17 @@
 
 ## Objectifs
 
-Ce lab explore les concepts fondamentaux de la replication PostgreSQL. Comme la replication necessite plusieurs instances PostgreSQL, les exercices simulent et verifient les concepts cles sur une instance unique :
+Ce lab explore les concepts fondamentaux de la replication PostgreSQL. Comme la replication nécessité plusieurs instances PostgreSQL, les exercices simulent et verifient les concepts clés sur une instance unique :
 
 - Configuration WAL (Write-Ahead Log)
 - Publications et souscriptions (replication logique)
 - Slots de replication logique et decodage
 - Monitoring de la replication via pg_stat_replication
 - Statistiques WAL avec pg_stat_wal
-- Routage lecture/ecriture avec clients multiples
-- Verification pg_basebackup
+- Routage lecture/écriture avec clients multiples
+- Vérification pg_basebackup
 
-## Concepts cles
+## Concepts clés
 
 ```sql
 -- Verifier le niveau WAL
@@ -36,14 +36,14 @@ SELECT * FROM pg_stat_wal;
 
 ## Tests (8)
 
-1. **WAL level** — Verifier le parametre wal_level
-2. **Publication** — Creer une publication pour replication logique
-3. **pg_stat_replication** — Verifier la structure de la vue
-4. **Decodage logique** — Creer un slot et lire les changements
-5. **Replication lag** — Requete de monitoring du retard
+1. **WAL level** — Vérifier le paramètre wal_level
+2. **Publication** — Créer une publication pour replication logique
+3. **pg_stat_replication** — Vérifier la structure de la vue
+4. **Decodage logique** — Créer un slot et lire les changements
+5. **Replication lag** — Requête de monitoring du retard
 6. **Statistiques WAL** — Consulter pg_stat_wal
-7. **Routage lecture/ecriture** — Simuler avec deux clients
-8. **pg_basebackup** — Verification dry-run
+7. **Routage lecture/écriture** — Simuler avec deux clients
+8. **pg_basebackup** — Vérification dry-run
 
 ## Lancer le lab
 

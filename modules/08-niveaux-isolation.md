@@ -1,22 +1,22 @@
 # Module 08 — Niveaux d'isolation & MVCC
 
-> **Objectif** : Comprendre comment PostgreSQL gere la concurrence sans que les transactions ne se marchent sur les pieds, grace a MVCC et aux niveaux d'isolation.
+> **Objectif** : Comprendre comment PostgreSQL géré la concurrence sans que les transactions ne se marchent sur les pieds, grâce à MVCC et aux niveaux d'isolation.
 >
 > **Difficulte** : ⭐⭐⭐
 
 ---
 
-> **⚠️ Les modules 08, 09 et 10 forment un bloc difficile** (isolation, locks, deadlocks). C'est le passage le plus abstrait du cours. Si tu galeres, c'est normal — la concurrence est un sujet difficile meme pour des devs seniors. Fais les labs, utilise les diagrammes, et ne reste pas bloque plus de 30 min sur un concept. Tu peux aussi les faire en mode "lecture + quiz" sans deep dive — tu y reviendras quand tu en auras besoin en production.
+> **⚠️ Les modules 08, 09 et 10 forment un bloc difficile** (isolation, locks, deadlocks). C'est le passage le plus abstrait du cours. Si tu galeres, c'est normal — la concurrence est un sujet difficile même pour des devs seniors. Fais les labs, utilise les diagrammes, et ne reste pas bloque plus de 30 min sur un concept. Tu peux aussi les faire en mode "lecture + quiz" sans deep dive — tu y reviendras quand tu en auras besoin en production.
 
-## 1. Le probleme de la concurrence
+## 1. Le problème de la concurrence
 
-Imaginez une bibliotheque universitaire. Des dizaines d'etudiants lisent des livres en meme temps, certains annotent des exemplaires, d'autres en empruntent. Si chaque etudiant devait attendre que tous les autres aient fini avant de toucher un livre, la bibliotheque serait inutilisable.
+Imaginez une bibliotheque universitaire. Des dizaines d'etudiants lisent des livres en même temps, certains annotent des exemplaires, d'autres en empruntent. Si chaque etudiant devait attendre que tous les autres aient fini avant de toucher un livre, la bibliotheque serait inutilisable.
 
 > **Analogie** : Une base de donnees est cette bibliotheque. Les **lecteurs** (SELECT) veulent consulter des donnees, les **ecrivains** (INSERT, UPDATE, DELETE) veulent les modifier. Le defi : permettre a tout le monde de travailler simultanement sans corrompre les donnees.
 
-Dans un systeme naif, on pourrait poser un **verrou global** : "personne ne lit tant que quelqu'un ecrit". Mais c'est catastrophique pour les performances.
+Dans un système naif, on pourrait poser un **verrou global** : "personne ne lit tant que quelqu'un écrit". Mais c'est catastrophique pour les performances.
 
-PostgreSQL a choisi une approche radicalement differente : **MVCC** (Multi-Version Concurrency Control).
+PostgreSQL a choisi une approche radicalement différente : **MVCC** (Multi-Version Concurrency Control).
 
 ### Le principe fondamental
 
@@ -32,7 +32,7 @@ PostgreSQL a choisi une approche radicalement differente : **MVCC** (Multi-Versi
 └─────────────────────────────────────────────────────┘
 ```
 
-C'est cette propriete qui rend PostgreSQL si performant en environnement concurrent.
+C'est cette propriété qui rend PostgreSQL si performant en environnement concurrent.
 
 ---
 
@@ -40,9 +40,9 @@ C'est cette propriete qui rend PostgreSQL si performant en environnement concurr
 
 ### 2.1 Le concept : des versions multiples
 
-Au lieu de modifier une ligne "en place" (comme dans un fichier texte classique), PostgreSQL **cree une nouvelle version** de la ligne a chaque modification.
+Au lieu de modifier une ligne "en place" (comme dans un fichier texte classique), PostgreSQL **créé une nouvelle version** de la ligne à chaque modification.
 
-> **Analogie** : Imaginez un document Google Docs. Quand vous modifiez un paragraphe, Google conserve l'historique des versions. Vous pouvez toujours revenir a une version anterieure. PostgreSQL fait exactement la meme chose, mais au niveau de chaque ligne de chaque table.
+> **Analogie** : Imaginez un document Google Docs. Quand vous modifiez un paragraphe, Google conserve l'historique des versions. Vous pouvez toujours revenir à une version anterieure. PostgreSQL fait exactement la même chose, mais au niveau de chaque ligne de chaque table.
 
 ```
 Etat de la table "comptes" au fil du temps :
@@ -62,14 +62,14 @@ Les DEUX versions coexistent physiquement dans la table !
 
 ### 2.2 xmin et xmax : les colonnes cachees
 
-Chaque ligne (tuple) dans PostgreSQL possede des **colonnes systeme invisibles** :
+Chaque ligne (tuple) dans PostgreSQL possede des **colonnes système invisibles** :
 
 | Colonne | Signification | Valeur |
 |---------|---------------|--------|
-| `xmin` | Transaction qui a **cree** cette version | ID de transaction (XID) |
+| `xmin` | Transaction qui a **créé** cette version | ID de transaction (XID) |
 | `xmax` | Transaction qui a **supprime/remplace** cette version | XID ou 0 si vivante |
 | `ctid` | Position physique dans la page | (page, offset) |
-| `cmin` | Numero de commande dans la transaction (creation) | Entier |
+| `cmin` | Numero de commande dans la transaction (création) | Entier |
 | `cmax` | Numero de commande dans la transaction (suppression) | Entier |
 
 ```sql
@@ -105,16 +105,16 @@ SELECT xmin, xmax, ctid, * FROM comptes;
 ```
 
 Etapes :
-1. **INSERT** : cree un tuple avec `xmin = tx_courante`, `xmax = 0`
-2. **UPDATE** : marque l'ancien tuple (`xmax = tx_courante`), cree un **nouveau** tuple
+1. **INSERT** : créé un tuple avec `xmin = tx_courante`, `xmax = 0`
+2. **UPDATE** : marque l'ancien tuple (`xmax = tx_courante`), créé un **nouveau** tuple
 3. **DELETE** : marque le tuple (`xmax = tx_courante`), pas de nouveau tuple
 4. **VACUUM** : nettoie les tuples morts que plus aucune transaction ne peut voir
 
 ### 2.4 Snapshots et visibilite
 
-Un **snapshot** est une "photographie" de l'etat de la base a un instant donne.
+Un **snapshot** est une "photographie" de l'état de la base à un instant donne.
 
-> **Analogie** : Photographier la base a un instant T. Quand vous prenez une photo d'un paysage, les voitures qui arrivent APRES le declenchement ne sont pas sur la photo. De meme, les modifications faites APRES la prise du snapshot sont invisibles.
+> **Analogie** : Photographier la base à un instant T. Quand vous prenez une photo d'un paysage, les voitures qui arrivent APRES le declenchement ne sont pas sur la photo. De même, les modifications faites APRES la prise du snapshot sont invisibles.
 
 Un snapshot contient :
 - `xmin` : le plus petit XID encore en cours au moment du snapshot
@@ -142,7 +142,7 @@ SELECT txid_current_snapshot();
 
 ### 2.5 Quand le snapshot est-il pris ?
 
-C'est LA question cruciale, et la reponse depend du **niveau d'isolation** :
+C'est LA question cruciale, et la réponse depend du **niveau d'isolation** :
 
 | Niveau d'isolation | Moment du snapshot |
 |---|---|
@@ -154,7 +154,7 @@ C'est LA question cruciale, et la reponse depend du **niveau d'isolation** :
 
 ## 3. Les phenomenes de concurrence
 
-Avant de comprendre les niveaux d'isolation, il faut connaitre les **problemes** qu'ils resolvent.
+Avant de comprendre les niveaux d'isolation, il faut connaître les **problèmes** qu'ils resolvent.
 
 ### 3.1 Dirty Read (lecture sale)
 
@@ -177,11 +177,11 @@ ROLLBACK;
                                  -- sur une donnee FANTOME
 ```
 
-> **Piege classique** : Dans PostgreSQL, le Dirty Read est **IMPOSSIBLE**, quel que soit le niveau d'isolation. Meme si vous demandez `READ UNCOMMITTED`, PostgreSQL applique `READ COMMITTED`. C'est un choix de conception.
+> **Piege classique** : Dans PostgreSQL, le Dirty Read est **IMPOSSIBLE**, quel que soit le niveau d'isolation. Même si vous demandez `READ UNCOMMITTED`, PostgreSQL applique `READ COMMITTED`. C'est un choix de conception.
 
 ### 3.2 Non-Repeatable Read (lecture non-repetable)
 
-**Definition** : Relire la meme ligne dans la meme transaction et obtenir un resultat **different**.
+**Definition** : Relire la même ligne dans la même transaction et obtenir un résultat **différent**.
 
 ```
 Transaction A                    Transaction B
@@ -204,7 +204,7 @@ COMMIT;
 
 ### 3.3 Phantom Read (lecture fantome)
 
-**Definition** : Une requete retourne des **lignes supplementaires** qui n'existaient pas lors de la premiere execution.
+**Definition** : Une requête retourne des **lignes supplementaires** qui n'existaient pas lors de la première exécution.
 
 ```
 Transaction A                    Transaction B
@@ -226,7 +226,7 @@ COMMIT;
 
 ### 3.4 Serialization Anomaly (anomalie de serialisation)
 
-**Definition** : Le resultat de l'execution concurrente est **impossible** a obtenir par une execution serie (l'un apres l'autre) des transactions.
+**Definition** : Le résultat de l'exécution concurrente est **impossible** a obtenir par une exécution serie (l'un après l'autre) des transactions.
 
 ```
 Table: compteurs (id, valeur)
@@ -250,7 +250,7 @@ COMMIT;                          COMMIT;
 -- Si B puis A : (1, 21), (2, 21)
 ```
 
-### 3.5 Tableau recapitulatif des phenomenes
+### 3.5 Tableau récapitulatif des phenomenes
 
 ```
 ┌─────────────────────────┬───────────────────────────────────────┐
@@ -267,7 +267,7 @@ COMMIT;                          COMMIT;
 
 ## 4. Les 3 niveaux d'isolation de PostgreSQL
 
-Le standard SQL definit 4 niveaux d'isolation. PostgreSQL en implemente **3** (car Read Uncommitted est traite comme Read Committed).
+Le standard SQL définit 4 niveaux d'isolation. PostgreSQL en implemente **3** (car Read Uncommitted est traite comme Read Committed).
 
 ### 4.1 Table comparative
 
@@ -285,7 +285,7 @@ Le standard SQL definit 4 niveaux d'isolation. PostgreSQL en implemente **3** (c
 | Critere | Read Committed | Repeatable Read | Serializable |
 |---|---|---|---|
 | Snapshot | Par statement | Par transaction | Par transaction + SSI |
-| Performance | Excellente | Tres bonne | Bonne (overhead SSI) |
+| Performance | Excellente | Très bonne | Bonne (overhead SSI) |
 | Risque d'erreur | Aucun retry | Retry serialization | Retry serialization |
 | Cas d'usage | 90% des cas | Rapports coherents | Integrite critique |
 | Defaut PG ? | **Oui** | Non | Non |
@@ -313,7 +313,7 @@ SET default_transaction_isolation = 'serializable';
 -- default_transaction_isolation = 'read committed'
 ```
 
-> **Piege classique** : `SET TRANSACTION` doit etre la **premiere** commande apres `BEGIN`. Si vous executez une requete avant, PostgreSQL refuse le changement d'isolation.
+> **Piege classique** : `SET TRANSACTION` doit etre la **première** commande après `BEGIN`. Si vous executez une requête avant, PostgreSQL refuse le changement d'isolation.
 
 ```sql
 -- ERREUR : trop tard !
@@ -324,7 +324,7 @@ SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
 -- before any query
 ```
 
-### Verifier le niveau courant
+### Vérifier le niveau courant
 
 ```sql
 SHOW transaction_isolation;
@@ -342,9 +342,9 @@ SHOW transaction_isolation;
 
 ### 6.1 Principe
 
-En **Read Committed**, chaque instruction SQL prend un **nouveau snapshot**. Cela signifie qu'entre deux SELECTs dans la meme transaction, vous pouvez voir des modifications committees par d'autres transactions.
+En **Read Committed**, chaque instruction SQL prend un **nouveau snapshot**. Cela signifie qu'entre deux SELECTs dans la même transaction, vous pouvez voir des modifications committees par d'autres transactions.
 
-> **Analogie** : Vous etes un photographe qui prend une nouvelle photo a chaque clic. Entre deux photos, le paysage peut changer : des voitures passent, des gens bougent. Chaque photo est coherente en elle-meme, mais deux photos successives peuvent montrer des etats differents.
+> **Analogie** : Vous etes un photographe qui prend une nouvelle photo à chaque clic. Entre deux photos, le paysage peut changer : des voitures passent, des gens bougent. Chaque photo est coherente en elle-même, mais deux photos successives peuvent montrer des états différents.
 
 ### 6.2 Exemple concret : deux transactions
 
@@ -410,13 +410,13 @@ UPDATE comptes
 COMMIT;
 ```
 
-> **Point cle** : En Read Committed, quand un UPDATE est debloque apres avoir attendu un lock, PostgreSQL **reevalue** la clause WHERE avec la version a jour de la ligne. C'est subtil et important.
+> **Point clé** : En Read Committed, quand un UPDATE est debloque après avoir attendu un lock, PostgreSQL **reevalue** la clause WHERE avec la version a jour de la ligne. C'est subtil et important.
 
 ### 6.4 Quand Read Committed suffit
 
 - Applications CRUD classiques
-- Operations qui ne dependent pas de la coherence inter-requetes
-- Quand chaque requete est independante
+- Operations qui ne dependent pas de la coherence inter-requêtes
+- Quand chaque requête est independante
 - La grande majorite des applications web
 
 ---
@@ -425,9 +425,9 @@ COMMIT;
 
 ### 7.1 Principe
 
-En **Repeatable Read**, le snapshot est pris au debut de la transaction (plus precisement, au moment de la premiere instruction). Toutes les requetes de la transaction voient **le meme etat** de la base.
+En **Repeatable Read**, le snapshot est pris au debut de la transaction (plus precisement, au moment de la première instruction). Toutes les requêtes de la transaction voient **le même état** de la base.
 
-> **Analogie** : Vous etes un photographe qui prend UNE seule photo au debut, puis travaille uniquement a partir de cette photo. Peu importe ce qui change dans le monde reel, vous ne le voyez pas.
+> **Analogie** : Vous etes un photographe qui prend UNE seule photo au debut, puis travaille uniquement à partir de cette photo. Peu importe ce qui change dans le monde réel, vous ne le voyez pas.
 
 ### 7.2 Exemple concret
 
@@ -485,7 +485,7 @@ UPDATE comptes
 ROLLBACK;  -- Obligatoire
 ```
 
-> **Piege classique** : Apres une erreur de serialisation, la transaction est dans un etat "aborted". Vous DEVEZ faire ROLLBACK. Tout autre commande retournera : `ERROR: current transaction is aborted, commands ignored until end of transaction block`.
+> **Piege classique** : Après une erreur de serialisation, la transaction est dans un état "aborted". Vous DEVEZ faire ROLLBACK. Tout autre commande retournera : `ERROR: current transaction is aborted, commands ignored until end of transaction block`.
 
 ### 7.4 Le retry pattern
 
@@ -526,7 +526,7 @@ END $$;
 ### 7.5 Cas d'usage pour Repeatable Read
 
 - Rapports financiers (coherence des lectures)
-- Calculs qui lisent plusieurs tables et doivent voir un etat coherent
+- Calculs qui lisent plusieurs tables et doivent voir un état coherent
 - Exports de donnees
 - Verifications de coherence
 
@@ -536,9 +536,9 @@ END $$;
 
 ### 8.1 Principe
 
-Le niveau **Serializable** garantit que le resultat de l'execution concurrente est **identique** a une execution serie des transactions (dans un certain ordre).
+Le niveau **Serializable** garantit que le résultat de l'exécution concurrente est **identique** à une exécution serie des transactions (dans un certain ordre).
 
-> **Analogie** : Imaginez un guichet de banque ou les clients passent un par un. Le resultat est toujours coherent car il n'y a pas de concurrence. Serializable donne la meme garantie, mais SANS forcer les transactions a passer une par une.
+> **Analogie** : Imaginez un guichet de banque ou les clients passent un par un. Le résultat est toujours coherent car il n'y a pas de concurrence. Serializable donne la même garantie, mais SANS forcer les transactions a passer une par une.
 
 ### 8.2 SSI — Serializable Snapshot Isolation
 
@@ -605,13 +605,13 @@ COMMIT;
 
 | Aspect | Impact |
 |---|---|
-| Memoire | Legere augmentation (tracking des dependances) |
+| Mémoire | Legere augmentation (tracking des dépendances) |
 | CPU | Legere augmentation (detection de cycles) |
 | Taux de rollback | Augmente (faux positifs possibles) |
 | Throughput | Depend du workload (souvent < 10% de perte) |
 | Lock contention | **Pas de locks supplementaires** |
 
-> **Point cle** : SSI peut generer des **faux positifs** — PostgreSQL annule parfois une transaction qui n'aurait pas cause d'anomalie. C'est le prix de la detection sans locks.
+> **Point clé** : SSI peut générer des **faux positifs** — PostgreSQL annule parfois une transaction qui n'aurait pas cause d'anomalie. C'est le prix de la detection sans locks.
 
 ### 8.5 Configuration pour Serializable
 
@@ -628,13 +628,13 @@ SELECT pg_reload_conf();
 
 ---
 
-## 9. Predicate Locks (SIReadLock) — le mecanisme interne de SSI
+## 9. Predicate Locks (SIReadLock) — le mécanisme interne de SSI
 
 ### 9.1 Ce que sont les Predicate Locks
 
-Pour detecter les anomalies de serialisation, PostgreSQL utilise des **Predicate Locks** (aussi appeles **SIReadLock**). Contrairement aux verrous classiques (`RowExclusiveLock`, `AccessShareLock`...), les Predicate Locks **ne bloquent personne**. Ils ne font que **tracer les dependances** entre transactions.
+Pour détecter les anomalies de serialisation, PostgreSQL utilise des **Predicate Locks** (aussi appeles **SIReadLock**). Contrairement aux verrous classiques (`RowExclusiveLock`, `AccessShareLock`...), les Predicate Locks **ne bloquent personne**. Ils ne font que **tracer les dépendances** entre transactions.
 
-> **Point cle** : Un Predicate Lock ne signifie pas "cette ligne est verrouillee". Il signifie "cette transaction a **lu** ces donnees et depend de leur etat". C'est un **traceur de dependances**, pas un mecanisme de blocage.
+> **Point clé** : Un Predicate Lock ne signifie pas "cette ligne est verrouillee". Il signifie "cette transaction a **lu** ces donnees et depend de leur état". C'est un **traceur de dépendances**, pas un mécanisme de blocage.
 
 ### 9.2 Les trois niveaux d'escalation
 
@@ -642,18 +642,18 @@ Les Predicate Locks existent a trois niveaux de granularite :
 
 | Niveau | Granularite | Quand ? |
 |---|---|---|
-| **Tuple-level** | Une ligne specifique | Lecture d'un petit nombre de lignes via index |
-| **Page-level** | Une page entiere (8 Ko) | Escalation quand trop de tuples sont verrouilles sur une page |
-| **Relation-level** | La table entiere | Escalation quand trop de pages sont verrouillees, ou Seq Scan |
+| **Tuple-level** | Une ligne spécifique | Lecture d'un petit nombre de lignes via index |
+| **Page-level** | Une page entière (8 Ko) | Escalation quand trop de tuples sont verrouilles sur une page |
+| **Relation-level** | La table entière | Escalation quand trop de pages sont verrouillees, ou Seq Scan |
 
-L'escalation est controlee par les parametres :
+L'escalation est controlee par les paramètres :
 - `max_pred_locks_per_transaction` (defaut : 64)
 - `max_pred_locks_per_relation` (defaut : -2, auto)
 - `max_pred_locks_per_page` (defaut : 2)
 
-### 9.3 Le graphe de dependances rw (Read-Write)
+### 9.3 Le graphe de dépendances rw (Read-Write)
 
-SSI construit un graphe de **dependances rw** (read-write) entre transactions :
+SSI construit un graphe de **dépendances rw** (read-write) entre transactions :
 
 ```
  Graphe de dependances rw :
@@ -669,11 +669,11 @@ SSI construit un graphe de **dependances rw** (read-write) entre transactions :
   PostgreSQL annule une des deux transactions.
 ```
 
-La detection se fait lors du COMMIT : si une **dangerous structure** (deux dependances rw consecutives formant un cycle potentiel) est detectee, PostgreSQL annule la transaction.
+La detection se fait lors du COMMIT : si une **dangerous structure** (deux dépendances rw consecutives formant un cycle potentiel) est detectee, PostgreSQL annule la transaction.
 
 ### 9.4 Faux positifs
 
-PostgreSQL est **conservateur** dans sa detection. Il peut annuler une transaction qui n'aurait pas cause d'anomalie reelle. C'est un compromis delibere :
+PostgreSQL est **conservateur** dans sa detection. Il peut annuler une transaction qui n'aurait pas cause d'anomalie réelle. C'est un compromis delibere :
 
 - **Pas de faux negatifs** : toute vraie anomalie est detectee
 - **Faux positifs possibles** : certaines transactions valides sont annulees par precaution
@@ -702,13 +702,13 @@ WHERE mode = 'SIReadLock';
 
 | Aspect | Impact en Serializable |
 |---|---|
-| Memoire supplementaire | Stockage des predicate locks (shared memory) |
-| CPU supplementaire | Detection des dangerous structures a chaque COMMIT |
+| Mémoire supplementaire | Stockage des predicate locks (shared memory) |
+| CPU supplementaire | Detection des dangerous structures à chaque COMMIT |
 | Taux de rollback | Plus eleve qu'en Repeatable Read (faux positifs) |
 | Debit global | Generalement < 10% de perte si peu de conflits |
 | Transactions longues | Penalisantes : maintiennent les predicate locks plus longtemps |
 
-> **Ce qu'il faut retenir** : Les Predicate Locks sont la brique interne qui rend Serializable possible sans verrous bloquants. Ils tracent les dependances de lecture, et PostgreSQL annule une transaction si un cycle est detecte. Le cout est un leger overhead en memoire/CPU et un taux de retry plus eleve. Pour minimiser les faux positifs : garder les transactions courtes et eviter les Seq Scans en Serializable.
+> **Ce qu'il faut retenir** : Les Predicate Locks sont la brique interne qui rend Serializable possible sans verrous bloquants. Ils tracent les dépendances de lecture, et PostgreSQL annule une transaction si un cycle est détecté. Le cout est un leger overhead en mémoire/CPU et un taux de retry plus eleve. Pour minimiser les faux positifs : garder les transactions courtes et éviter les Seq Scans en Serializable.
 
 ---
 
@@ -733,7 +733,7 @@ SELECT xmin, xmax, ctid, * FROM test_mvcc;
 --  1001  |    0 | (0,1) |  1 | version 1
 ```
 
-### 10.2 Apres un UPDATE
+### 10.2 Après un UPDATE
 
 ```sql
 UPDATE test_mvcc SET data = 'version 2' WHERE id = 1;
@@ -916,7 +916,7 @@ try {
 
 ### 11.3 Pont vers TypeORM
 
-Si vous utilisez TypeORM (cf. NestJS module 14), vous pouvez specifier le niveau d'isolation directement dans une transaction :
+Si vous utilisez TypeORM (cf. NestJS module 14), vous pouvez spécifier le niveau d'isolation directement dans une transaction :
 
 ```typescript
 // TypeORM : isolation dans une transaction
@@ -927,14 +927,14 @@ await dataSource.transaction('SERIALIZABLE', async (manager) => {
 });
 ```
 
-TypeORM gere le `BEGIN TRANSACTION ISOLATION LEVEL ...` et le `COMMIT`/`ROLLBACK` pour vous. En revanche, le **retry** en cas de `serialization_failure` reste a votre charge — TypeORM ne reessaie pas automatiquement.
+TypeORM géré le `BEGIN TRANSACTION ISOLATION LEVEL ...` et le `COMMIT`/`ROLLBACK` pour vous. En revanche, le **retry** en cas de `serialization_failure` reste a votre charge — TypeORM ne reessaie pas automatiquement.
 
 ### 11.4 Les codes d'erreur importants
 
 | Code | Nom | Signification | Retryable ? |
 |------|-----|---------------|-------------|
 | `40001` | serialization_failure | Conflit de serialisation | **Oui** |
-| `40P01` | deadlock_detected | Deadlock detecte | **Oui** |
+| `40P01` | deadlock_detected | Deadlock détecté | **Oui** |
 | `23505` | unique_violation | Doublon sur contrainte unique | **Non** (logique) |
 | `23503` | foreign_key_violation | FK inexistante | **Non** (logique) |
 | `57014` | query_canceled | Timeout ou annulation | Peut-etre |
@@ -970,16 +970,16 @@ TypeORM gere le `BEGIN TRANSACTION ISOLATION LEVEL ...` et le `COMMIT`/`ROLLBACK
 
 | Cas d'usage | Niveau recommande | Raison |
 |---|---|---|
-| API REST CRUD basique | Read Committed | Chaque requete est independante |
-| Dashboard temps reel | Read Committed | Donnees approximatives OK |
+| API REST CRUD basique | Read Committed | Chaque requête est independante |
+| Dashboard temps réel | Read Committed | Donnees approximatives OK |
 | Rapport financier mensuel | Repeatable Read | Coherence sur toute la lecture |
 | Export de donnees | Repeatable Read | Snapshot fige pendant l'export |
 | Transfert bancaire | Serializable | Integrite absolue requise |
-| Systeme de reservation | Serializable | Pas de double booking |
+| Système de reservation | Serializable | Pas de double booking |
 | Gestion de stock | Serializable | Pas de survente |
 | Compteur de likes | Read Committed | Approximation acceptable |
 
-### 12.3 Matrice performance / securite
+### 12.3 Matrice performance / sécurité
 
 ```
   Securite ▲
@@ -997,21 +997,21 @@ TypeORM gere le `BEGIN TRANSACTION ISOLATION LEVEL ...` et le `COMMIT`/`ROLLBACK
 
 ## 13. Exercice mental
 
-> **Exercice mental** : Deux utilisateurs ajoutent simultanement un article au meme panier e-commerce. L'un ajoute 3 unites, l'autre 2 unites. En Read Committed, que se passe-t-il si les deux font `UPDATE paniers SET quantite = quantite + N WHERE id = 42` ?
+> **Exercice mental** : Deux utilisateurs ajoutent simultanement un article au même panier e-commerce. L'un ajoute 3 unites, l'autre 2 unites. En Read Committed, que se passe-t-il si les deux font `UPDATE paniers SET quantite = quantite + N WHERE id = 42` ?
 
 <details>
 <summary>Reponse</summary>
 
 En **Read Committed** :
-1. La premiere transaction acquiert le lock sur la ligne et fait `quantite = quantite + 3`
+1. La première transaction acquiert le lock sur la ligne et fait `quantite = quantite + 3`
 2. La deuxieme transaction attend le lock
-3. Quand la premiere committe, la deuxieme est debloquee
+3. Quand la première committe, la deuxieme est debloquee
 4. PostgreSQL **reevalue** la condition : `quantite` est maintenant la valeur committee
 5. La deuxieme fait `quantite = (nouvelle_valeur) + 2`
 
-Resultat : **quantite initiale + 3 + 2 = correct !**
+Résultat : **quantite initiale + 3 + 2 = correct !**
 
-C'est parce que PostgreSQL reevalue la clause apres deblocage en Read Committed.
+C'est parce que PostgreSQL reevalue la clause après deblocage en Read Committed.
 </details>
 
 ---
@@ -1045,7 +1045,7 @@ C'est parce que PostgreSQL reevalue la clause apres deblocage en Read Committed.
 
 ## Navigation
 
-| Precedent | Suivant |
+| Précédent | Suivant |
 |---|---|
 | [Module 07 — Index avancés](./07-index-avances) | [Module 09 — Verrous & Locks](./09-verrous-et-locks) |
 
@@ -1053,4 +1053,15 @@ C'est parce que PostgreSQL reevalue la clause apres deblocage en Read Committed.
 
 ---
 
-> *"La concurrence n'est pas un probleme a eviter, c'est une realite a gerer. MVCC est l'outil qui transforme le chaos en harmonie."*
+> *"La concurrence n'est pas un problème a éviter, c'est une realite a gérer. MVCC est l'outil qui transforme le chaos en harmonie."*
+
+---
+
+<!-- parcours-recommande -->
+
+::: tip Parcours recommandé
+1. **Screencast** : [screencast 08 niveaux isolation](../screencasts/screencast-08-niveaux-isolation.md)
+2. **Lab** : [lab-08-isolation-levels](../labs/lab-08-isolation-levels/README)
+3. **Visualisation** : [MVCC & Isolation](../visualizations/mvcc-isolation.html)
+4. **Quiz** : [quiz 08 niveaux isolation](../quizzes/quiz-08-niveaux-isolation.html)
+:::

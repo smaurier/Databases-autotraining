@@ -6,6 +6,8 @@
 
 ---
 
+> **⚠️ Les modules 08, 09 et 10 forment un bloc difficile** (isolation, locks, deadlocks). C'est le passage le plus abstrait du cours. Si tu galeres, c'est normal — la concurrence est un sujet difficile meme pour des devs seniors. Fais les labs, utilise les diagrammes, et ne reste pas bloque plus de 30 min sur un concept. Tu peux aussi les faire en mode "lecture + quiz" sans deep dive — tu y reviendras quand tu en auras besoin en production.
+
 ## 1. Le probleme de la concurrence
 
 Imaginez une bibliotheque universitaire. Des dizaines d'etudiants lisent des livres en meme temps, certains annotent des exemplaires, d'autres en empruntent. Si chaque etudiant devait attendre que tous les autres aient fini avant de toucher un livre, la bibliotheque serait inutilisable.
@@ -912,7 +914,22 @@ try {
 }
 ```
 
-### 11.3 Les codes d'erreur importants
+### 11.3 Pont vers TypeORM
+
+Si vous utilisez TypeORM (cf. NestJS module 14), vous pouvez specifier le niveau d'isolation directement dans une transaction :
+
+```typescript
+// TypeORM : isolation dans une transaction
+await dataSource.transaction('SERIALIZABLE', async (manager) => {
+  const user = await manager.findOne(User, { where: { id: 1 } });
+  user.solde -= montant;
+  await manager.save(user);
+});
+```
+
+TypeORM gere le `BEGIN TRANSACTION ISOLATION LEVEL ...` et le `COMMIT`/`ROLLBACK` pour vous. En revanche, le **retry** en cas de `serialization_failure` reste a votre charge — TypeORM ne reessaie pas automatiquement.
+
+### 11.4 Les codes d'erreur importants
 
 | Code | Nom | Signification | Retryable ? |
 |------|-----|---------------|-------------|

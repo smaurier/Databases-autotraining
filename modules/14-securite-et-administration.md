@@ -42,8 +42,8 @@ La securite dans PostgreSQL s'organise en **couches concentriques** :
 ```sql
 -- Trouver l'emplacement du fichier
 SHOW hba_file;
--- /etc/postgresql/16/main/pg_hba.conf (Linux)
--- C:/Program Files/PostgreSQL/16/data/pg_hba.conf (Windows)
+-- /etc/postgresql/17/main/pg_hba.conf (Linux)
+-- C:/Program Files/PostgreSQL/17/data/pg_hba.conf (Windows)
 ```
 
 ### 2.2 Format du fichier

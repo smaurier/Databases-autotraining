@@ -496,20 +496,20 @@ SELECT * FROM pg_stat_subscription;
 |-------------|-------------|----------|
 | Migration zero-downtime | Repliquer vers le nouveau serveur, basculer le trafic | Pas d'arret de service |
 | Replication partielle | Ne repliquer que certaines tables | Economie de ressources |
-| Cross-version | Repliquer de PG14 vers PG16 | Migration de version majeure |
+| Cross-version | Repliquer de PG15 vers PG17 | Migration de version majeure |
 | Consolidation | Plusieurs bases → une base centrale (reporting) | Dashboard unifie |
 | CDC (Change Data Capture) | Capturer les changements pour un systeme externe | Integration Kafka, etc. |
 
 ```sql
--- Exemple : migration zero-downtime de PG14 vers PG16
+-- Exemple : migration zero-downtime de PG15 vers PG17
 
--- 1. Sur PG14 (ancien) : creer la publication
+-- 1. Sur PG15 (ancien) : creer la publication
 CREATE PUBLICATION migration_pub FOR ALL TABLES;
 
--- 2. Sur PG16 (nouveau) : recreer le schema
--- pg_dump --schema-only | psql sur PG16
+-- 2. Sur PG17 (nouveau) : recreer le schema
+-- pg_dump --schema-only | psql sur PG17
 
--- 3. Sur PG16 : s'abonner
+-- 3. Sur PG17 : s'abonner
 CREATE SUBSCRIPTION migration_sub
     CONNECTION 'host=old-server port=5432 ...'
     PUBLICATION migration_pub;
@@ -562,7 +562,7 @@ SELECT * FROM pg_logical_slot_get_changes('test_slot', NULL, NULL);
 ```bash
 # wal2json — installation et utilisation
 # Installer l'extension wal2json
-# apt-get install postgresql-16-wal2json
+# apt-get install postgresql-17-wal2json
 
 # Utiliser avec pg_recvlogical
 pg_recvlogical -d mydb --slot=wal2json_slot \
@@ -611,6 +611,8 @@ ALTER TABLE orders REPLICA IDENTITY USING INDEX orders_unique_idx;
 -- Ou utiliser FULL (compare toutes les colonnes — peu performant)
 ALTER TABLE orders REPLICA IDENTITY FULL;
 ```
+
+> **PostgreSQL 17** : ameliorations majeures de la replication logique — failover slots pour la haute disponibilite, controle fin du subscriber (`disable_on_error`), et slots pour les standbys.
 
 ---
 
@@ -1393,7 +1395,7 @@ On promeut le **standby 1** (lag le plus faible). Les transactions commitees dan
 Pour eviter cette perte, il faudrait utiliser `synchronous_commit = on` avec `synchronous_standby_names`, mais cela augmente la latence d'ecriture et bloque les ecritures si tous les standbys synchrones sont indisponibles.
 </details>
 
-> **Exercice mental 2** : Vous utilisez la replication logique pour migrer de PG14 a PG16. Un developpeur execute un `ALTER TABLE orders ADD COLUMN discount NUMERIC DEFAULT 0` sur le publisher (PG14). Que se passe-t-il cote subscriber ?
+> **Exercice mental 2** : Vous utilisez la replication logique pour migrer de PG15 a PG17. Un developpeur execute un `ALTER TABLE orders ADD COLUMN discount NUMERIC DEFAULT 0` sur le publisher (PG15). Que se passe-t-il cote subscriber ?
 
 <details>
 <summary>Reponse</summary>

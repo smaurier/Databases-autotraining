@@ -44,7 +44,7 @@ Vous construisez un systeme de reservation de salles pour une entreprise multi-s
 
 ```
 ┌──────────┐     ┌──────────────┐     ┌──────────────────┐
-│ Frontend │────►│  Node.js API │────►│   PostgreSQL 16   │
+│ Frontend │────►│  Node.js API │────►│   PostgreSQL 17   │
 │ (React)  │     │  (Express)   │     │                    │
 │          │     │  pg.Pool     │     │  RLS (multi-tenant)│
 │          │     │  max: 20     │     │  EXCLUDE (overlap) │

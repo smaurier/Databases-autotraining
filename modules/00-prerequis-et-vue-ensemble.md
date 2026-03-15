@@ -103,6 +103,7 @@ PostgreSQL a une histoire remarquable qui explique sa robustesse :
 | 2005 | Support natif du JSONB, extensions |
 | 2017 | Replication logique, partitionnement declaratif |
 | 2023 | PostgreSQL 16 : parallelisme ameliore, performance I/O |
+| 2024 | PostgreSQL 17 — JSON_TABLE, incremental backup, MERGE RETURNING |
 | 2024 | PostgreSQL est elu "DBMS of the Year" par DB-Engines (4e fois) |
 
 ### 3.2 PostgreSQL vs les autres
@@ -239,7 +240,7 @@ docker run \
   -p 5432:5432 \
   -v pgdata:/var/lib/postgresql/data \
   -d \
-  postgres:16
+  postgres:17
 
 # Verifier que le conteneur tourne
 docker ps
@@ -476,7 +477,7 @@ Sortie attendue :
 
 ```
 Connecte a PostgreSQL !
-Version : PostgreSQL 16.1 on x86_64-pc-linux-gnu, compiled by gcc...
+Version : PostgreSQL 17.x on x86_64-pc-linux-gnu, compiled by gcc...
 Table "messages" creee (ou deja existante).
 Message insere : { id: 1, texte: 'Bonjour PostgreSQL depuis Node.js !', date: 2024-01-15T10:30:00.000Z }
 Tous les messages :

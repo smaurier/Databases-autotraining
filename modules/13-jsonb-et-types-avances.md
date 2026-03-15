@@ -244,6 +244,32 @@ FROM produits;
 -- {"Laptop Pro": 1299.99, "Clavier Ergo": 89.99, "Ecran 4K": 549.99}
 ```
 
+### JSON_TABLE (PostgreSQL 17+)
+
+`JSON_TABLE` convertit des donnees JSON en lignes et colonnes relationnelles — c'est la fonction SQL standard (SQL:2016) la plus attendue :
+
+```sql
+-- Extraire les items d'une commande JSON en table relationnelle
+SELECT jt.*
+FROM orders,
+  JSON_TABLE(
+    data, '$.items[*]'
+    COLUMNS (
+      product_name TEXT PATH '$.name',
+      quantity INT PATH '$.qty',
+      price NUMERIC PATH '$.price'
+    )
+  ) AS jt
+WHERE orders.id = 42;
+
+-- Resultat :
+-- product_name | quantity | price
+-- Laptop       | 1        | 999.99
+-- Mouse        | 2        | 29.99
+```
+
+> **Avant JSON_TABLE**, il fallait combiner `jsonb_array_elements()`, `->>'key'` et des casts manuels. JSON_TABLE est plus lisible et plus performant sur les structures complexes.
+
 ---
 
 ## 3. GIN index sur JSONB

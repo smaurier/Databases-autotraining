@@ -84,3 +84,13 @@ node labs/lab-05-index-et-explain/exercise-step3.js
 ## Niveau
 
 **Débutant -> Expert.** Ce cours part des bases du modèle relationnel et progresse jusqu'aux techniques avancées d'optimisation et d'administration PostgreSQL.
+
+
+## Lancer le cours
+
+```bash
+npm install          # une seule fois
+npm run docs:dev     # ouvre http://localhost:5173
+```
+
+Le site s'ouvre avec une sidebar navigable. Commence par le premier module (00).

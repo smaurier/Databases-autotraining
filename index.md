@@ -47,3 +47,4 @@ features:
 | 16 | [Réplication](/modules/16-replication) | [Lab 16](/labs/lab-16-replication/README) | [Quiz](/quizzes/quiz-16-replication.html) |
 | 17 | [Monitoring & Observabilité](/modules/17-monitoring-et-observabilite) | [Lab 17](/labs/lab-17-monitoring/README) | [Quiz](/quizzes/quiz-17-monitoring.html) |
 | 18 | [Partitioning & Scaling](/modules/18-partitioning-et-scaling) | [Lab 18](/labs/lab-18-partitioning/README) | [Quiz](/quizzes/quiz-18-partitioning.html) |
+| 19 | [pgvector & Embeddings](/modules/19-pgvector-embeddings) | — | — |

@@ -45,7 +45,8 @@ export default defineConfig({
             { text: '15 — Projet final', link: '/modules/15-projet-final' },
             { text: '16 — Réplication', link: '/modules/16-replication' },
             { text: '17 — Monitoring & Observabilité', link: '/modules/17-monitoring-et-observabilite' },
-            { text: '18 — Partitioning & Scaling', link: '/modules/18-partitioning-et-scaling' }
+            { text: '18 — Partitioning & Scaling', link: '/modules/18-partitioning-et-scaling' },
+            { text: '19 - pgvector & Embeddings', link: '/modules/19-pgvector-embeddings' }
           ]
         }
       ],

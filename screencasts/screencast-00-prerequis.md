@@ -1,12 +1,14 @@
 # Screencast 00 — Prérequis et vue d'ensemble
 
 ## Informations
+
 - **Durée estimée** : 12-15 min
 - **Module** : `modules/00-prerequis-et-vue-ensemble.md`
 - **Lab associé** : aucun
 - **Prérequis** : Docker installé, Node.js >= 18, éditeur de code
 
 ## Setup
+
 - [ ] Docker Desktop lancé
 - [ ] Terminal ouvert dans `postgres-course/`
 - [ ] Éditeur de code ouvert
@@ -34,18 +36,18 @@
 # Vérifier que Docker est disponible
 docker --version
 
-# Lancer PostgreSQL 16 dans un conteneur
+# Lancer PostgreSQL 17 dans un conteneur
 docker run --name pg-course \
   -e POSTGRES_PASSWORD=secret \
   -e POSTGRES_DB=course_db \
   -p 5432:5432 \
-  -d postgres:16
+  -d postgres:17
 
 # Vérifier que le conteneur tourne
 docker ps
 ```
 
-> On utilise PostgreSQL 16, la dernière version stable. Le mot de passe est "secret" pour simplifier — évidemment, en production, on utiliserait un mot de passe robuste.
+> On utilise PostgreSQL 17. Le mot de passe est "secret" pour simplifier — évidemment, en production, on utiliserait un mot de passe robuste.
 
 **Action** : Montrer la sortie de `docker ps` avec le conteneur qui tourne, le port 5432 mappé.
 
@@ -99,29 +101,29 @@ npm install pg
 
 ```javascript
 // demo-hello.js
-const { Client } = require('pg');
+const { Client } = require("pg");
 
 async function main() {
   const client = new Client({
-    host: 'localhost',
+    host: "localhost",
     port: 5432,
-    user: 'postgres',
-    password: 'secret',
-    database: 'course_db',
+    user: "postgres",
+    password: "secret",
+    database: "course_db",
   });
 
   await client.connect();
-  console.log('Connecté à PostgreSQL !');
+  console.log("Connecté à PostgreSQL !");
 
   // Requête simple
-  const res = await client.query('SELECT NOW() AS heure_actuelle');
-  console.log('Heure serveur :', res.rows[0].heure_actuelle);
+  const res = await client.query("SELECT NOW() AS heure_actuelle");
+  console.log("Heure serveur :", res.rows[0].heure_actuelle);
 
   // Requête paramétrée (bonne pratique)
-  const name = 'PostgreSQL';
+  const name = "PostgreSQL";
   const greeting = await client.query(
-    'SELECT $1::text || \' est formidable !\'  AS message',
-    [name]
+    "SELECT $1::text || ' est formidable !'  AS message",
+    [name],
   );
   console.log(greeting.rows[0].message);
 
@@ -164,6 +166,7 @@ node demo-hello.js
 **Action** : Revenir au terminal et montrer que le conteneur tourne toujours avec `docker ps`.
 
 ## Points d'attention pour l'enregistrement
+
 - Vérifier que Docker Desktop est lancé avant de commencer
 - Taper les commandes assez lentement pour que le spectateur puisse suivre
 - Bien montrer la sortie de chaque commande avant de passer à la suivante

@@ -1,8 +1,8 @@
 # Module 00 — Prérequis & Vue d'ensemble
 
 <!-- nav-cours-précédent -->
-> **Cours précédent** : [NestJS](../../05-nestjs/modules/26-graphql-nestjs.md). Si tu arrives ici sans avoir fait les cours précédents, consulte le [guide de démarrage](../../GUIDE-DEMARRAGE.md).
 
+> **Cours précédent** : [NestJS](../../05-nestjs/modules/26-graphql-nestjs.md). Si tu arrives ici sans avoir fait les cours précédents, consulte le [guide de démarrage](../../GUIDE-DEMARRAGE.md).
 
 > **Objectif** : Comprendre ce qu'est un SGBDR, pourquoi PostgreSQL est le choix de référence, installer un environnement de travail complet et etablir un premier contact avec la base de donnees via `psql` et Node.js.
 >
@@ -14,16 +14,16 @@
 
 Ce cours est un parcours complet a travers PostgreSQL, de la première requête `SELECT` jusqu'aux mécanismes internes du moteur. Voici les grandes compétences que tu vas acquerir :
 
-| Domaine | Ce que tu sauras faire |
-|---|---|
-| **SQL fondamental** | Écrire des requêtes CRUD, des jointures, des sous-requêtes, des agregations |
-| **Modelisation** | Concevoir un schema relationnel normalise avec les bonnes contraintes |
-| **Transactions** | Gérer la concurrence, comprendre ACID, éviter les anomalies |
-| **Performance** | Lire un plan d'exécution, créer les bons index, optimiser des requêtes lentes |
-| **Index avances** | Utiliser GIN, GiST, BRIN selon le cas d'usage |
-| **PostgreSQL internals** | Comprendre le WAL, le VACUUM, le query planner, les mécanismes MVCC |
-| **Node.js + pg** | Intégrer PostgreSQL dans une application backend JavaScript moderne |
-| **Administration** | Gérer les roles, les permissions, les backups, la surveillance |
+| Domaine                  | Ce que tu sauras faire                                                        |
+| ------------------------ | ----------------------------------------------------------------------------- |
+| **SQL fondamental**      | Écrire des requêtes CRUD, des jointures, des sous-requêtes, des agregations   |
+| **Modelisation**         | Concevoir un schema relationnel normalise avec les bonnes contraintes         |
+| **Transactions**         | Gérer la concurrence, comprendre ACID, éviter les anomalies                   |
+| **Performance**          | Lire un plan d'exécution, créer les bons index, optimiser des requêtes lentes |
+| **Index avances**        | Utiliser GIN, GiST, BRIN selon le cas d'usage                                 |
+| **PostgreSQL internals** | Comprendre le WAL, le VACUUM, le query planner, les mécanismes MVCC           |
+| **Node.js + pg**         | Intégrer PostgreSQL dans une application backend JavaScript moderne           |
+| **Administration**       | Gérer les roles, les permissions, les backups, la surveillance                |
 
 > **Analogie** : Imagine que PostgreSQL est une voiture de course. Ce cours t'apprend d'abord a conduire (SQL), puis à comprendre le moteur (internals), et enfin a regler les performances (tuning). Tu ne seras pas juste un conducteur, tu seras un mecanicien capable de diagnostiquer et optimiser.
 
@@ -50,16 +50,16 @@ Un **SGBDR** (Système de Gestion de Base de Donnees Relationnelles) est un logi
 
 ### 2.2 Comparaison avec d'autres approches de stockage
 
-| Critere | Fichier texte/CSV | Excel | NoSQL (MongoDB) | SGBDR (PostgreSQL) |
-|---|---|---|---|---|
-| **Structure** | Libre, aucune | Feuilles, cellules | Documents flexibles (JSON) | Tables, colonnes typees |
-| **Integrite** | Aucune | Faible (formules) | Faible (pas de schema impose) | Forte (contraintes, FK, CHECK) |
-| **Concurrence** | Aucune | Fichier verrouille | Bonne (document-level) | Excellente (MVCC, transactions) |
-| **Requetes** | `grep`, scripts | Filtres, formules | Aggregation pipeline | SQL standardise |
-| **Relations** | Manuelles | Manuelles (VLOOKUP) | Denormalisees (embedded) | Jointures natives |
-| **Transactions ACID** | Non | Non | Partiel (depuis 4.0) | Oui, complet |
-| **Scalabilite** | Limite (~MB) | Limite (~1M lignes) | Horizontale (sharding) | Verticale + extensions |
-| **Cas d'usage** | Logs simples, config | Rapports, prototypage | Documents, real-time | Applications metier, finance |
+| Critere               | Fichier texte/CSV    | Excel                 | NoSQL (MongoDB)               | SGBDR (PostgreSQL)              |
+| --------------------- | -------------------- | --------------------- | ----------------------------- | ------------------------------- |
+| **Structure**         | Libre, aucune        | Feuilles, cellules    | Documents flexibles (JSON)    | Tables, colonnes typees         |
+| **Integrite**         | Aucune               | Faible (formules)     | Faible (pas de schema impose) | Forte (contraintes, FK, CHECK)  |
+| **Concurrence**       | Aucune               | Fichier verrouille    | Bonne (document-level)        | Excellente (MVCC, transactions) |
+| **Requetes**          | `grep`, scripts      | Filtres, formules     | Aggregation pipeline          | SQL standardise                 |
+| **Relations**         | Manuelles            | Manuelles (VLOOKUP)   | Denormalisees (embedded)      | Jointures natives               |
+| **Transactions ACID** | Non                  | Non                   | Partiel (depuis 4.0)          | Oui, complet                    |
+| **Scalabilite**       | Limite (~MB)         | Limite (~1M lignes)   | Horizontale (sharding)        | Verticale + extensions          |
+| **Cas d'usage**       | Logs simples, config | Rapports, prototypage | Documents, real-time          | Applications metier, finance    |
 
 > **Piege classique** : Beaucoup de débutants pensent que NoSQL est "mieux" que SQL parce que c'est "plus moderne". En realite, les bases relationnelles restent le choix dominant pour toute application qui a besoin de coherence des donnees, de transactions fiables et de requêtes complexes. PostgreSQL supporte aussi le JSON (JSONB), ce qui offre le meilleur des deux mondes.
 
@@ -83,12 +83,12 @@ ORDER BY nom;
 
 SQL se divise en plusieurs sous-langages :
 
-| Sous-langage | Acronyme | Exemples | Role |
-|---|---|---|---|
-| Data Definition Language | **DDL** | `CREATE`, `ALTER`, `DROP` | Définir la structure |
-| Data Manipulation Language | **DML** | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | Manipuler les donnees |
-| Data Control Language | **DCL** | `GRANT`, `REVOKE` | Gérer les permissions |
-| Transaction Control Language | **TCL** | `BEGIN`, `COMMIT`, `ROLLBACK` | Gérer les transactions |
+| Sous-langage                 | Acronyme | Exemples                               | Role                   |
+| ---------------------------- | -------- | -------------------------------------- | ---------------------- |
+| Data Definition Language     | **DDL**  | `CREATE`, `ALTER`, `DROP`              | Définir la structure   |
+| Data Manipulation Language   | **DML**  | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | Manipuler les donnees  |
+| Data Control Language        | **DCL**  | `GRANT`, `REVOKE`                      | Gérer les permissions  |
+| Transaction Control Language | **TCL**  | `BEGIN`, `COMMIT`, `ROLLBACK`          | Gérer les transactions |
 
 ---
 
@@ -98,34 +98,34 @@ SQL se divise en plusieurs sous-langages :
 
 PostgreSQL à une histoire remarquable qui explique sa robustesse :
 
-| Annee | Événement |
-|---|---|
-| 1973 | Ingres, ancetre de PostgreSQL, nait a UC Berkeley |
-| 1986 | Le projet **POSTGRES** (Post-Ingres) demarre sous Michael Stonebraker |
-| 1995 | Ajout du support SQL → renomme **PostgreSQL** |
-| 1996 | Premier release open-source, communaute mondiale |
-| 2005 | Support natif du JSONB, extensions |
-| 2017 | Replication logique, partitionnement declaratif |
-| 2023 | PostgreSQL 16 : parallelisme ameliore, performance I/O |
-| 2024 | PostgreSQL 17 — JSON_TABLE, incremental backup, MERGE RETURNING |
-| 2024 | PostgreSQL est elu "DBMS of the Year" par DB-Engines (4e fois) |
+| Annee | Événement                                                             |
+| ----- | --------------------------------------------------------------------- |
+| 1973  | Ingres, ancetre de PostgreSQL, nait a UC Berkeley                     |
+| 1986  | Le projet **POSTGRES** (Post-Ingres) demarre sous Michael Stonebraker |
+| 1995  | Ajout du support SQL → renomme **PostgreSQL**                         |
+| 1996  | Premier release open-source, communaute mondiale                      |
+| 2005  | Support natif du JSONB, extensions                                    |
+| 2017  | Replication logique, partitionnement declaratif                       |
+| 2023  | PostgreSQL 16 : parallelisme ameliore, performance I/O                |
+| 2024  | PostgreSQL 17 — JSON_TABLE, incremental backup, MERGE RETURNING       |
+| 2024  | PostgreSQL est elu "DBMS of the Year" par DB-Engines (4e fois)        |
 
 ### 3.2 PostgreSQL vs les autres
 
-| Critere | PostgreSQL | MySQL | SQLite | SQL Server |
-|---|---|---|---|---|
-| **Licence** | PostgreSQL (MIT-like) | GPL / Commercial | Domaine public | Commercial |
-| **Conformite SQL** | Très elevee | Moyenne | Limitee | Elevee |
-| **Types de donnees** | Très riche (JSONB, arrays, ranges, hstore, geometric) | Standard | Standard | Riche |
-| **Extensions** | Oui (PostGIS, pg_trgm, pgvector...) | Limitees | Non | Limitees |
-| **MVCC** | Natif, complet | Depend du moteur (InnoDB) | WAL-mode | Oui |
-| **Full-text search** | Integre (tsvector, tsquery) | Basique | FTS5 (extension) | Integre |
-| **Replication** | Streaming + logique | Basique | Non | Oui |
-| **Partitionnement** | Declaratif (natif) | Range, List, Hash | Non | Oui |
-| **JSON** | JSONB indexable (GIN) | JSON (pas indexable nativement) | JSON1 extension | JSON |
-| **Parallelisme** | Requetes paralleles | Limite | Non | Oui |
-| **Prix** | Gratuit | Gratuit / payant | Gratuit | ~15 000 $/coeur |
-| **Communaute** | Enorme, active | Enorme | Moderee | Corporate |
+| Critere              | PostgreSQL                                            | MySQL                           | SQLite           | SQL Server      |
+| -------------------- | ----------------------------------------------------- | ------------------------------- | ---------------- | --------------- |
+| **Licence**          | PostgreSQL (MIT-like)                                 | GPL / Commercial                | Domaine public   | Commercial      |
+| **Conformite SQL**   | Très elevee                                           | Moyenne                         | Limitee          | Elevee          |
+| **Types de donnees** | Très riche (JSONB, arrays, ranges, hstore, geometric) | Standard                        | Standard         | Riche           |
+| **Extensions**       | Oui (PostGIS, pg_trgm, pgvector...)                   | Limitees                        | Non              | Limitees        |
+| **MVCC**             | Natif, complet                                        | Depend du moteur (InnoDB)       | WAL-mode         | Oui             |
+| **Full-text search** | Integre (tsvector, tsquery)                           | Basique                         | FTS5 (extension) | Integre         |
+| **Replication**      | Streaming + logique                                   | Basique                         | Non              | Oui             |
+| **Partitionnement**  | Declaratif (natif)                                    | Range, List, Hash               | Non              | Oui             |
+| **JSON**             | JSONB indexable (GIN)                                 | JSON (pas indexable nativement) | JSON1 extension  | JSON            |
+| **Parallelisme**     | Requetes paralleles                                   | Limite                          | Non              | Oui             |
+| **Prix**             | Gratuit                                               | Gratuit / payant                | Gratuit          | ~15 000 $/coeur |
+| **Communaute**       | Enorme, active                                        | Enorme                          | Moderee          | Corporate       |
 
 > **Ce qu'il faut retenir** : PostgreSQL est le SGBDR open-source le plus complet et le plus conforme aux standards SQL. Si tu ne sais pas quoi choisir, choisis PostgreSQL. Tu ne le regretteras pas.
 
@@ -184,16 +184,16 @@ PostgreSQL utilise un modèle **client-serveur** avec une architecture **multi-p
 
 ### 4.2 Les composants principaux
 
-| Composant | Role | Analogie |
-|---|---|---|
-| **Postmaster** | Processus principal qui ecoute les connexions entrantes et fork un backend par client | Le maitre d'hotel qui accueille les clients et assigne un serveur a chacun |
-| **Backend process** | Un processus dedie par connexion client, exécuté les requêtes | Le serveur qui s'occupe exclusivement de ta table |
-| **Shared Buffers** | Cache mémoire partage entre tous les backends, stocke les pages de donnees | Le plan de travail commun en cuisine |
-| **WAL Writer** | Ecrit les journaux de transactions (Write-Ahead Log) sur disque | Le scribe qui note chaque operation AVANT qu'elle soit effectuee |
-| **Checkpointer** | Ecrit periodiquement les pages modifiees (dirty pages) du cache vers le disque | Le comptable qui fait le bilan periodique |
-| **Autovacuum** | Nettoie les lignes mortes (tuples morts) laissees par MVCC | L'équipe de nettoyage qui passe après les clients |
-| **WAL files** | Journaux de transactions sur disque, garantissent la durabilite | Le journal de bord : même si le bateau coule, on peut reconstituer ce qui s'est passe |
-| **Data files** | Les fichiers physiques contenant les tables et les index | Les etageres de la bibliotheque |
+| Composant           | Role                                                                                  | Analogie                                                                              |
+| ------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| **Postmaster**      | Processus principal qui ecoute les connexions entrantes et fork un backend par client | Le maitre d'hotel qui accueille les clients et assigne un serveur a chacun            |
+| **Backend process** | Un processus dedie par connexion client, exécuté les requêtes                         | Le serveur qui s'occupe exclusivement de ta table                                     |
+| **Shared Buffers**  | Cache mémoire partage entre tous les backends, stocke les pages de donnees            | Le plan de travail commun en cuisine                                                  |
+| **WAL Writer**      | Ecrit les journaux de transactions (Write-Ahead Log) sur disque                       | Le scribe qui note chaque operation AVANT qu'elle soit effectuee                      |
+| **Checkpointer**    | Ecrit periodiquement les pages modifiees (dirty pages) du cache vers le disque        | Le comptable qui fait le bilan periodique                                             |
+| **Autovacuum**      | Nettoie les lignes mortes (tuples morts) laissees par MVCC                            | L'équipe de nettoyage qui passe après les clients                                     |
+| **WAL files**       | Journaux de transactions sur disque, garantissent la durabilite                       | Le journal de bord : même si le bateau coule, on peut reconstituer ce qui s'est passe |
+| **Data files**      | Les fichiers physiques contenant les tables et les index                              | Les etageres de la bibliotheque                                                       |
 
 ### 4.3 Le cycle de vie d'une requête
 
@@ -235,7 +235,7 @@ Quand tu executes `SELECT * FROM utilisateurs WHERE id = 42`, voici ce qui se pa
 Docker est la façon la plus simple et la plus propre d'installer PostgreSQL pour le développement.
 
 ```bash
-# Telecharger et demarrer PostgreSQL 16
+# Telecharger et demarrer PostgreSQL 17
 docker run \
   --name pg-cours \
   -e POSTGRES_PASSWORD=postgres \
@@ -269,24 +269,24 @@ psql -h localhost -p 5432 -U postgres -d cours
 
 ### 5.3 Commandes psql essentielles
 
-| Commande | Description | Exemple |
-|---|---|---|
-| `\l` | Lister toutes les bases de donnees | `\l` |
-| `\c nomdb` | Se connecter à une base | `\c cours` |
-| `\dt` | Lister les tables du schema courant | `\dt` |
-| `\dt+` | Lister les tables avec taille et description | `\dt+` |
-| `\d nomtable` | Decrire une table (colonnes, types, contraintes) | `\d utilisateurs` |
-| `\d+ nomtable` | Description detaillee (avec stockage, stats) | `\d+ utilisateurs` |
-| `\di` | Lister les index | `\di` |
-| `\dn` | Lister les schemas | `\dn` |
-| `\du` | Lister les roles/utilisateurs | `\du` |
-| `\timing` | Activer/désactiver l'affichage du temps d'exécution | `\timing` |
-| `\x` | Activer/désactiver l'affichage etendu (vertical) | `\x` |
-| `\e` | Ouvrir l'editeur pour écrire une requête | `\e` |
-| `\i fichier.sql` | Exécuter un fichier SQL | `\i setup.sql` |
-| `\q` | Quitter psql | `\q` |
-| `\?` | Aide sur les commandes psql | `\?` |
-| `\h SELECT` | Aide sur la syntaxe SQL | `\h CREATE TABLE` |
+| Commande         | Description                                         | Exemple            |
+| ---------------- | --------------------------------------------------- | ------------------ |
+| `\l`             | Lister toutes les bases de donnees                  | `\l`               |
+| `\c nomdb`       | Se connecter à une base                             | `\c cours`         |
+| `\dt`            | Lister les tables du schema courant                 | `\dt`              |
+| `\dt+`           | Lister les tables avec taille et description        | `\dt+`             |
+| `\d nomtable`    | Decrire une table (colonnes, types, contraintes)    | `\d utilisateurs`  |
+| `\d+ nomtable`   | Description detaillee (avec stockage, stats)        | `\d+ utilisateurs` |
+| `\di`            | Lister les index                                    | `\di`              |
+| `\dn`            | Lister les schemas                                  | `\dn`              |
+| `\du`            | Lister les roles/utilisateurs                       | `\du`              |
+| `\timing`        | Activer/désactiver l'affichage du temps d'exécution | `\timing`          |
+| `\x`             | Activer/désactiver l'affichage etendu (vertical)    | `\x`               |
+| `\e`             | Ouvrir l'editeur pour écrire une requête            | `\e`               |
+| `\i fichier.sql` | Exécuter un fichier SQL                             | `\i setup.sql`     |
+| `\q`             | Quitter psql                                        | `\q`               |
+| `\?`             | Aide sur les commandes psql                         | `\?`               |
+| `\h SELECT`      | Aide sur la syntaxe SQL                             | `\h CREATE TABLE`  |
 
 ### 5.4 pgAdmin (interface graphique)
 
@@ -397,16 +397,16 @@ npm install pg
 // fichier : index.mjs
 // Premier contact avec PostgreSQL depuis Node.js
 
-import pg from 'pg';
+import pg from "pg";
 const { Pool } = pg;
 
 // Configuration de la connexion
 const pool = new Pool({
-  host: 'localhost',
+  host: "localhost",
   port: 5432,
-  database: 'cours',
-  user: 'postgres',
-  password: 'postgres',
+  database: "cours",
+  user: "postgres",
+  password: "postgres",
   // Nombre maximum de connexions dans le pool
   max: 10,
   // Temps maximum d'attente pour une connexion (ms)
@@ -416,17 +416,17 @@ const pool = new Pool({
 });
 
 // Gestion des erreurs du pool
-pool.on('error', (err: Error) => {
-  console.error('Erreur inattendue sur le pool :', err.message);
+pool.on("error", (err: Error) => {
+  console.error("Erreur inattendue sur le pool :", err.message);
   process.exit(1);
 });
 
 async function main(): Promise<void> {
   try {
     // Test de connexion
-    const resultat = await pool.query('SELECT version()');
-    console.log('Connecte a PostgreSQL !');
-    console.log('Version :', resultat.rows[0].version);
+    const resultat = await pool.query("SELECT version()");
+    console.log("Connecte a PostgreSQL !");
+    console.log("Version :", resultat.rows[0].version);
 
     // Creer une table
     await pool.query(`
@@ -439,32 +439,33 @@ async function main(): Promise<void> {
     console.log('Table "messages" creee (ou deja existante).');
 
     // Inserer un message (requete parametree pour eviter les injections SQL)
-    const texte = 'Bonjour PostgreSQL depuis Node.js !';
+    const texte = "Bonjour PostgreSQL depuis Node.js !";
     const insertion = await pool.query(
-      'INSERT INTO messages (texte) VALUES ($1) RETURNING *',
-      [texte]
+      "INSERT INTO messages (texte) VALUES ($1) RETURNING *",
+      [texte],
     );
-    console.log('Message insere :', insertion.rows[0]);
+    console.log("Message insere :", insertion.rows[0]);
 
     // Lire tous les messages
     const lecture = await pool.query(
-      'SELECT id, texte, date FROM messages ORDER BY date DESC'
+      "SELECT id, texte, date FROM messages ORDER BY date DESC",
     );
-    console.log('Tous les messages :');
+    console.log("Tous les messages :");
     for (const msg of lecture.rows) {
       console.log(`  [${msg.id}] ${msg.texte} (${msg.date})`);
     }
 
     // Compter les messages
-    const comptage = await pool.query('SELECT COUNT(*)::int AS total FROM messages');
-    console.log('Nombre total de messages :', comptage.rows[0].total);
-
+    const comptage = await pool.query(
+      "SELECT COUNT(*)::int AS total FROM messages",
+    );
+    console.log("Nombre total de messages :", comptage.rows[0].total);
   } catch (err) {
-    console.error('Erreur :', err.message);
+    console.error("Erreur :", err.message);
   } finally {
     // Toujours fermer le pool a la fin
     await pool.end();
-    console.log('Pool ferme. Au revoir !');
+    console.log("Pool ferme. Au revoir !");
   }
 }
 
@@ -492,29 +493,29 @@ Pool ferme. Au revoir !
 
 ### 7.4 Pool vs Client
 
-| | `Pool` | `Client` |
-|---|---|---|
-| **Utilisation** | Applications web (connexions partagees) | Scripts ponctuels, transactions |
-| **Connexions** | Reutilise les connexions existantes | 1 connexion dediee |
-| **Transactions** | Pas directement (chaque `query` peut utiliser une connexion différente) | Oui (BEGIN / COMMIT sur la même connexion) |
-| **Recommandation** | **Utiliser par defaut** | Utiliser pour les transactions explicites |
+|                    | `Pool`                                                                  | `Client`                                   |
+| ------------------ | ----------------------------------------------------------------------- | ------------------------------------------ |
+| **Utilisation**    | Applications web (connexions partagees)                                 | Scripts ponctuels, transactions            |
+| **Connexions**     | Reutilise les connexions existantes                                     | 1 connexion dediee                         |
+| **Transactions**   | Pas directement (chaque `query` peut utiliser une connexion différente) | Oui (BEGIN / COMMIT sur la même connexion) |
+| **Recommandation** | **Utiliser par defaut**                                                 | Utiliser pour les transactions explicites  |
 
 > **Piege classique** : Ne fais JAMAIS `BEGIN` directement sur un `Pool` avec `pool.query('BEGIN')`. Les requêtes suivantes pourraient etre executees sur une AUTRE connexion du pool. Utilise `pool.connect()` pour obtenir un `Client` dedie, puis fais ta transaction sur ce client.
 
 ```typescript
 // MAUVAIS : transaction sur un pool
-await pool.query('BEGIN');          // connexion A
-await pool.query('INSERT ...');     // connexion B (!!!)
-await pool.query('COMMIT');         // connexion C (!!!)
+await pool.query("BEGIN"); // connexion A
+await pool.query("INSERT ..."); // connexion B (!!!)
+await pool.query("COMMIT"); // connexion C (!!!)
 
 // BON : transaction sur un client dedie
 const client = await pool.connect();
 try {
-  await client.query('BEGIN');
-  await client.query('INSERT ...');
-  await client.query('COMMIT');
+  await client.query("BEGIN");
+  await client.query("INSERT ...");
+  await client.query("COMMIT");
 } catch (err) {
-  await client.query('ROLLBACK');
+  await client.query("ROLLBACK");
   throw err;
 } finally {
   client.release(); // remettre la connexion dans le pool
@@ -525,23 +526,23 @@ try {
 
 ## 8. Glossaire des termes clés
 
-| Terme | Definition | Analogie |
-|---|---|---|
-| **SGBDR** | Système de Gestion de Base de Donnees Relationnelles | La bibliotheque entière avec son système de gestion |
-| **Table (Relation)** | Structure qui stocke des donnees en lignes et colonnes | Une etagere avec des rangements standardises |
-| **Ligne (Tuple)** | Un enregistrement dans une table | Un livre sur l'etagere |
-| **Colonne (Attribut)** | Un champ type d'une table | Une propriété du livre (titre, auteur, ISBN) |
-| **Cle primaire (PK)** | Identifiant unique d'une ligne | Le numéro ISBN du livre |
-| **Cle etrangere (FK)** | Référence vers la clé primaire d'une autre table | La référence bibliographique |
-| **Index** | Structure accelerant les recherches | L'index alphabetique à la fin du livre |
-| **Transaction** | Groupe d'operations atomique (tout ou rien) | Un virement bancaire |
-| **ACID** | Atomicity, Consistency, Isolation, Durability | Les 4 garanties du contrat bancaire |
-| **WAL** | Write-Ahead Log, journal de transactions | Le journal de bord du capitaine |
-| **MVCC** | Multi-Version Concurrency Control | Chaque lecteur a sa propre copie du livre |
-| **Schema** | Espace de noms logique dans une base | Un etage de la bibliotheque |
-| **Query Planner** | Optimiseur qui choisit le meilleur plan d'exécution | Le GPS qui calcule le meilleur itineraire |
-| **Shared Buffers** | Cache mémoire partage pour les pages de donnees | Le plan de travail en cuisine |
-| **VACUUM** | Nettoyage des lignes mortes (MVCC) | L'équipe de menage qui recycle les livres retires |
+| Terme                  | Definition                                             | Analogie                                            |
+| ---------------------- | ------------------------------------------------------ | --------------------------------------------------- |
+| **SGBDR**              | Système de Gestion de Base de Donnees Relationnelles   | La bibliotheque entière avec son système de gestion |
+| **Table (Relation)**   | Structure qui stocke des donnees en lignes et colonnes | Une etagere avec des rangements standardises        |
+| **Ligne (Tuple)**      | Un enregistrement dans une table                       | Un livre sur l'etagere                              |
+| **Colonne (Attribut)** | Un champ type d'une table                              | Une propriété du livre (titre, auteur, ISBN)        |
+| **Cle primaire (PK)**  | Identifiant unique d'une ligne                         | Le numéro ISBN du livre                             |
+| **Cle etrangere (FK)** | Référence vers la clé primaire d'une autre table       | La référence bibliographique                        |
+| **Index**              | Structure accelerant les recherches                    | L'index alphabetique à la fin du livre              |
+| **Transaction**        | Groupe d'operations atomique (tout ou rien)            | Un virement bancaire                                |
+| **ACID**               | Atomicity, Consistency, Isolation, Durability          | Les 4 garanties du contrat bancaire                 |
+| **WAL**                | Write-Ahead Log, journal de transactions               | Le journal de bord du capitaine                     |
+| **MVCC**               | Multi-Version Concurrency Control                      | Chaque lecteur a sa propre copie du livre           |
+| **Schema**             | Espace de noms logique dans une base                   | Un etage de la bibliotheque                         |
+| **Query Planner**      | Optimiseur qui choisit le meilleur plan d'exécution    | Le GPS qui calcule le meilleur itineraire           |
+| **Shared Buffers**     | Cache mémoire partage pour les pages de donnees        | Le plan de travail en cuisine                       |
+| **VACUUM**             | Nettoyage des lignes mortes (MVCC)                     | L'équipe de menage qui recycle les livres retires   |
 
 ---
 
@@ -549,24 +550,24 @@ try {
 
 Voici la vue d'ensemble de tous les modules du cours, avec leur niveau de difficulte :
 
-| Module | Titre | Difficulte | Themes principaux |
-|---|---|---|---|
-| **00** | Prérequis & Vue d'ensemble | ⭐ | SGBDR, architecture, setup, premier contact |
-| **01** | Le modèle relationnel | ⭐ | Tables, types, contraintes, modelisation |
-| **02** | CRUD & Requetes SQL | ⭐ | INSERT, SELECT, UPDATE, DELETE, agregations |
-| **03** | Relations & Jointures | ⭐⭐ | FK, JOIN, 1:N, N:M, self-join |
-| **04** | Transactions & ACID | ⭐⭐ | BEGIN/COMMIT, WAL, isolation, crash recovery |
-| **05** | Index : les fondamentaux | ⭐⭐ | B-tree, composite, partial, hash |
-| **06** | Le Query Planner | ⭐⭐⭐ | EXPLAIN ANALYZE, scans, join stratégies, stats |
-| **07** | Index avances (GIN, GiST, BRIN) | ⭐⭐⭐ | JSONB, full-text, ranges, covering indexes |
-| **08** | Niveaux d'isolation | ⭐⭐⭐ | Read Committed, Repeatable Read, Serializable |
-| **09** | MVCC en profondeur | ⭐⭐⭐ | xmin/xmax, snapshots, VACUUM, bloat |
-| **10** | Full-text search | ⭐⭐ | tsvector, tsquery, ranking, GIN |
-| **11** | JSONB & donnees semi-structurees | ⭐⭐ | Operateurs JSONB, indexation, patterns |
-| **12** | Fonctions & procedures (PL/pgSQL) | ⭐⭐⭐ | Fonctions, triggers, procedures stockees |
-| **13** | Roles, permissions & sécurité | ⭐⭐ | GRANT, REVOKE, Row-Level Security |
-| **14** | Partitionnement | ⭐⭐⭐ | Range, List, Hash partitioning |
-| **15** | Backup, replication & haute dispo | ⭐⭐⭐ | pg_dump, streaming replication, failover |
+| Module | Titre                             | Difficulte | Themes principaux                              |
+| ------ | --------------------------------- | ---------- | ---------------------------------------------- |
+| **00** | Prérequis & Vue d'ensemble        | ⭐         | SGBDR, architecture, setup, premier contact    |
+| **01** | Le modèle relationnel             | ⭐         | Tables, types, contraintes, modelisation       |
+| **02** | CRUD & Requetes SQL               | ⭐         | INSERT, SELECT, UPDATE, DELETE, agregations    |
+| **03** | Relations & Jointures             | ⭐⭐       | FK, JOIN, 1:N, N:M, self-join                  |
+| **04** | Transactions & ACID               | ⭐⭐       | BEGIN/COMMIT, WAL, isolation, crash recovery   |
+| **05** | Index : les fondamentaux          | ⭐⭐       | B-tree, composite, partial, hash               |
+| **06** | Le Query Planner                  | ⭐⭐⭐     | EXPLAIN ANALYZE, scans, join stratégies, stats |
+| **07** | Index avances (GIN, GiST, BRIN)   | ⭐⭐⭐     | JSONB, full-text, ranges, covering indexes     |
+| **08** | Niveaux d'isolation               | ⭐⭐⭐     | Read Committed, Repeatable Read, Serializable  |
+| **09** | MVCC en profondeur                | ⭐⭐⭐     | xmin/xmax, snapshots, VACUUM, bloat            |
+| **10** | Full-text search                  | ⭐⭐       | tsvector, tsquery, ranking, GIN                |
+| **11** | JSONB & donnees semi-structurees  | ⭐⭐       | Operateurs JSONB, indexation, patterns         |
+| **12** | Fonctions & procedures (PL/pgSQL) | ⭐⭐⭐     | Fonctions, triggers, procedures stockees       |
+| **13** | Roles, permissions & sécurité     | ⭐⭐       | GRANT, REVOKE, Row-Level Security              |
+| **14** | Partitionnement                   | ⭐⭐⭐     | Range, List, Hash partitioning                 |
+| **15** | Backup, replication & haute dispo | ⭐⭐⭐     | pg_dump, streaming replication, failover       |
 
 ### Progression recommandee
 
@@ -601,10 +602,10 @@ Avant de passer au module suivant, reflechis a ces questions :
 
 ## Navigation
 
-| | Lien |
-|---|---|
+|                | Lien                                                            |
+| -------------- | --------------------------------------------------------------- |
 | Module suivant | [Module 01 — Le modèle relationnel](./01-modele-relationnel.md) |
-| Lab associe | Pas de lab pour ce module d'introduction |
+| Lab associe    | Pas de lab pour ce module d'introduction                        |
 
 ---
 
@@ -615,6 +616,7 @@ Avant de passer au module suivant, reflechis a ces questions :
 <!-- parcours-recommande -->
 
 ::: tip Parcours recommandé
+
 1. **Screencast** : [screencast 00 prérequis](../screencasts/screencast-00-prerequis.md)
 2. **Quiz** : [quiz 00 prérequis](../quizzes/quiz-00-prerequis.html)
-:::
+   :::

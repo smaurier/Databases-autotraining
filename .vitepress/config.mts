@@ -11,6 +11,7 @@ export default defineConfig({
     /\/visualizations\/(btree-index|query-planner|mvcc-isolation|lock-matrix|wal-transaction)/,
     /\.\/(btree-index|query-planner|mvcc-isolation|lock-matrix|wal-transaction)/,
     /\/labs\/lab-\d{2}/,
+    /\.\.\/\.\.\//, // liens cross-cours (../../<cours>) : valides en navigation repo, hors racine du build isolé
   ],
 
   themeConfig: {

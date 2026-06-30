@@ -2,7 +2,7 @@
 
 <!-- nav-cours-précédent -->
 
-> **Cours précédent** : [NestJS](../../05-nestjs/modules/26-graphql-nestjs.md). Si tu arrives ici sans avoir fait les cours précédents, consulte le [guide de démarrage](../../GUIDE-DEMARRAGE.md).
+> **Cours précédent** : [NestJS](../../09-nestjs/modules/26-graphql-nestjs.md). Si tu arrives ici sans avoir fait les cours précédents, consulte le [guide de démarrage](../../GUIDE-DEMARRAGE.md).
 
 > **Objectif** : Comprendre ce qu'est un SGBDR, pourquoi PostgreSQL est le choix de référence, installer un environnement de travail complet et etablir un premier contact avec la base de donnees via `psql` et Node.js.
 >

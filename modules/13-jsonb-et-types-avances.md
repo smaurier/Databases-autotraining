@@ -875,6 +875,62 @@ C'est exactement ce qu'on implementera dans le module 15 (projet final).
 
 ---
 
+## 9. JSONB vs MongoDB : faut-il une base NoSQL ?
+
+JSONB fait de PostgreSQL une base **document** au sein d'une base relationnelle. D'où la question légitime : **quand a-t-on encore besoin de MongoDB ?** Ce cours est PostgreSQL+Prisma — voici le cadrage pour décider en connaissance de cause (et répondre en entretien).
+
+### 9.1 Le même document, deux mondes
+
+```js
+// ---- MongoDB ----
+db.users.insertOne({ name: 'Sylvain', prefs: { theme: 'dark' }, tags: ['dev', 'rgaa'] });
+db.users.find({ 'prefs.theme': 'dark', tags: 'rgaa' });
+```
+
+```sql
+-- ---- PostgreSQL JSONB ----
+INSERT INTO users (data) VALUES
+  ('{"name":"Sylvain","prefs":{"theme":"dark"},"tags":["dev","rgaa"]}');
+
+SELECT * FROM users
+WHERE data->'prefs'->>'theme' = 'dark'
+  AND data->'tags' ? 'rgaa';
+```
+
+Même flexibilité de schéma. La différence est ailleurs.
+
+### 9.2 Tableau de décision
+
+| Critère | PostgreSQL (+ JSONB) | MongoDB |
+|---------|----------------------|---------|
+| Schéma flexible | ✅ via JSONB | ✅ natif |
+| **Transactions ACID multi-documents** | ✅ robuste, natif | ✅ depuis v4, mais coûteux |
+| **Jointures / relations** | ✅ excellentes | ❌ faibles (`$lookup` limité) |
+| Intégrité référentielle (FK) | ✅ | ❌ applicative |
+| Scaling horizontal (sharding) | Possible (Citus) mais complexe | ✅ conçu pour |
+| Écritures massives non structurées | Correct | ✅ très bon |
+| Agrégations analytiques | ✅ SQL + window functions | `aggregation pipeline` |
+| Écosystème ORM (Prisma) | ✅ 1er choix | ✅ supporté |
+
+### 9.3 Règle pratique
+
+```
+Données RELATIONNELLES (users ↔ orders ↔ products), besoin de transactions,
+jointures, intégrité  ........................  PostgreSQL (défaut raisonnable)
+
+Documents hétérogènes, gros volume d'écritures, schéma très mouvant,
+sharding horizontal dès le départ  ...........  MongoDB
+
+Un peu de flexibilité dans un modèle relationnel  ...  PostgreSQL + JSONB
+                                                       (n'introduis PAS Mongo pour ça)
+```
+
+> **Piège entretien** : « MongoDB scale mieux » est trop simpliste. Postgres tient des To et scale en lecture (réplicas) très bien (module 16). Le vrai discriminant = **modèle de données** (relationnel vs document) et **besoin transactionnel/jointures**, pas la volumétrie brute. Choisir Mongo « parce que NoSQL c'est moderne » est un anti-pattern (voir décision d'archi dans le cours `13-architecture`).
+
+> **YAGNI** : commence en PostgreSQL. Tu migres une collection précise vers Mongo (ou un store dédié) le jour où un besoin réel l'impose — pas avant.
+
+---
+
 ## Ce qu'il faut retenir
 
 ```

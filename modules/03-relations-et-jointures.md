@@ -1,1017 +1,422 @@
-# Module 03 — Relations & Jointures
-
-> **Objectif** : Comprendre les clés etrangeres, les différents types de relations (1:1, 1:N, N:M), maîtriser toutes les variantes de JOIN et savoir construire des requêtes multi-tables performantes.
->
-> **Difficulte** : ⭐⭐ (intermédiaire)
-
+---
+titre: Relations et jointures
+cours: 10-postgresql
+notions: [INNER JOIN, LEFT et RIGHT JOIN, FULL OUTER JOIN, self-join, sous-requêtes, sous-requêtes corrélées, EXISTS et IN, UNION et jointures multiples]
+outcomes: [écrire des jointures internes et externes, choisir le bon type de jointure, utiliser des sous-requêtes et EXISTS, combiner plusieurs tables]
+prerequis: [02-crud-et-requetes]
+next: 04-transactions-et-acid
+libs: [{ name: postgresql, version: "17" }]
+tribuzen: lister les membres d'une famille et les posts avec leur auteur (jointures TribuZen)
+last-reviewed: 2026-07
 ---
 
-## 1. Cles etrangeres (FOREIGN KEY)
+# Relations et jointures
 
-### 1.1 Principe
+> **Outcomes — tu sauras FAIRE :** écrire des jointures internes et externes (INNER, LEFT, FULL OUTER), choisir le bon type selon ce que tu veux conserver, utiliser des sous-requêtes corrélées et EXISTS, combiner plusieurs tables dans une seule requête.
+> **Difficulté :** :star::star:
 
-Une **clé etrangere** (Foreign Key, FK) est une contrainte qui garantit qu'une valeur dans une colonne **existe** dans une autre table. C'est le mécanisme fondamental qui relie les tables entre elles.
+## 1. Cas concret d'abord
 
-> **Analogie** : Imagine un bon de commande papier. La case "Client n°" ne peut contenir qu'un numéro qui existe dans le registre des clients. Si tu ecris un numéro inexistant, le comptable rejette le bon. La clé etrangere, c'est le comptable automatique.
-
-```sql
--- La table "parent" (referencee)
-CREATE TABLE departement (
-    id   INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    nom  TEXT NOT NULL UNIQUE
-);
-
--- La table "enfant" (qui reference)
-CREATE TABLE employe (
-    id              INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    nom             TEXT NOT NULL,
-    departement_id  INTEGER REFERENCES departement(id)
-    --              ^^^^^^^^ cle etrangere vers departement.id
-);
-
--- Tentative d'inserer un employe avec un departement inexistant
-INSERT INTO employe (nom, departement_id) VALUES ('Alice', 999);
--- ERREUR : insert or update on table "employe" violates foreign key constraint
--- Key (departement_id)=(999) is not present in table "departement"
-```
-
-### 1.2 Syntaxe complete
+Dans TribuZen, la page famille affiche deux choses : la liste des membres avec leur prénom/nom, et le fil de posts avec le nom de l'auteur de chaque message. Les données vivent dans quatre tables — `family`, `users`, `family_member`, `post` — et sans jointures tu finirais à faire une requête par ligne (le problème N+1) :
 
 ```sql
--- Syntaxe inline (sur une seule colonne)
-CREATE TABLE employe (
-    id              SERIAL PRIMARY KEY,
-    departement_id  INTEGER REFERENCES departement(id) ON DELETE CASCADE
-);
+-- ❌ Approche N+1 : 1 requête pour la liste + 1 requête par membre pour le nom
+SELECT user_id FROM family_member WHERE family_id = 'fam-1';
+-- → 12 lignes → 12 SELECT users WHERE id = ... supplémentaires
 
--- Syntaxe contrainte de table (nommee, pour multi-colonnes)
-CREATE TABLE employe (
-    id              SERIAL PRIMARY KEY,
-    departement_id  INTEGER NOT NULL,
-    CONSTRAINT fk_employe_departement
-        FOREIGN KEY (departement_id)
-        REFERENCES departement(id)
-        ON DELETE CASCADE
-        ON UPDATE CASCADE
-);
+-- ✅ Une seule jointure fait le travail
+SELECT u.first_name, u.last_name, fm.role, fm.joined_at
+FROM family_member fm
+INNER JOIN users u ON fm.user_id = u.id
+WHERE fm.family_id = 'fam-1'
+ORDER BY fm.joined_at;
 ```
 
-### 1.3 Actions ON DELETE et ON UPDATE
+Même chose pour les posts : joindre `post` sur `users` pour avoir l'auteur, et sur `family` pour le nom de la famille. Ce module te donne tous les outils pour écrire ces requêtes correctement.
 
-Que se passe-t-il quand on supprime ou modifie la ligne referencee (le departement) ?
+## 2. Théorie complète, concise
 
-| Action | Comportement | Cas d'usage |
-|---|---|---|
-| `RESTRICT` (defaut) | **Interdit** la suppression si des lignes referentes existent | Proteger les donnees critiques |
-| `NO ACTION` | Comme RESTRICT mais vérifié à la fin de la transaction | Vérification differee |
-| `CASCADE` | **Supprime** automatiquement les lignes referentes | Donnees dependantes (commande → lignes) |
-| `SET NULL` | Met la FK a `NULL` dans les lignes referentes | Conserver l'historique (employe → ancien departement) |
-| `SET DEFAULT` | Met la FK a sa valeur `DEFAULT` | Rare, valeur par defaut significative |
+### Schéma TribuZen utilisé dans ce module
 
 ```sql
--- Demonstration de chaque action
-
--- CASCADE : supprimer le departement supprime tous ses employes
-CREATE TABLE emp_cascade (
-    id SERIAL PRIMARY KEY,
-    dep_id INTEGER REFERENCES departement(id) ON DELETE CASCADE
+CREATE TABLE users (
+    id         TEXT PRIMARY KEY,          -- 'u-1', 'u-2'…
+    first_name TEXT NOT NULL,
+    last_name  TEXT NOT NULL,
+    email      TEXT NOT NULL UNIQUE,
+    invited_by TEXT REFERENCES users(id)  -- auto-référence : qui a invité cet utilisateur
 );
 
--- SET NULL : supprimer le departement met dep_id a NULL
-CREATE TABLE emp_setnull (
-    id SERIAL PRIMARY KEY,
-    dep_id INTEGER REFERENCES departement(id) ON DELETE SET NULL
+CREATE TABLE family (
+    id   TEXT PRIMARY KEY,
+    name TEXT NOT NULL
 );
 
--- RESTRICT : impossible de supprimer un departement qui a des employes
-CREATE TABLE emp_restrict (
-    id SERIAL PRIMARY KEY,
-    dep_id INTEGER NOT NULL REFERENCES departement(id) ON DELETE RESTRICT
+CREATE TABLE family_member (
+    family_id TEXT NOT NULL REFERENCES family(id) ON DELETE CASCADE,
+    user_id   TEXT NOT NULL REFERENCES users(id)  ON DELETE CASCADE,
+    role      TEXT NOT NULL DEFAULT 'member'
+              CHECK (role IN ('owner','admin','member','guest')),
+    joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (family_id, user_id)
+);
+
+CREATE TABLE post (
+    id        TEXT PRIMARY KEY,
+    family_id TEXT NOT NULL REFERENCES family(id) ON DELETE CASCADE,
+    author_id TEXT NOT NULL REFERENCES users(id),
+    content   TEXT NOT NULL,
+    posted_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
 
-> **Piege classique** : `ON DELETE CASCADE` est pratique mais dangereux. Supprimer un seul departement peut entrainer la suppression de centaines d'employes. Utilise-le pour les relations de composition (une commande et ses lignes), mais pas pour les relations d'association faible. En cas de doute, utilise `RESTRICT` et géré les suppressions explicitement dans ton code.
+### INNER JOIN — correspondance stricte
 
-```
- ON DELETE CASCADE — Attention danger !
-
- DELETE FROM departement WHERE id = 3;
-
- ┌────────────────┐       ┌──────────────────┐
- │  departement   │       │     employe      │
- │                │       │                  │
- │  id=3 "R&D"   │──────▶│  id=10, dep=3    │ ← SUPPRIME
- │  (SUPPRIME)    │──────▶│  id=11, dep=3    │ ← SUPPRIME
- │                │──────▶│  id=12, dep=3    │ ← SUPPRIME
- └────────────────┘       │  id=13, dep=1    │ ← intact
-                          │  id=14, dep=2    │ ← intact
-                          └──────────────────┘
-```
-
----
-
-## 2. Types de relations
-
-### 2.1 Relation 1:1 (un à un)
-
-Chaque ligne de la table A correspond a exactement une ligne de la table B, et inversement.
+Retourne uniquement les lignes qui ont une correspondance dans **les deux** tables. Si un côté n'a pas de match, la ligne est exclue.
 
 ```sql
--- Exemple : un employe a une fiche de paie unique
-CREATE TABLE employe (
-    id      INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    nom     TEXT NOT NULL,
-    email   TEXT NOT NULL UNIQUE
-);
-
-CREATE TABLE fiche_paie (
-    id          INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    employe_id  INTEGER NOT NULL UNIQUE REFERENCES employe(id),
-    --                           ^^^^^^ UNIQUE garantit le 1:1
-    iban        TEXT NOT NULL,
-    salaire     NUMERIC(10,2) NOT NULL
-);
+-- Membres de fam-1 avec prénom/nom
+SELECT u.first_name, u.last_name, fm.role
+FROM family_member fm
+INNER JOIN users u ON fm.user_id = u.id
+WHERE fm.family_id = 'fam-1';
+-- Un fm sans users correspondant → exclu (cas d'intégrité cassée)
+-- Un users sans fm dans cette famille → exclu également
 ```
 
-```
- Relation 1:1
+`JOIN` seul sans préfixe = `INNER JOIN`. C'est le type de jointure par défaut et le plus courant.
 
- ┌──────────┐        ┌─────────────┐
- │ employe  │  1──1  │ fiche_paie  │
- │          │───────▶│             │
- │ id (PK)  │        │ employe_id  │
- │ nom      │        │ (FK+UNIQUE) │
- │ email    │        │ iban        │
- └──────────┘        │ salaire     │
-                     └─────────────┘
-```
+### LEFT JOIN — conserver toute la table de gauche
 
-> **Exercice mental** : Quand utiliser une relation 1:1 plutot que tout mettre dans la même table ? Reponses possibles :
-> - **Separation des donnees sensibles** (salaire, IBAN separes des donnees publiques)
-> - **Colonnes rarement lues** (éviter de charger des colonnes lourdes à chaque requête)
-> - **Schemas différents** (une table "publique", une table "privee" avec des permissions différentes)
-
-### 2.2 Relation 1:N (un a plusieurs)
-
-C'est la relation la plus courante. Un departement a plusieurs employes, mais chaque employe n'a qu'un seul departement.
+Retourne **toutes** les lignes de la table de gauche ; les colonnes de droite sont `NULL` quand il n'y a pas de correspondance.
 
 ```sql
-CREATE TABLE departement (
-    id   INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    nom  TEXT NOT NULL UNIQUE
-);
+-- Tous les utilisateurs, avec leur rôle dans fam-1 s'ils en sont membres
+-- (NULL si pas membre)
+SELECT u.first_name, u.last_name, fm.role
+FROM users u
+LEFT JOIN family_member fm ON u.id = fm.user_id AND fm.family_id = 'fam-1';
 
-CREATE TABLE employe (
-    id              INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    nom             TEXT NOT NULL,
-    departement_id  INTEGER NOT NULL REFERENCES departement(id)
-    -- Pas de UNIQUE ici → plusieurs employes par departement
-);
+-- Trouver les utilisateurs qui ne sont membres d'AUCUNE famille
+SELECT u.first_name, u.last_name
+FROM users u
+LEFT JOIN family_member fm ON u.id = fm.user_id
+WHERE fm.family_id IS NULL;
 ```
 
-```
- Relation 1:N
+Le filtre `WHERE fm.colonne IS NULL` après un LEFT JOIN est le pattern pour trouver les lignes **sans correspondance** ("orphelines").
 
- ┌──────────────┐          ┌──────────────┐
- │ departement  │   1──N   │   employe    │
- │              │─────────▶│              │
- │ id (PK)      │          │ id (PK)      │
- │ nom          │          │ nom          │
- └──────────────┘          │ departement_id│
-                           │ (FK)          │
-                           └──────────────┘
- 1 departement ──▶ N employes
- 1 employe ──▶ 1 seul departement
-```
+### RIGHT JOIN — miroir du LEFT JOIN
 
-### 2.3 Relation N:M (plusieurs a plusieurs)
-
-Un etudiant suit plusieurs cours, et chaque cours a plusieurs etudiants. Ce type de relation nécessité une **table de jonction** (où table d'association).
+Retourne toutes les lignes de la table de **droite**. En pratique, il vaut mieux inverser l'ordre des tables et utiliser un LEFT JOIN — le résultat est identique mais plus lisible.
 
 ```sql
--- Les deux tables principales
-CREATE TABLE etudiant (
-    id      INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    nom     TEXT NOT NULL,
-    email   TEXT NOT NULL UNIQUE
-);
+-- Ces deux requêtes sont équivalentes
+SELECT u.first_name, fm.role
+FROM family_member fm
+RIGHT JOIN users u ON fm.user_id = u.id AND fm.family_id = 'fam-1';
 
-CREATE TABLE cours (
-    id          INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    titre       TEXT NOT NULL,
-    credits     INTEGER NOT NULL CHECK (credits > 0)
-);
-
--- La table de jonction
-CREATE TABLE inscription (
-    etudiant_id INTEGER NOT NULL REFERENCES etudiant(id) ON DELETE CASCADE,
-    cours_id    INTEGER NOT NULL REFERENCES cours(id) ON DELETE CASCADE,
-    date_inscription DATE NOT NULL DEFAULT CURRENT_DATE,
-    note        NUMERIC(4,2) CHECK (note >= 0 AND note <= 20),
-    PRIMARY KEY (etudiant_id, cours_id)  -- cle primaire composite
-);
+-- Préférer cette formulation (LEFT JOIN, table "principale" à gauche)
+SELECT u.first_name, fm.role
+FROM users u
+LEFT JOIN family_member fm ON u.id = fm.user_id AND fm.family_id = 'fam-1';
 ```
 
-```
- Relation N:M via table de jonction
+### FULL OUTER JOIN — tout conserver des deux côtés
 
- ┌──────────┐       ┌──────────────┐       ┌──────────┐
- │ etudiant │  N    │ inscription  │    N  │  cours   │
- │          │──────▶│              │◀──────│          │
- │ id (PK)  │       │ etudiant_id  │       │ id (PK)  │
- │ nom      │       │ cours_id     │       │ titre    │
- │ email    │       │ date_inscr.  │       │ credits  │
- └──────────┘       │ note         │       └──────────┘
-                    └──────────────┘
-                     PK = (etudiant_id, cours_id)
-```
-
-> **Ce qu'il faut retenir** : La table de jonction porte souvent des **attributs propres à la relation** : la date d'inscription, la note, le role, etc. Ce ne sont pas des attributs de l'etudiant ni du cours, mais de la **relation entre les deux**.
-
----
-
-## 3. Tables de jonction (junction tables) pour N:M
-
-### 3.1 Conventions de nommage
-
-| Convention | Exemple | Commentaire |
-|---|---|---|
-| `table1_table2` | `etudiant_cours` | Simple, aleatoire |
-| Nom semantique | `inscription` | **Recommande** quand un nom metier existe |
-| `table1_has_table2` | `etudiant_has_cours` | Convention Ruby on Rails |
-| Verbe | `suit` | Trop abstrait, a éviter |
-
-### 3.2 Exemple complet : système de tags
+Retourne toutes les lignes des deux tables ; `NULL` là où il n'y a pas de correspondance.
 
 ```sql
--- Articles de blog
-CREATE TABLE article (
-    id      INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    titre   TEXT NOT NULL,
-    contenu TEXT,
-    publie  BOOLEAN NOT NULL DEFAULT false
-);
-
--- Tags
-CREATE TABLE tag (
-    id  INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    nom TEXT NOT NULL UNIQUE
-);
-
--- Table de jonction : un article peut avoir plusieurs tags,
--- un tag peut etre associe a plusieurs articles
-CREATE TABLE article_tag (
-    article_id  INTEGER NOT NULL REFERENCES article(id) ON DELETE CASCADE,
-    tag_id      INTEGER NOT NULL REFERENCES tag(id) ON DELETE CASCADE,
-    PRIMARY KEY (article_id, tag_id)
-);
-
--- Inserer des donnees
-INSERT INTO article (titre) VALUES ('PostgreSQL pour les nuls'), ('Guide des index');
-INSERT INTO tag (nom) VALUES ('sql'), ('postgresql'), ('performance'), ('debutant');
-
--- Associer des tags aux articles
-INSERT INTO article_tag (article_id, tag_id) VALUES
-    (1, 1), (1, 2), (1, 4),  -- article 1 : sql, postgresql, debutant
-    (2, 2), (2, 3);           -- article 2 : postgresql, performance
-
--- Trouver les tags d'un article
-SELECT t.nom
-FROM tag t
-JOIN article_tag at ON t.id = at.tag_id
-WHERE at.article_id = 1;
-
--- Trouver les articles d'un tag
-SELECT a.titre
-FROM article a
-JOIN article_tag at ON a.id = at.article_id
-JOIN tag t ON at.tag_id = t.id
-WHERE t.nom = 'postgresql';
-```
-
----
-
-## 4. INNER JOIN — le join le plus courant
-
-### 4.1 Principe
-
-Le `INNER JOIN` retourne uniquement les lignes qui ont une correspondance dans **les deux tables**.
-
-```sql
--- Syntaxe
-SELECT colonnes
-FROM table_a
-INNER JOIN table_b ON table_a.colonne = table_b.colonne;
-
--- Exemple : employes avec leur departement
-SELECT e.nom, e.prenom, d.nom AS departement
-FROM employe e
-INNER JOIN departement d ON e.departement_id = d.id;
-```
-
-```
- INNER JOIN — Diagramme de Venn
-
-     Table A              Table B
-   ┌─────────┐         ┌─────────┐
-   │         │░░░░░░░░░│         │
-   │   A     │░░░JOIN░░│    B    │
-   │  seul   │░░░░░░░░░│   seul  │
-   │         │░░░░░░░░░│         │
-   └─────────┘         └─────────┘
-
-   ░░░ = INNER JOIN (lignes presentes dans A ET B)
-   A seul = lignes de A sans correspondance dans B (exclues)
-   B seul = lignes de B sans correspondance dans A (exclues)
-```
-
-### 4.2 Exemple détaillé
-
-```sql
--- Donnees
-INSERT INTO departement (nom) VALUES ('IT'), ('RH'), ('Finance');
-INSERT INTO employe (nom, prenom, departement_id) VALUES
-    ('Dupont', 'Alice', 1),   -- IT
-    ('Martin', 'Bob', 1),     -- IT
-    ('Petit', 'Claire', 2),   -- RH
-    ('Durand', 'David', NULL); -- pas de departement
-
--- INNER JOIN
-SELECT e.nom, e.prenom, d.nom AS departement
-FROM employe e
-INNER JOIN departement d ON e.departement_id = d.id;
-
--- Resultat :
--- nom     | prenom | departement
--- --------+--------+------------
--- Dupont  | Alice  | IT
--- Martin  | Bob    | IT
--- Petit   | Claire | RH
--- (3 lignes — David est EXCLU car departement_id IS NULL)
--- (Finance est EXCLU car aucun employe n'y est affecte)
-```
-
-> **Ce qu'il faut retenir** : `INNER JOIN` est le type de join par defaut. `JOIN` sans prefixe est un `INNER JOIN`. Si tu oublies la clause `ON`, PostgreSQL te renverra une erreur.
-
----
-
-## 5. LEFT JOIN / LEFT OUTER JOIN
-
-### 5.1 Principe
-
-Le `LEFT JOIN` retourne **toutes** les lignes de la table de gauche, même si elles n'ont pas de correspondance dans la table de droite. Les colonnes de la table de droite sont remplies avec `NULL` quand il n'y a pas de correspondance.
-
-```sql
--- Tous les employes, meme ceux sans departement
-SELECT e.nom, e.prenom, d.nom AS departement
-FROM employe e
-LEFT JOIN departement d ON e.departement_id = d.id;
-
--- Resultat :
--- nom     | prenom | departement
--- --------+--------+------------
--- Dupont  | Alice  | IT
--- Martin  | Bob    | IT
--- Petit   | Claire | RH
--- Durand  | David  | NULL        ← inclus malgre l'absence de departement
-```
-
-```
- LEFT JOIN — Diagramme de Venn
-
-     Table A              Table B
-   ┌─────────┐         ┌─────────┐
-   │░░░░░░░░░│░░░░░░░░░│         │
-   │░░░A░░░░░│░░░JOIN░░│    B    │
-   │░░░░░░░░░│░░░░░░░░░│   seul  │
-   │░░░░░░░░░│░░░░░░░░░│         │
-   └─────────┘         └─────────┘
-
-   ░░░ = LEFT JOIN (toutes les lignes de A + correspondances de B)
-   B seul = lignes de B sans correspondance dans A (exclues)
-```
-
-### 5.2 Trouver les lignes SANS correspondance
-
-Un pattern très courant avec `LEFT JOIN` est de trouver les lignes "orphelines" :
-
-```sql
--- Employes qui n'ont PAS de departement
-SELECT e.nom, e.prenom
-FROM employe e
-LEFT JOIN departement d ON e.departement_id = d.id
-WHERE d.id IS NULL;
-
--- Departements qui n'ont AUCUN employe
-SELECT d.nom AS departement_vide
-FROM departement d
-LEFT JOIN employe e ON d.id = e.departement_id
-WHERE e.id IS NULL;
-```
-
-> **Analogie** : Le `LEFT JOIN`, c'est comme un appel nominal en classe. Tous les eleves de la liste (table gauche) sont appeles. Si un eleve n'a pas de groupe de projet (table droite), il apparait quand même, mais avec "aucun groupe" en face.
-
----
-
-## 6. RIGHT JOIN / RIGHT OUTER JOIN
-
-### 6.1 Principe
-
-Le `RIGHT JOIN` est le miroir du `LEFT JOIN` : il retourne toutes les lignes de la table de **droite**, même sans correspondance dans la table de gauche.
-
-```sql
--- Tous les departements, meme ceux sans employes
-SELECT e.nom, e.prenom, d.nom AS departement
-FROM employe e
-RIGHT JOIN departement d ON e.departement_id = d.id;
-
--- Resultat :
--- nom     | prenom | departement
--- --------+--------+------------
--- Dupont  | Alice  | IT
--- Martin  | Bob    | IT
--- Petit   | Claire | RH
--- NULL    | NULL   | Finance     ← inclus malgre l'absence d'employes
-```
-
-```
- RIGHT JOIN — Diagramme de Venn
-
-     Table A              Table B
-   ┌─────────┐         ┌─────────┐
-   │         │░░░░░░░░░│░░░░░░░░░│
-   │   A     │░░░JOIN░░│░░░B░░░░░│
-   │  seul   │░░░░░░░░░│░░░░░░░░░│
-   │         │░░░░░░░░░│░░░░░░░░░│
-   └─────────┘         └─────────┘
-
-   ░░░ = RIGHT JOIN (correspondances de A + toutes les lignes de B)
-```
-
-> **Ce qu'il faut retenir** : En pratique, le `RIGHT JOIN` est **rarement utilise**. On préféré inverser l'ordre des tables et utiliser un `LEFT JOIN`, car c'est plus lisible. `A RIGHT JOIN B` est équivalent a `B LEFT JOIN A`.
-
----
-
-## 7. FULL OUTER JOIN
-
-### 7.1 Principe
-
-Le `FULL OUTER JOIN` retourne **toutes** les lignes des **deux** tables, avec `NULL` la ou il n'y a pas de correspondance.
-
-```sql
-SELECT e.nom AS employe, d.nom AS departement
-FROM employe e
-FULL OUTER JOIN departement d ON e.departement_id = d.id;
-
--- Resultat :
--- employe | departement
--- --------+------------
--- Dupont  | IT
--- Martin  | IT
--- Petit   | RH
--- Durand  | NULL         ← employe sans departement
--- NULL    | Finance      ← departement sans employe
-```
-
-```
- FULL OUTER JOIN — Diagramme de Venn
-
-     Table A              Table B
-   ┌─────────┐         ┌─────────┐
-   │░░░░░░░░░│░░░░░░░░░│░░░░░░░░░│
-   │░░░A░░░░░│░░░JOIN░░│░░░B░░░░░│
-   │░░░░░░░░░│░░░░░░░░░│░░░░░░░░░│
-   │░░░░░░░░░│░░░░░░░░░│░░░░░░░░░│
-   └─────────┘         └─────────┘
-
-   ░░░ = FULL OUTER JOIN (tout de A + tout de B)
-```
-
-### 7.2 Cas d'usage : reconciliation de donnees
-
-```sql
--- Comparer deux tables pour trouver les differences
--- Exemple : comparer les employes entre deux bases
+-- Réconcilier deux snapshots d'utilisateurs (utile pour migration, diff)
 SELECT
     COALESCE(a.email, b.email) AS email,
     CASE
-        WHEN a.email IS NULL THEN 'Uniquement dans B'
-        WHEN b.email IS NULL THEN 'Uniquement dans A'
-        ELSE 'Dans les deux'
+        WHEN a.email IS NULL THEN 'seulement dans B'
+        WHEN b.email IS NULL THEN 'seulement dans A'
+        ELSE 'dans les deux'
     END AS statut
-FROM employes_a a
-FULL OUTER JOIN employes_b b ON a.email = b.email
+FROM users_snapshot_a a
+FULL OUTER JOIN users_snapshot_b b ON a.email = b.email
 WHERE a.email IS NULL OR b.email IS NULL;
 ```
 
----
+Cas d'usage réel : détecter les écarts lors d'une migration de données ou d'un audit.
 
-## 8. CROSS JOIN (produit cartesien)
+### Self-join — une table jointe avec elle-même
 
-### 8.1 Principe
-
-Le `CROSS JOIN` combine **chaque ligne** de la table A avec **chaque ligne** de la table B. Si A a 10 lignes et B a 5 lignes, le résultat a 10 × 5 = 50 lignes.
+Quand une table contient une auto-référence (FK vers elle-même), on la joint à elle-même avec deux alias.
 
 ```sql
--- Syntaxe explicite
-SELECT t.taille, c.couleur
-FROM taille t
-CROSS JOIN couleur c;
-
--- Syntaxe implicite (virgule)
-SELECT t.taille, c.couleur
-FROM taille t, couleur c;
--- Equivalent mais moins lisible
-```
-
-```
- CROSS JOIN — Produit cartesien
-
- taille     couleur       Resultat (3 × 2 = 6 lignes)
- ┌────┐     ┌───────┐     ┌────────────────┐
- │ S  │  ×  │ Rouge │  =  │  S  │  Rouge   │
- │ M  │     │ Bleu  │     │  S  │  Bleu    │
- │ L  │     └───────┘     │  M  │  Rouge   │
- └────┘                   │  M  │  Bleu    │
-                          │  L  │  Rouge   │
-                          │  L  │  Bleu    │
-                          └────────────────┘
-```
-
-> **Piege classique** : Le `CROSS JOIN` est rarement ce que tu veux. Si tu as oublie la clause `ON` dans un `JOIN`, tu obtiens un produit cartesien accidentel. Sur deux tables de 10 000 lignes chacune, le résultat fait 100 000 000 lignes !
-
-### 8.2 Cas d'usage : generateur de combinaisons
-
-```sql
--- Generer un calendrier des 12 prochains mois × 3 categories
-WITH mois AS (
-    SELECT generate_series(
-        DATE_TRUNC('month', CURRENT_DATE),
-        DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '11 months',
-        INTERVAL '1 month'
-    )::DATE AS debut_mois
-),
-categories AS (
-    SELECT unnest(ARRAY['Ventes', 'Achats', 'Salaires']) AS categorie
-)
-SELECT m.debut_mois, c.categorie, 0.00 AS montant
-FROM mois m
-CROSS JOIN categories c
-ORDER BY m.debut_mois, c.categorie;
-```
-
----
-
-## 9. Self-joins (auto-jointure)
-
-### 9.1 Principe
-
-Un self-join est une jointure d'une table avec **elle-même**. Le cas classique est une hiérarchie (employe → manager).
-
-```sql
--- Table avec auto-reference
-CREATE TABLE personnel (
-    id          INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    nom         TEXT NOT NULL,
-    poste       TEXT NOT NULL,
-    manager_id  INTEGER REFERENCES personnel(id)  -- auto-reference
-);
-
-INSERT INTO personnel (nom, poste, manager_id) VALUES
-    ('Marie Dupont', 'PDG', NULL),          -- id=1, pas de manager
-    ('Jean Martin', 'Directeur IT', 1),      -- id=2, manager=Marie
-    ('Alice Petit', 'Dev Senior', 2),        -- id=3, manager=Jean
-    ('Bob Durand', 'Dev Junior', 3),         -- id=4, manager=Alice
-    ('Claire Leroy', 'Directrice RH', 1);   -- id=5, manager=Marie
-
--- Trouver chaque employe avec le nom de son manager
+-- Qui a invité qui ? (invited_by dans users)
 SELECT
-    e.nom AS employe,
-    e.poste,
-    m.nom AS manager
-FROM personnel e
-LEFT JOIN personnel m ON e.manager_id = m.id;
+    u.first_name   AS membre,
+    inv.first_name AS parrain
+FROM users u
+LEFT JOIN users inv ON u.invited_by = inv.id;
 
 -- Resultat :
--- employe        | poste          | manager
--- ---------------+----------------+---------------
--- Marie Dupont   | PDG            | NULL
--- Jean Martin    | Directeur IT   | Marie Dupont
--- Alice Petit    | Dev Senior     | Jean Martin
--- Bob Durand     | Dev Junior     | Alice Petit
--- Claire Leroy   | Directrice RH  | Marie Dupont
+-- membre  | parrain
+-- --------+---------
+-- Alice   | NULL       ← fondatrice, personne ne l'a invitée
+-- Bob     | Alice
+-- Claire  | Alice
+-- David   | Bob
 ```
 
-```
- Hierarchie via self-join
+Les deux alias (`u` et `inv`) pointent vers la même table `users` ; sans alias, PostgreSQL ne saurait pas quelle occurrence est quelle.
 
-           Marie Dupont (PDG)
-           ┌──────┴──────┐
-    Jean Martin     Claire Leroy
-    (Dir. IT)       (Dir. RH)
-        │
-    Alice Petit
-    (Dev Senior)
-        │
-    Bob Durand
-    (Dev Junior)
-```
+### Sous-requêtes (subqueries)
 
-### 9.2 Requête recursive (CTE recursive)
+Une sous-requête est une `SELECT` imbriquée dans une autre requête. Trois usages principaux :
+
+**Scalaire** (retourne une valeur unique) :
 
 ```sql
--- Trouver toute la chaine hierarchique d'un employe
-WITH RECURSIVE hierarchie AS (
-    -- Cas de base : l'employe de depart
-    SELECT id, nom, poste, manager_id, 0 AS niveau
-    FROM personnel
-    WHERE id = 4  -- Bob Durand
-
-    UNION ALL
-
-    -- Cas recursif : remonter au manager
-    SELECT p.id, p.nom, p.poste, p.manager_id, h.niveau + 1
-    FROM personnel p
-    INNER JOIN hierarchie h ON p.id = h.manager_id
+-- Posts plus récents que le post médian de la famille
+SELECT content, posted_at
+FROM post
+WHERE posted_at > (
+    SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY posted_at)
+    FROM post
+    WHERE family_id = 'fam-1'
 )
-SELECT nom, poste, niveau
-FROM hierarchie
-ORDER BY niveau;
-
--- Resultat :
--- nom            | poste        | niveau
--- ---------------+--------------+-------
--- Bob Durand     | Dev Junior   | 0
--- Alice Petit    | Dev Senior   | 1
--- Jean Martin    | Directeur IT | 2
--- Marie Dupont   | PDG          | 3
+AND family_id = 'fam-1';
 ```
 
----
-
-## 10. Jointures multiples (3+ tables)
-
-### 10.1 Enchainer les joins
+**Dans le FROM** (table dérivée) :
 
 ```sql
--- Schema : employe → departement, employe ↔ projet (via employe_projet)
+-- Auteurs avec leur compteur de posts, filtré sur ceux qui en ont plus de 3
+SELECT u.first_name, stats.nb_posts
+FROM users u
+JOIN (
+    SELECT author_id, COUNT(*) AS nb_posts
+    FROM post
+    WHERE family_id = 'fam-1'
+    GROUP BY author_id
+) AS stats ON u.id = stats.author_id
+WHERE stats.nb_posts > 3;
+```
 
--- Trouver les employes, leur departement, et leurs projets
+### Sous-requêtes corrélées
+
+Une sous-requête corrélée référence une colonne de la requête **externe**. Elle est réévaluée pour chaque ligne de la requête externe.
+
+```sql
+-- Pour chaque utilisateur, nombre de familles dont il est membre
 SELECT
-    e.prenom || ' ' || e.nom AS employe,
-    d.nom AS departement,
-    p.titre AS projet,
-    ep.role
-FROM employe e
-INNER JOIN departement d ON e.departement_id = d.id
-INNER JOIN employe_projet ep ON e.id = ep.employe_id
-INNER JOIN projet p ON ep.projet_id = p.id
-ORDER BY e.nom, p.titre;
+    u.first_name,
+    u.last_name,
+    (SELECT COUNT(*) FROM family_member fm WHERE fm.user_id = u.id) AS nb_familles
+FROM users u;
+```
 
--- Meme chose mais avec les employes sans projet (LEFT JOIN)
+La sous-requête `(SELECT COUNT(*) ... WHERE fm.user_id = u.id)` est corrélée à `u.id` : elle est exécutée une fois **par ligne** de `users`. À éviter sur de grandes tables — préférer un JOIN + GROUP BY.
+
+### EXISTS et IN
+
+`EXISTS` vérifie si la sous-requête retourne **au moins une ligne**. Elle s'arrête dès la première correspondance.
+
+```sql
+-- Utilisateurs qui ont au moins un post dans fam-1
+SELECT u.first_name, u.last_name
+FROM users u
+WHERE EXISTS (
+    SELECT 1 FROM post p
+    WHERE p.author_id = u.id AND p.family_id = 'fam-1'
+);
+
+-- Même résultat avec IN
+SELECT u.first_name, u.last_name
+FROM users u
+WHERE u.id IN (
+    SELECT p.author_id FROM post p WHERE p.family_id = 'fam-1'
+);
+```
+
+Règle de choix :
+
+| Situation | Préférer |
+|-----------|----------|
+| Sous-requête corrélée, juste vérifier l'existence | `EXISTS` — court-circuit dès la 1ʳᵉ ligne |
+| Liste de valeurs constantes ou petite sous-requête | `IN` — syntaxe claire |
+| Sous-requête peut retourner `NULL` | `EXISTS` — `IN (NULL, ...)` produit des résultats surprenants |
+
+Piège : `NOT IN (sous-requête)` retourne zéro ligne si la sous-requête contient un seul `NULL`. `NOT EXISTS` n'a pas ce comportement.
+
+### UNION — combiner des ensembles de résultats
+
+`UNION` réunit deux ensembles de lignes et supprime les doublons. `UNION ALL` conserve les doublons (plus rapide, pas de déduplication).
+
+```sql
+-- Tous les identifiants actifs dans fam-1 : membres actuels + anciens membres archivés
+SELECT user_id, 'actif'   AS statut FROM family_member   WHERE family_id = 'fam-1'
+UNION
+SELECT user_id, 'archive' AS statut FROM former_member    WHERE family_id = 'fam-1';
+
+-- Les colonnes doivent être en même nombre et types compatibles
+-- UNION supprime les doublons (comme DISTINCT) ; UNION ALL les conserve
+```
+
+### Jointures multiples (3+ tables)
+
+```sql
+-- Posts avec prénom de l'auteur et nom de la famille — 3 tables
 SELECT
-    e.prenom || ' ' || e.nom AS employe,
-    d.nom AS departement,
-    COALESCE(p.titre, '(aucun projet)') AS projet,
-    COALESCE(ep.role, '-') AS role
-FROM employe e
-INNER JOIN departement d ON e.departement_id = d.id
-LEFT JOIN employe_projet ep ON e.id = ep.employe_id
-LEFT JOIN projet p ON ep.projet_id = p.id
-ORDER BY e.nom, p.titre;
+    f.name         AS famille,
+    u.first_name   AS auteur,
+    p.content,
+    p.posted_at
+FROM post p
+INNER JOIN users  u ON p.author_id = u.id
+INNER JOIN family f ON p.family_id = f.id
+WHERE p.family_id = 'fam-1'
+ORDER BY p.posted_at DESC;
 ```
 
-> **Piege classique** : Quand tu enchaines des joins, l'ordre compte pour la lisibilite. Place les `INNER JOIN` d'abord (ils filtrent), puis les `LEFT JOIN` (ils conservent). Si tu mets un `INNER JOIN` après un `LEFT JOIN` sur la même branche, les NULL du LEFT JOIN seront elimines par l'INNER JOIN, annulant l'effet du LEFT.
+Règle d'ordre : place les `INNER JOIN` qui filtrent en premier, puis les `LEFT JOIN`. Un `INNER JOIN` **après** un `LEFT JOIN` sur la même branche annule le LEFT JOIN (les NULL disparaissent).
 
 ```sql
--- PROBLEME : le INNER JOIN sur projet annule le LEFT JOIN sur employe_projet
-SELECT e.nom, p.titre
-FROM employe e
-LEFT JOIN employe_projet ep ON e.id = ep.employe_id
-INNER JOIN projet p ON ep.projet_id = p.id;  -- elimine les NULL !
--- Les employes sans projet disparaissent
+-- ❌ Mauvais : le INNER JOIN annule le LEFT JOIN
+SELECT u.first_name, p.content
+FROM users u
+LEFT JOIN family_member fm ON u.id = fm.user_id
+INNER JOIN post p ON fm.user_id = p.author_id;  -- élimine les NULL de fm
 
--- CORRECT : utiliser LEFT JOIN pour toute la chaine
-SELECT e.nom, p.titre
-FROM employe e
-LEFT JOIN employe_projet ep ON e.id = ep.employe_id
-LEFT JOIN projet p ON ep.projet_id = p.id;
--- Les employes sans projet ont NULL pour p.titre
+-- ✅ Correct : chaîne homogène de LEFT JOIN
+SELECT u.first_name, p.content
+FROM users u
+LEFT JOIN family_member fm ON u.id = fm.user_id AND fm.family_id = 'fam-1'
+LEFT JOIN post p ON u.id = p.author_id AND p.family_id = 'fam-1';
 ```
 
-### 10.2 Diagramme des tables d'un e-commerce
+## 3. Worked examples
 
-```
- ┌──────────────┐     ┌──────────────┐     ┌──────────────────┐
- │  client      │     │  commande    │     │  ligne_commande  │
- │              │  1:N│              │ 1:N │                  │
- │  id (PK)     │────▶│  id (PK)     │────▶│  id (PK)         │
- │  nom         │     │  client_id   │     │  commande_id (FK)│
- │  email       │     │  date        │     │  produit_id (FK) │
- │  ville       │     │  statut      │     │  quantite        │
- └──────────────┘     │  total       │     │  prix_unitaire   │
-                      └──────────────┘     └────────┬─────────┘
-                                                    │ N:1
-                                                    ▼
-                                           ┌──────────────┐
-                                           │  produit     │
-                                           │              │
-                                           │  id (PK)     │
-                                           │  nom         │
-                                           │  prix        │
-                                           │  categorie   │
-                                           └──────────────┘
-```
+### Exemple A — liste des membres d'une famille avec rôle (INNER JOIN)
+
+Objectif : afficher la liste complète des membres de `fam-1` avec prénom, nom, rôle et date d'adhésion, triée par ancienneté.
 
 ```sql
--- Requete complete traversant 4 tables
+-- Étape 1 : jeu de données minimal
+INSERT INTO users (id, first_name, last_name, email) VALUES
+    ('u-1', 'Alice',  'Moreau',  'alice@tribu.fr'),
+    ('u-2', 'Bob',    'Dupont',  'bob@tribu.fr'),
+    ('u-3', 'Claire', 'Martin',  'claire@tribu.fr'),
+    ('u-4', 'David',  'Lefebvre','david@tribu.fr');
+
+INSERT INTO family (id, name) VALUES ('fam-1', 'Les Moreau');
+
+INSERT INTO family_member (family_id, user_id, role, joined_at) VALUES
+    ('fam-1', 'u-1', 'owner',  '2025-01-10 10:00:00+00'),
+    ('fam-1', 'u-2', 'admin',  '2025-02-15 14:30:00+00'),
+    ('fam-1', 'u-3', 'member', '2025-03-01 09:00:00+00');
+-- u-4 (David) n'est PAS membre de fam-1
+
+-- Étape 2 : requête principale
 SELECT
-    c.nom AS client,
-    c.ville,
-    cmd.id AS commande_n,
-    cmd.date AS date_commande,
-    cmd.statut,
-    p.nom AS produit,
-    lc.quantite,
-    lc.prix_unitaire,
-    (lc.quantite * lc.prix_unitaire) AS sous_total
-FROM client c
-JOIN commande cmd ON c.id = cmd.client_id
-JOIN ligne_commande lc ON cmd.id = lc.commande_id
-JOIN produit p ON lc.produit_id = p.id
-WHERE cmd.date >= '2024-01-01'
-ORDER BY c.nom, cmd.date, p.nom;
+    u.first_name,
+    u.last_name,
+    fm.role,
+    fm.joined_at::DATE AS depuis
+FROM family_member fm
+INNER JOIN users u ON fm.user_id = u.id
+WHERE fm.family_id = 'fam-1'
+ORDER BY fm.joined_at;
 
--- Total par client
+-- Résultat attendu :
+-- first_name | last_name | role   | depuis
+-- -----------+-----------+--------+------------
+-- Alice      | Moreau    | owner  | 2025-01-10
+-- Bob        | Dupont    | admin  | 2025-02-15
+-- Claire     | Martin    | member | 2025-03-01
+-- (David est absent : pas de ligne dans family_member pour fam-1)
+```
+
+Pas-à-pas : (1) `fm` est la table de jonction entre `family` et `users` — elle porte les attributs de la relation (rôle, date) ; (2) `INNER JOIN` est correct ici car tout `family_member` doit avoir un `users` correspondant (contrainte FK) ; (3) sans le filtre `WHERE fm.family_id = 'fam-1'`, la jointure ramènerait tous les membres de toutes les familles.
+
+### Exemple B — posts avec auteur, comptage, et utilisateurs sans post (LEFT JOIN + agrégation)
+
+Objectif : afficher tous les membres de `fam-1` avec leur nombre de posts — y compris ceux qui n'ont encore rien publié.
+
+```sql
+INSERT INTO post (id, family_id, author_id, content, posted_at) VALUES
+    ('p-1', 'fam-1', 'u-1', 'Bienvenue !',         '2025-03-05 10:00:00+00'),
+    ('p-2', 'fam-1', 'u-2', 'Merci pour l invitation', '2025-03-06 11:00:00+00'),
+    ('p-3', 'fam-1', 'u-1', 'Photo du week-end',    '2025-03-08 09:00:00+00');
+-- Claire (u-3) est membre mais n'a pas encore posté
+
 SELECT
-    c.nom AS client,
-    COUNT(DISTINCT cmd.id) AS nb_commandes,
-    SUM(lc.quantite * lc.prix_unitaire)::NUMERIC(12,2) AS total_depense
-FROM client c
-JOIN commande cmd ON c.id = cmd.client_id
-JOIN ligne_commande lc ON cmd.id = lc.commande_id
-GROUP BY c.id, c.nom
-ORDER BY total_depense DESC;
+    u.first_name,
+    u.last_name,
+    COUNT(p.id) AS nb_posts
+FROM family_member fm
+INNER JOIN users u  ON fm.user_id  = u.id
+LEFT JOIN  post  p  ON p.author_id = u.id AND p.family_id = fm.family_id
+WHERE fm.family_id = 'fam-1'
+GROUP BY u.id, u.first_name, u.last_name
+ORDER BY nb_posts DESC;
+
+-- Résultat attendu :
+-- first_name | last_name | nb_posts
+-- -----------+-----------+---------
+-- Alice      | Moreau    | 2
+-- Bob        | Dupont    | 1
+-- Claire     | Martin    | 0        ← incluse grâce au LEFT JOIN
 ```
 
----
+Pas-à-pas : (1) le `INNER JOIN users` garantit qu'on a bien les noms ; (2) le `LEFT JOIN post` conserve les membres sans post (NULL pour `p.id` → `COUNT(p.id)` retourne 0, pas 1) ; (3) la condition `p.family_id = fm.family_id` dans le `ON` du LEFT JOIN est cruciale — la mettre dans `WHERE` transformerait le LEFT JOIN en INNER JOIN en éliminant les NULL ; (4) `COUNT(p.id)` et non `COUNT(*)` — compter les IDs de posts (NULL ignoré par COUNT) pour ne pas compter les lignes sans post.
 
-## 11. Performance des jointures
+## 4. Pièges & misconceptions
 
-### 11.1 Pourquoi l'ordre peut compter
+- **`NOT IN` avec une sous-requête qui peut retourner NULL.** `WHERE u.id NOT IN (SELECT invited_by FROM users)` retourne zéro ligne si une seule valeur `invited_by` est `NULL` — parce que `x NOT IN (NULL, ...)` est `UNKNOWN`, pas `TRUE`. *Correct* : utiliser `NOT EXISTS` ou filtrer les NULL dans la sous-requête (`WHERE invited_by IS NOT NULL`).
 
-Theoriquement, le query planner de PostgreSQL est libre de reordonner les joins pour trouver le plan optimal. En pratique, il existe des cas où l'ordre des tables influence le plan :
+- **Condition dans `WHERE` vs `ON` sur un LEFT JOIN.** `LEFT JOIN post p ON p.author_id = u.id WHERE p.family_id = 'fam-1'` élimine les lignes où `p.family_id IS NULL` → le LEFT JOIN devient de facto un INNER JOIN. *Correct* : déplacer le filtre dans la clause `ON` : `LEFT JOIN post p ON p.author_id = u.id AND p.family_id = 'fam-1'`.
 
-| Facteur | Impact |
-|---|---|
-| **Statistiques a jour** | Le planner a besoin de bonnes stats (`ANALYZE`) pour choisir le bon ordre |
-| **Nombre de tables** | Au-dela de ~12 tables jointes, le planner utilise une heuristique (GEQO) |
-| **Indexes disponibles** | Un index sur la colonne de jointure accelere enormement le join |
-| **Cardinalite** | Joindre d'abord les tables les plus selectivement filtrees reduit le volume |
+- **`COUNT(*)` au lieu de `COUNT(colonne)` après un LEFT JOIN.** `COUNT(*)` compte toutes les lignes, y compris celles avec des colonnes `NULL` issues du LEFT JOIN — un membre sans post serait comptabilisé à 1 au lieu de 0. *Correct* : `COUNT(p.id)` — `COUNT` ignore les `NULL`.
 
-### 11.2 Regles de bonne pratique
+- **Sous-requête corrélée sur une grande table.** Une sous-requête corrélée dans le `SELECT` est réévaluée pour chaque ligne du résultat. Sur 100 000 users, c'est 100 000 exécutions. *Correct* : reformuler en JOIN + GROUP BY ou en CTE, et vérifier `EXPLAIN ANALYZE`.
 
-```sql
--- BON : filtrer tot, sur des colonnes indexees
-SELECT e.nom, d.nom AS departement
-FROM employe e
-JOIN departement d ON e.departement_id = d.id
-WHERE e.est_actif = true         -- filtre selectif
-  AND d.ville = 'Paris';         -- filtre selectif
+- **`UNION` sans `ALL` sur de grandes tables.** `UNION` effectue un tri et une déduplication coûteux sur l'ensemble combiné. *Correct* : utiliser `UNION ALL` si les doublons sont impossibles ou acceptables, et n'utiliser `UNION` que quand la déduplication est réellement nécessaire.
 
--- ASSURER les index
-CREATE INDEX idx_employe_departement ON employe(departement_id);
-CREATE INDEX idx_employe_actif ON employe(est_actif) WHERE est_actif = true;
-```
+- **Chaîner un `INNER JOIN` après un `LEFT JOIN` sur la même branche.** Le `INNER JOIN` élimine les NULL produits par le LEFT JOIN, rendant ce dernier inutile. *Correct* : utiliser des LEFT JOIN cohérents sur toute la chaîne, ou restructurer la requête pour que les INNER JOIN précèdent les LEFT JOIN.
 
-> **Ce qu'il faut retenir** : La performance des jointures depend avant tout des **index** et des **statistiques**. Cree un index sur chaque colonne utilisee dans une clause `ON` ou `WHERE`. Lance `ANALYZE` regulierement (l'autovacuum le fait automatiquement, mais tu peux le forcer).
+## 5. Ancrage TribuZen
 
----
+Couche fil-rouge : **schéma + requêtes (PostgreSQL)** dans `smaurier/tribuzen`. Les jointures décrites dans ce module correspondent aux requêtes réellement nécessaires pour les deux écrans clés de l'app :
 
-## 12. Node.js : exécuter des jointures complexes avec pg
+- **Page famille — liste des membres** : `family_member INNER JOIN users` filtrée sur `family_id` (Exemple A). Cette requête alimente la `FamilyMemberList` côté API ; toute modification du schéma (ajout de `nickname`, changement de type de `role`) impacte directement cette jointure.
+- **Fil de posts avec comptage** : `family_member INNER JOIN users LEFT JOIN post` + `GROUP BY` (Exemple B). La condition `ON p.family_id = fm.family_id` dans le LEFT JOIN n'est pas intuitive mais est indispensable pour que `COUNT` soit exact par famille.
+- **Système de parrainage** : `users LEFT JOIN users inv ON u.invited_by = inv.id` — self-join pour afficher la chaîne d'invitation dans le profil. Ce schéma est aussi la base du calcul de "qui a amené le plus de membres".
+- **EXISTS pour les droits** : `EXISTS (SELECT 1 FROM family_member WHERE user_id = $1 AND family_id = $2 AND role IN ('owner','admin'))` — vérification rapide des droits avant une opération admin ; EXISTS s'arrête à la première correspondance, ce qui est optimal pour cette garde.
+- En session, on exécute ces requêtes sur une base Postgres locale (Docker), on lit le plan d'exécution (`EXPLAIN ANALYZE`) pour observer l'impact des index sur les colonnes de jointure, et on compare la performance de `EXISTS` vs `IN` sur un jeu de 10 000 users.
 
-```typescript
-// fichier : jointures.mjs
-// Exemples de requetes avec jointures en Node.js
+## 6. Points clés
 
-import pg from 'pg';
-const { Pool } = pg;
+1. `INNER JOIN` : seulement les lignes avec correspondance dans les deux tables ; `JOIN` seul = `INNER JOIN`.
+2. `LEFT JOIN` : toutes les lignes de gauche + NULL à droite si pas de correspondance ; pattern orphelin = `WHERE table_droite.col IS NULL`.
+3. `RIGHT JOIN` = `LEFT JOIN` avec tables inversées — préférer LEFT JOIN pour la lisibilité.
+4. `FULL OUTER JOIN` : toutes les lignes des deux tables, NULL des deux côtés si pas de correspondance.
+5. Self-join : même table avec deux alias — indispensable pour les hiérarchies et auto-références.
+6. Filtre de LEFT JOIN dans `ON`, pas dans `WHERE` — sinon le LEFT JOIN se comporte comme un INNER JOIN.
+7. `COUNT(colonne)` ignore les NULL ; `COUNT(*)` les compte — différence critique après un LEFT JOIN.
+8. `EXISTS` court-circuite à la première ligne, `NOT IN` est dangereux si la sous-requête peut contenir NULL.
+9. `UNION` déduplique (tri coûteux) ; `UNION ALL` conserve les doublons et est plus rapide.
+10. Chaîner un `INNER JOIN` après un `LEFT JOIN` sur la même branche annule le LEFT JOIN.
 
-const pool = new Pool({
-  host: 'localhost',
-  port: 5432,
-  database: 'cours',
-  user: 'postgres',
-  password: 'postgres',
-});
-
-// Employes avec leur departement
-async function employesAvecDepartement() {
-  const { rows } = await pool.query(`
-    SELECT
-      e.id,
-      e.prenom || ' ' || e.nom AS nom_complet,
-      d.nom AS departement,
-      e.poste,
-      e.salaire
-    FROM employe e
-    LEFT JOIN departement d ON e.departement_id = d.id
-    ORDER BY d.nom, e.nom
-  `);
-
-  console.log('Employes par departement :');
-  let lastDep = null;
-  for (const row of rows) {
-    if (row.departement !== lastDep) {
-      console.log(`\n  --- ${row.departement || 'Sans departement'} ---`);
-      lastDep = row.departement;
-    }
-    console.log(`    ${row.nom_complet} (${row.poste}) — ${row.salaire} EUR`);
-  }
-  return rows;
-}
-
-// Statistiques croisees (jointure + agregation)
-async function statsParDepartement() {
-  const { rows } = await pool.query(`
-    SELECT
-      d.nom AS departement,
-      COUNT(e.id) AS effectif,
-      AVG(e.salaire)::NUMERIC(10,2) AS salaire_moyen,
-      MIN(e.salaire) AS salaire_min,
-      MAX(e.salaire) AS salaire_max
-    FROM departement d
-    LEFT JOIN employe e ON d.id = e.departement_id AND e.est_actif = true
-    GROUP BY d.id, d.nom
-    ORDER BY effectif DESC
-  `);
-
-  console.log('\nStatistiques par departement :');
-  console.table(rows);
-  return rows;
-}
-
-// Recherche parametree avec jointure
-async function rechercherProjets(departement, budgetMin) {
-  const { rows } = await pool.query(`
-    SELECT
-      p.titre,
-      p.budget,
-      d.nom AS departement,
-      COUNT(ep.employe_id) AS nb_membres,
-      STRING_AGG(e.prenom || ' ' || e.nom, ', ' ORDER BY e.nom) AS equipe
-    FROM projet p
-    JOIN employe_projet ep ON p.id = ep.projet_id
-    JOIN employe e ON ep.employe_id = e.id
-    JOIN departement d ON e.departement_id = d.id
-    WHERE d.nom = $1
-      AND p.budget >= $2
-    GROUP BY p.id, p.titre, p.budget, d.nom
-    ORDER BY p.budget DESC
-  `, [departement, budgetMin]);
-
-  return rows;
-}
-
-async function main() {
-  try {
-    await employesAvecDepartement();
-    await statsParDepartement();
-
-    const projets = await rechercherProjets('IT', 10000);
-    console.log('\nProjets IT avec budget > 10k :', projets);
-  } finally {
-    await pool.end();
-  }
-}
-
-main();
-```
-
----
-
-## 13. Exercice mental : modeliser un système e-commerce
-
-Concois le schema d'une boutique en ligne avec les entites suivantes :
-
-1. **Clients** : id, nom, prenom, email (unique), adresse, ville, code_postal
-2. **Produits** : id, nom, description, prix, stock, categorie_id
-3. **Categories** : id, nom, description, categorie_parente_id (hiérarchie)
-4. **Commandes** : id, client_id, date, statut, adresse_livraison
-5. **Lignes de commande** : commande_id, produit_id, quantite, prix_unitaire
-
-Questions a te poser :
-- Quels types de relations existent entre ces tables ?
-- Quelles contraintes CHECK sont nécessaires ?
-- Quel ON DELETE choisir pour chaque FK ?
-
-### Solution
-
-```sql
-CREATE TABLE categorie (
-    id                  INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    nom                 TEXT NOT NULL,
-    description         TEXT,
-    categorie_parente_id INTEGER REFERENCES categorie(id) ON DELETE SET NULL
-    -- auto-reference pour les sous-categories (self-join)
-);
-
-CREATE TABLE client (
-    id          INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    prenom      TEXT NOT NULL,
-    nom         TEXT NOT NULL,
-    email       TEXT NOT NULL UNIQUE,
-    adresse     TEXT,
-    ville       TEXT,
-    code_postal VARCHAR(5) CHECK (code_postal ~ '^\d{5}$'),
-    cree_le     TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE produit (
-    id            INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    nom           TEXT NOT NULL,
-    description   TEXT,
-    prix          NUMERIC(10,2) NOT NULL CHECK (prix > 0),
-    stock         INTEGER NOT NULL DEFAULT 0 CHECK (stock >= 0),
-    categorie_id  INTEGER REFERENCES categorie(id) ON DELETE SET NULL,
-    est_actif     BOOLEAN NOT NULL DEFAULT true,
-    cree_le       TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE commande (
-    id                  INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    client_id           INTEGER NOT NULL REFERENCES client(id) ON DELETE RESTRICT,
-    date_commande       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    statut              TEXT NOT NULL DEFAULT 'en_attente'
-                        CHECK (statut IN ('en_attente','confirmee','expediee','livree','annulee')),
-    adresse_livraison   TEXT NOT NULL,
-    total               NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (total >= 0)
-);
-
-CREATE TABLE ligne_commande (
-    id              INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    commande_id     INTEGER NOT NULL REFERENCES commande(id) ON DELETE CASCADE,
-    produit_id      INTEGER NOT NULL REFERENCES produit(id) ON DELETE RESTRICT,
-    quantite        INTEGER NOT NULL CHECK (quantite > 0),
-    prix_unitaire   NUMERIC(10,2) NOT NULL CHECK (prix_unitaire >= 0),
-    UNIQUE (commande_id, produit_id)  -- un produit par ligne maximum
-);
-```
+## 7. Seeds Anki
 
 ```
- Schema complet :
-
- ┌───────────┐          ┌──────────┐    1:N    ┌────────────────┐
- │ categorie │◀─self    │  client  │──────────▶│   commande     │
- │           │          └──────────┘           └───────┬────────┘
- │  id (PK)  │                                         │ 1:N
- │  parent_id│                                         ▼
- └─────┬─────┘                                ┌────────────────┐
-       │ 1:N                                  │ligne_commande  │
-       ▼                                      │                │
- ┌──────────┐                                 │ commande_id(FK)│
- │ produit  │◀────────────────────────────────│ produit_id(FK) │
- └──────────┘              N:1                │ quantite       │
-                                              │ prix_unitaire  │
-                                              └────────────────┘
+Différence INNER JOIN vs LEFT JOIN ?|INNER JOIN ne retourne que les lignes avec correspondance dans les deux tables ; LEFT JOIN retourne toutes les lignes de gauche et NULL à droite si pas de correspondance
+Comment trouver les lignes sans correspondance avec un LEFT JOIN ?|LEFT JOIN puis WHERE table_droite.colonne IS NULL — les lignes sans match ont NULL sur les colonnes de droite
+Pourquoi NOT IN est dangereux avec une sous-requête ?|Si la sous-requête retourne un seul NULL, NOT IN retourne zéro ligne (x NOT IN (NULL,...) = UNKNOWN) — préférer NOT EXISTS
+Différence EXISTS vs IN pour une sous-requête ?|EXISTS court-circuite à la première correspondance (efficace, sans risque NULL) ; IN matérialise la liste complète (risque NULL dans NOT IN)
+Pourquoi mettre le filtre de LEFT JOIN dans ON et non dans WHERE ?|Un filtre dans WHERE élimine les NULL produits par le LEFT JOIN, le transformant de facto en INNER JOIN
+Différence UNION vs UNION ALL ?|UNION supprime les doublons (tri coûteux) ; UNION ALL conserve les doublons et est plus rapide — préférer UNION ALL si les doublons sont impossibles ou acceptables
+Pourquoi COUNT(colonne) et non COUNT(*) après un LEFT JOIN ?|COUNT(*) compte toutes les lignes y compris celles avec NULL (membres sans post = 1 au lieu de 0) ; COUNT(colonne) ignore les NULL
+Qu'est-ce qu'une sous-requête corrélée et quel est son risque ?|Sous-requête qui référence une colonne de la requête externe, réévaluée pour chaque ligne — risque de performance sur grande table, reformuler en JOIN+GROUP BY
+Comment écrire un self-join ?|Deux alias sur la même table : users u LEFT JOIN users inv ON u.invited_by = inv.id — indispensable pour les hiérarchies et auto-références
 ```
 
----
+## Pont vers le lab
 
-## 14. Tableau récapitulatif de tous les types de JOIN
-
-| Type de JOIN | Lignes retournees | SQL |
-|---|---|---|
-| `INNER JOIN` | Uniquement les correspondances | `A JOIN B ON ...` |
-| `LEFT JOIN` | Tout A + correspondances B (NULL si absent) | `A LEFT JOIN B ON ...` |
-| `RIGHT JOIN` | Correspondances A (NULL si absent) + tout B | `A RIGHT JOIN B ON ...` |
-| `FULL OUTER JOIN` | Tout A + tout B (NULL des deux cotes si absent) | `A FULL OUTER JOIN B ON ...` |
-| `CROSS JOIN` | Produit cartesien (A × B) | `A CROSS JOIN B` |
-| Self-join | Table jointe avec elle-même | `A a1 JOIN A a2 ON ...` |
-| `NATURAL JOIN` | Join automatique sur colonnes de même nom | **A éviter** (fragile) |
-
-> **Piege classique** : N'utilise JAMAIS `NATURAL JOIN` en production. Il joint automatiquement sur toutes les colonnes de même nom. Si tu ajoutes une colonne `nom` dans les deux tables, le join change de comportement sans avertissement. Toujours spécifier explicitement la clause `ON`.
-
----
-
-## Navigation
-
-| | Lien |
-|---|---|
-| Module précédent | [Module 02 — CRUD & Requetes SQL](./02-crud-et-requetes.md) |
-| Module suivant | [Module 04 — Transactions & ACID](./04-transactions-et-acid.md) |
-| Lab associe | [Lab 03 — Jointures et relations](../labs/lab-03.md) |
-
----
-
-> **Ce qu'il faut retenir** : Les jointures sont le coeur du modèle relationnel. `INNER JOIN` pour les correspondances strictes, `LEFT JOIN` pour conserver toutes les lignes d'une table, `FULL OUTER JOIN` pour la reconciliation. Les clés etrangeres garantissent l'integrite referentielle. Les tables de jonction materialisent les relations N:M. Toujours mettre un index sur les colonnes de jointure.
-
----
-
-<!-- parcours-recommande -->
-
-::: tip Parcours recommandé
-1. **Screencast** : [screencast 03 relations et jointures](../screencasts/screencast-03-relations-et-jointures.md)
-2. **Lab** : [lab-03-jointures-en-pratique](../labs/lab-03-jointures-en-pratique/README)
-3. **Quiz** : [quiz 03 relations et jointures](../quizzes/quiz-03-relations-et-jointures.html)
-:::
+> Lab associé : `10-postgresql/labs/lab-03-jointures-en-pratique/`. Tu crées le schéma TribuZen (family, users, family_member, post), tu écris les jointures membres+posts, tu compares EXISTS vs NOT IN sur un cas avec NULL, et tu observes le plan d'exécution des jointures sans index puis avec. Corrigé SQL inline commenté + variante J+30 dans le README du lab.

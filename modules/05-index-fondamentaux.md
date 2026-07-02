@@ -1,890 +1,350 @@
-# Module 05 — Index : les fondamentaux
-
-> **Objectif** : Comprendre pourquoi les index sont indispensables, maîtriser le fonctionnement interne du B-tree, savoir créer des index simples, composites, partiels, d'expression et hash, et évaluer le cout/benefice de chaque index.
->
-> **Difficulte** : ⭐⭐ (intermédiaire)
-
+---
+titre: Index fondamentaux
+cours: 10-postgresql
+notions: [index B-tree, pourquoi indexer, CREATE INDEX, index sur clés étrangères, index composite et ordre des colonnes, index unique, quand ne pas indexer, coût des index en écriture]
+outcomes: [créer un index B-tree adapté à une requête, indexer les clés étrangères, concevoir un index composite, arbitrer le coût lecture/écriture d'un index]
+prerequis: [04-transactions-et-acid]
+next: 06-query-planner
+libs: [{ name: postgresql, version: "17" }]
+tribuzen: indexer family_id sur posts pour accélérer le feed TribuZen
+last-reviewed: 2026-07
 ---
 
-## 1. Pourquoi les index
+# Index fondamentaux
 
-### 1.1 Le problème : chercher une aiguille dans une botte de foin
+> **Outcomes — tu sauras FAIRE :** créer un index B-tree adapté à une requête, indexer les clés étrangères, concevoir un index composite en choisissant l'ordre de colonnes correct, et arbitrer le coût lecture/écriture d'un index.
+> **Difficulté :** :star::star:
 
-Sans index, PostgreSQL doit lire **chaque ligne** de la table pour trouver celles qui correspondent a ta requête. C'est ce qu'on appelle un **Seq Scan** (Sequential Scan) ou **Full Table Scan**.
+## 1. Cas concret d'abord
 
-> **Analogie** : Imagine un livre de 1000 pages sans index ni table des matieres. Pour trouver toutes les pages qui parlent de "PostgreSQL", tu dois lire les 1000 pages une par une. Avec un index alphabetique à la fin du livre, tu trouves "PostgreSQL : pages 42, 156, 789" instantanement.
+Dans TribuZen, le feed familial charge les derniers posts d'une famille :
 
 ```sql
--- Sans index : PostgreSQL lit TOUTE la table
-SELECT * FROM employe WHERE email = 'alice@example.com';
--- Plan : Seq Scan on employe (cost=0.00..25.00 rows=1 width=...)
--- Lit les 10 000 lignes pour en trouver 1
-
--- Avec un index sur email
-CREATE INDEX idx_employe_email ON employe(email);
-
--- Maintenant : PostgreSQL utilise l'index
-SELECT * FROM employe WHERE email = 'alice@example.com';
--- Plan : Index Scan using idx_employe_email on employe (cost=0.29..8.30 rows=1 width=...)
--- Lit directement la bonne ligne
+SELECT id, content, created_at
+FROM posts
+WHERE family_id = 'fam-1'
+ORDER BY created_at DESC
+LIMIT 20;
 ```
 
-### 1.2 Impact de performance
+Sur 5 000 posts en base, la requête est instantanée. À 500 000 posts (une famille active 3 ans), elle prend 800 ms — PostgreSQL lit les 500 000 lignes une par une pour en sortir 20. C'est un **Seq Scan**, et il est fatal pour un feed temps réel.
 
-| Nombre de lignes | Seq Scan (sans index) | Index Scan (avec B-tree) | Acceleration |
+```sql
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, content, created_at
+FROM posts
+WHERE family_id = 'fam-1'
+ORDER BY created_at DESC
+LIMIT 20;
+
+-- Seq Scan on posts  (cost=0.00..9823.00 rows=20 width=96)
+--                    (actual time=0.043..812.7 rows=20 loops=1)
+--   Filter: (family_id = 'fam-1')
+--   Rows Removed by Filter: 499980
+-- Execution Time: 812.9 ms   ← inacceptable en prod
+```
+
+Un seul index résout le problème :
+
+```sql
+CREATE INDEX idx_posts_family_created ON posts(family_id, created_at DESC);
+```
+
+```sql
+-- Après l'index :
+-- Index Scan Backward using idx_posts_family_created on posts
+--   (cost=0.42..8.64 rows=20 width=96) (actual time=0.031..0.089 rows=20 loops=1)
+-- Execution Time: 0.11 ms   ← x7 000
+```
+
+Ce module explique pourquoi cet index fonctionne, comment le créer correctement, et quand ne pas en créer.
+
+## 2. Théorie complète, concise
+
+### Pourquoi indexer — Seq Scan vs Index Scan
+
+Sans index, PostgreSQL parcourt **toutes** les pages de la table : le **Seq Scan**, en O(n). Sur 1 million de lignes il lit tout même pour retourner 1 résultat. Le B-tree réduit la recherche à **O(log n)**.
+
+| Lignes | Seq Scan | Index Scan B-tree | Accélération |
 |---|---|---|---|
-| 1 000 | ~1 ms | ~0.1 ms | x10 |
-| 10 000 | ~10 ms | ~0.1 ms | x100 |
-| 100 000 | ~100 ms | ~0.1 ms | x1 000 |
-| 1 000 000 | ~1 000 ms | ~0.2 ms | x5 000 |
-| 10 000 000 | ~10 000 ms | ~0.3 ms | x33 000 |
-| 100 000 000 | ~100 000 ms | ~0.4 ms | x250 000 |
+| 10 000 | ~10 ms | ~0.1 ms | ×100 |
+| 100 000 | ~100 ms | ~0.1 ms | ×1 000 |
+| 1 000 000 | ~1 000 ms | ~0.2 ms | ×5 000 |
 
-> **Ce qu'il faut retenir** : Le Seq Scan est en **O(n)** — lineaire. L'Index Scan avec B-tree est en **O(log n)** — logarithmique. Sur 100 millions de lignes, c'est la différence entre 100 secondes et 0.4 milliseconde. L'index est INDISPENSABLE pour les tables de taille moyenne a grande.
+Le Seq Scan n'est pas toujours mauvais : sur une petite table (< 1 000 lignes) ou quand la requête retourne plus de 5-10 % des lignes, le planner préfère souvent le Seq Scan car la navigation dans l'arbre coûte plus que la lecture directe.
 
----
+### B-tree — la structure par défaut
 
-## 2. Sans index : le Seq Scan
-
-### 2.1 Comment fonctionne un Seq Scan
+Le **B-tree (Balanced Tree)** est le type d'index créé par défaut par PostgreSQL. Il maintient les valeurs **triées** dans une structure arborescente équilibrée :
 
 ```
- Seq Scan (Sequential Scan) :
-
- Table "employe" sur disque (pages de 8 Ko) :
-
- ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
- │ Page 0   │  │ Page 1   │  │ Page 2   │  │ Page 3   │ ...
- │ ligne 1  │  │ ligne 51 │  │ ligne 101│  │ ligne 151│
- │ ligne 2  │  │ ligne 52 │  │ ligne 102│  │ ligne 152│
- │ ...      │  │ ...      │  │ ...      │  │ ...      │
- │ ligne 50 │  │ ligne 100│  │ ligne 150│  │ ligne 200│
- └──────────┘  └──────────┘  └──────────┘  └──────────┘
-      ▲              ▲              ▲              ▲
-      │              │              │              │
-      └──────────────┴──────────────┴──────────────┘
-             Lire TOUTES les pages, une par une
-             Pour chaque ligne : verifier WHERE
+               [250 | 500 | 750]           ← Root page
+              /       |        \
+  [50|100|200]   [300|400|450]   [600|700]  ← Internal pages
+   /   |    \
+[1-49][50-99][100-199]                      ← Leaf pages (doubly linked list)
 ```
 
-### 2.2 Quand le Seq Scan est-il optimal ?
+Les feuilles sont chaînées entre elles : PostgreSQL peut parcourir une **plage de valeurs** (`BETWEEN`, `ORDER BY`, `>`) sans remonter à la racine — c'est le Range Scan.
 
-Le Seq Scan n'est pas toujours mauvais. Il est optimal quand :
+Recherche de `family_id = 'fam-1'` : 3-4 sauts de pages au lieu de lire toutes les pages de la table.
 
-| Situation | Pourquoi Seq Scan est mieux |
+Opérations supportées par le B-tree : égalité (`=`), plages (`<`, `>`, `BETWEEN`), `IN`, `IS NULL`, `LIKE 'prefix%'`, `ORDER BY`, `MIN()`/`MAX()`. **Ne supporte pas** `LIKE '%suffix'` ni la recherche full-text.
+
+### CREATE INDEX — syntaxe essentielle
+
+```sql
+-- Index simple (B-tree par défaut)
+CREATE INDEX idx_posts_family_id ON posts(family_id);
+
+-- Idempotent
+CREATE INDEX IF NOT EXISTS idx_posts_family_id ON posts(family_id);
+
+-- En production : ne bloque pas les écritures
+CREATE INDEX CONCURRENTLY idx_posts_family_id ON posts(family_id);
+
+-- Supprimer
+DROP INDEX IF EXISTS idx_posts_family_id;
+```
+
+En développement `CREATE INDEX` suffit. En **production**, toujours `CREATE INDEX CONCURRENTLY` : sans ce mot-clé, PostgreSQL pose un verrou `ShareLock` qui bloque tous les INSERT/UPDATE/DELETE pendant la construction — potentiellement plusieurs minutes sur une grosse table. `CONCURRENTLY` est plus lent (deux passes) mais les écritures continuent. Contrainte : ne peut pas s'exécuter dans une transaction `BEGIN`.
+
+Convention de nommage : `idx_<table>_<colonnes>`. Ex : `idx_posts_family_id`, `idx_posts_family_created`.
+
+### Index sur clés étrangères
+
+PostgreSQL **ne crée pas automatiquement d'index sur les FK** (contrairement à MySQL). Sans index sur la colonne FK, chaque `DELETE` dans la table parente déclenche un Seq Scan sur la table enfant pour vérifier l'intégrité référentielle.
+
+```sql
+-- FK déclarée sur posts.family_id
+ALTER TABLE posts
+  ADD CONSTRAINT fk_posts_family
+  FOREIGN KEY (family_id) REFERENCES families(id);
+
+-- Sans cet index, DELETE FROM families WHERE id = 'x'
+-- déclenche un Seq Scan sur TOUS les posts pour vérifier qu'aucun ne référence 'x'.
+CREATE INDEX idx_posts_family_id ON posts(family_id);
+```
+
+Règle simple : après tout `ADD CONSTRAINT ... FOREIGN KEY`, ajouter immédiatement un `CREATE INDEX` sur la colonne FK.
+
+### Index composite et ordre des colonnes
+
+Un index composite couvre plusieurs colonnes. L'ordre est déterminant.
+
+```sql
+CREATE INDEX idx_posts_family_created ON posts(family_id, created_at DESC);
+```
+
+**Leftmost Prefix Rule** : l'index `(A, B)` est utilisable si la requête filtre sur `A` seul, ou sur `A + B`. Il n'est **pas** utilisable si la requête filtre sur `B` seul.
+
+| Requête | Utilise idx_posts_family_created ? |
 |---|---|
-| **Petite table** (< 1000 lignes) | L'overhead de l'index (navigation dans l'arbre) coute plus cher que lire toute la petite table |
-| **Grande proportion des lignes** (> 5-10%) | Si tu lis 30% de la table, l'acces aleatoire via l'index est plus lent que la lecture sequentielle |
-| **Pas de clause WHERE** | `SELECT * FROM table` doit lire tout → Seq Scan est le seul choix |
-| **Pas d'index disponible** | Aucun index ne couvre la colonne filtree |
+| `WHERE family_id = 'x'` | Oui (préfixe A) |
+| `WHERE family_id = 'x' AND created_at > now() - interval '7 days'` | Oui (A + B) |
+| `WHERE created_at > now() - interval '7 days'` | Non (B seul, sans A) |
 
-> **Piege classique** : Ne créé pas un index sur une colonne `boolean` avec seulement 2 valeurs distinctes. Si 50% des lignes ont `true` et 50% `false`, PostgreSQL preferera un Seq Scan de toute façon. L'index est utile quand la **selectivite** est elevee (peu de lignes correspondent).
-
----
-
-## 3. Le B-tree en profondeur
-
-Le B-tree (Balanced Tree) est le type d'index par **defaut** et le plus courant dans PostgreSQL.
-
-### 3.1 Structure arborescente
-
-```
- B-tree pour la colonne "id" (valeurs 1 a 1000) :
-
-                    ┌─────────────────────┐
-                    │     Root Page       │
-                    │  [250] [500] [750]  │
-                    └──┬──────┬──────┬──┬─┘
-                       │      │      │  │
-          ┌────────────┘      │      │  └──────────────┐
-          ▼                   ▼      ▼                  ▼
- ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
- │ Internal     │  │ Internal     │  │ Internal     │  │ Internal     │
- │ [50][100]    │  │ [300][400]   │  │ [550][650]   │  │ [800][900]   │
- │ [150][200]   │  │ [350][450]   │  │ [600][700]   │  │ [850][950]   │
- └──┬─┬─┬──────┘  └──┬─┬─┬──────┘  └──────────────┘  └──────────────┘
-    │ │ │              │ │ │
-    ▼ ▼ ▼              ▼ ▼ ▼
- ┌────────┐         ┌────────┐
- │ Leaf   │ ◀─────▶ │ Leaf   │ ◀─────▶ ...
- │ 1,2,3  │         │ 51,52  │
- │ ...,50 │         │ ..100  │
- │ →heap  │         │ →heap  │   → pointeur vers la ligne dans la table
- └────────┘         └────────┘
-
- Les feuilles sont LIEES entre elles (doubly linked list)
- → permet les range scans efficaces (ORDER BY, BETWEEN)
-```
-
-### 3.2 Comment la recherche fonctionne
-
-Rechercher `id = 742` dans un B-tree :
-
-```
- Recherche de id = 742 :
-
- Etape 1 : Root Page → 742 est entre 500 et 750
-            → suivre le pointeur vers la 3e branche
- Etape 2 : Internal Page → 742 est entre 700 et 750
-            → suivre le pointeur vers la page feuille
- Etape 3 : Leaf Page → trouver 742, lire le TID (tuple ID)
- Etape 4 : Acceder directement a la ligne dans la table (heap)
-
- Total : 3-4 lectures de pages au lieu de 1000+
-
- Complexite : O(log n)
- Pour 1 000 000 de lignes :  log2(1 000 000) ≈ 20 niveaux max
- → seulement ~4 niveaux en pratique (pages larges)
-```
-
-### 3.3 Range Scan (parcours de plage)
-
-L'un des avantages majeurs du B-tree : les feuilles sont liees entre elles, permettant un parcours sequentiel pour les **plages de valeurs**.
+Règle d'ordre dans un composite : **colonnes d'égalité d'abord**, colonnes de plage ou de tri ensuite.
 
 ```sql
--- Range scan : chercher les employes avec id entre 100 et 200
-SELECT * FROM employe WHERE id BETWEEN 100 AND 200;
-
--- Le B-tree :
--- 1. Descend jusqu'a la feuille contenant 100
--- 2. Parcourt les feuilles de gauche a droite (linked list)
--- 3. S'arrete quand il depasse 200
--- → Tres efficace, pas besoin de remonter dans l'arbre
+-- Requête : WHERE statut = 'publié' ORDER BY created_at DESC
+-- Bon ordre : égalité (statut) avant tri (created_at)
+CREATE INDEX idx_posts_statut_created ON posts(statut, created_at DESC);
 ```
 
-```
- Range Scan : id BETWEEN 100 AND 200
+L'index `(A, B)` rend un index séparé `(A)` **redondant** — il couvre déjà le préfixe A. En revanche, si des requêtes filtrent sur B seul, un index séparé `(B)` reste nécessaire.
 
- Feuilles du B-tree :
- ... ◀─▶ [80-99] ◀─▶ [100-120] ◀─▶ [121-150] ◀─▶ [151-180] ◀─▶ [181-210] ◀─▶ ...
-                       ▲ DEBUT                                      ▲ FIN
-                       └──────── parcourir ces 4 feuilles ──────────┘
-```
-
-### 3.4 Insertion et reequilibrage
-
-```
- Insertion dans un B-tree :
-
- 1. Descendre dans l'arbre pour trouver la bonne feuille
- 2. Inserer la valeur dans la feuille
-
- Si la feuille est pleine → "Page Split" :
- ┌──────────────────┐         ┌──────────┐   ┌──────────┐
- │ [1,2,3,4,5,6,7]  │   →    │ [1,2,3,4]│   │ [5,6,7]  │
- │   (PLEINE)       │         └──────────┘   └──────────┘
- └──────────────────┘         + ajouter "5" dans le parent
-
- Le reequilibrage se propage vers le haut si necessaire
- → L'arbre reste TOUJOURS equilibre (meme profondeur partout)
-```
-
-### 3.5 Operations supportees par le B-tree
-
-| Operation | Supportee ? | Exemple |
-|---|---|---|
-| Egalite (`=`) | Oui | `WHERE id = 42` |
-| Plage (`<`, `>`, `BETWEEN`) | Oui | `WHERE prix BETWEEN 10 AND 50` |
-| `IN` | Oui | `WHERE id IN (1, 5, 9)` |
-| `IS NULL` / `IS NOT NULL` | Oui | `WHERE email IS NOT NULL` |
-| `LIKE 'prefix%'` | Oui (prefix) | `WHERE nom LIKE 'Dup%'` |
-| `LIKE '%suffix'` | **Non** | Necessite un index trigram (pg_trgm) |
-| `ORDER BY` | Oui | `ORDER BY nom` (evite le tri) |
-| `MIN()` / `MAX()` | Oui | Acces direct à la première/dernière feuille |
-
----
-
-## 4. CREATE INDEX — syntaxe et options
-
-### 4.1 Syntaxe de base
+### Index unique
 
 ```sql
--- Index simple
-CREATE INDEX idx_employe_email ON employe(email);
+-- Garantit l'unicité ET accélère les recherches par égalité
+CREATE UNIQUE INDEX idx_users_email ON users(email);
 
--- Index avec nom explicite (recommande)
-CREATE INDEX idx_employe_nom ON employe(nom);
-
--- Index si n'existe pas deja
-CREATE INDEX IF NOT EXISTS idx_employe_email ON employe(email);
-
--- Index CONCURRENTLY (ne bloque pas les ecritures pendant la creation)
-CREATE INDEX CONCURRENTLY idx_produit_prix ON produit(prix);
--- ATTENTION : plus lent, ne peut pas etre dans une transaction
-
--- Supprimer un index
-DROP INDEX idx_employe_nom;
-DROP INDEX IF EXISTS idx_employe_nom;
-DROP INDEX CONCURRENTLY idx_employe_nom;
+-- Équivalent : PostgreSQL crée aussi un index unique en arrière-plan
+ALTER TABLE users ADD CONSTRAINT users_email_unique UNIQUE (email);
 ```
 
-### 4.2 Conventions de nommage
-
-| Convention | Exemple | Description |
-|---|---|---|
-| `idx_table_colonne` | `idx_employe_email` | Standard, simple |
-| `idx_table_col1_col2` | `idx_cmd_client_date` | Index multi-colonnes |
-| `idx_table_colonne_partial` | `idx_employe_actif_partial` | Index partiel |
-| `idx_table_colonne_unique` | `idx_employe_email_unique` | Index unique |
-
-### 4.3 CONCURRENTLY : créer un index sans bloquer
+Un index unique composite garantit l'unicité sur la combinaison de colonnes :
 
 ```sql
--- CREATE INDEX normal : bloque les INSERT/UPDATE/DELETE pendant la creation
-CREATE INDEX idx_gros ON grosse_table(colonne);
--- Les ecritures sont bloquees pendant plusieurs minutes/heures sur une grosse table
-
--- CREATE INDEX CONCURRENTLY : ne bloque PAS les ecritures
-CREATE INDEX CONCURRENTLY idx_gros ON grosse_table(colonne);
--- Plus lent (2 passes), mais les ecritures continuent normalement
+-- Un user ne peut appartenir qu'une fois à une famille
+CREATE UNIQUE INDEX idx_family_member_uniq
+  ON family_members(family_id, user_id);
 ```
 
-> **Ce qu'il faut retenir** : En production, utilise **toujours** `CREATE INDEX CONCURRENTLY` sur les tables qui recoivent du trafic. Un `CREATE INDEX` normal pose un verrou `ShareLock` qui bloque toutes les ecritures.
-
-| Aspect | `CREATE INDEX` | `CREATE INDEX CONCURRENTLY` |
-|---|---|---|
-| **Bloque les ecritures** | Oui | Non |
-| **Vitesse** | Plus rapide | Plus lent (~2x) |
-| **Transactionnel** | Oui (dans un BEGIN) | Non (pas dans un BEGIN) |
-| **Risque d'echec** | Faible | Peut echouer (index invalide) |
-| **Usage** | Dev, maintenance planifiee | **Production** |
-
----
-
-## 5. Index multi-colonnes (composite)
-
-### 5.1 Principe
-
-Un index composite couvre **plusieurs colonnes** et est particulierement utile pour les requêtes qui filtrent sur une combinaison de colonnes.
-
-```sql
--- Index sur (departement_id, nom)
-CREATE INDEX idx_employe_dep_nom ON employe(departement_id, nom);
-```
-
-### 5.2 L'ordre des colonnes : pourquoi ça compte
-
-> **Analogie** : Un annuaire telephonique est trie par nom de famille, PUIS par prenom. Tu peux chercher "Dupont" facilement. Tu peux chercher "Dupont, Alice" encore plus facilement. Mais chercher "Alice" (juste le prenom) ne t'aide pas — l'annuaire n'est pas trie par prenom.
-
-C'est la **Leftmost Prefix Rule** : l'index composite `(A, B, C)` peut etre utilise pour :
-
-| Requête | Utilise l'index ? | Raison |
-|---|---|---|
-| `WHERE A = 1` | Oui | Prefixe gauche (A) |
-| `WHERE A = 1 AND B = 2` | Oui | Prefixe gauche (A, B) |
-| `WHERE A = 1 AND B = 2 AND C = 3` | Oui | Index complet (A, B, C) |
-| `WHERE B = 2` | **Non** | B n'est pas le prefixe gauche |
-| `WHERE C = 3` | **Non** | C n'est pas le prefixe gauche |
-| `WHERE B = 2 AND C = 3` | **Non** | Commence par B, pas par A |
-| `WHERE A = 1 AND C = 3` | Partiellement | Utilise A, puis scan pour C |
-
-```sql
--- Demonstrer avec EXPLAIN
-CREATE INDEX idx_emp_dep_nom_sal ON employe(departement_id, nom, salaire);
-
--- Utilise l'index (prefixe complet)
-EXPLAIN SELECT * FROM employe
-WHERE departement_id = 1 AND nom = 'Dupont';
--- Index Scan using idx_emp_dep_nom_sal
-
--- Utilise l'index (prefixe partiel)
-EXPLAIN SELECT * FROM employe
-WHERE departement_id = 1;
--- Index Scan using idx_emp_dep_nom_sal
-
--- N'utilise PAS l'index (pas le prefixe)
-EXPLAIN SELECT * FROM employe
-WHERE nom = 'Dupont';
--- Seq Scan (ou utilise un autre index s'il existe)
-```
-
-### 5.3 Regle pour choisir l'ordre des colonnes
-
-```
- Regle de base pour l'ordre des colonnes :
-
- 1. Colonnes avec EGALITE en premier (=)
- 2. Colonnes avec PLAGE ensuite (<, >, BETWEEN)
- 3. Colonnes pour le TRI en dernier (ORDER BY)
-
- Exemple de requete :
- SELECT * FROM commande
- WHERE statut = 'en_attente'        -- egalite
-   AND date >= '2024-01-01'         -- plage
- ORDER BY date;                     -- tri
-
- Index optimal :
- CREATE INDEX idx_cmd_statut_date ON commande(statut, date);
-           egalite ──▲     ▲── plage + tri
-```
-
----
-
-## 6. Index UNIQUE
-
-### 6.1 Principe
-
-Un index unique combine la fonction d'acceleration des recherches avec la **garantie d'unicite**.
-
-```sql
--- Creer un index unique
-CREATE UNIQUE INDEX idx_employe_email_unique ON employe(email);
-
--- Equivalent a la contrainte UNIQUE dans CREATE TABLE
--- En fait, PostgreSQL cree un index unique quand tu definis UNIQUE :
-ALTER TABLE employe ADD CONSTRAINT employe_email_unique UNIQUE (email);
--- → cree automatiquement un index unique en arriere-plan
-
--- Verifier
-\d employe
--- Indexes:
---   "employe_email_unique" UNIQUE, btree (email)
-```
-
-### 6.2 Index unique multi-colonnes
-
-```sql
--- Unicite sur une combinaison de colonnes
-CREATE UNIQUE INDEX idx_reservation_unique
-ON reservation(salle, date, heure);
-
--- Cela signifie : pas deux reservations pour la meme salle + date + heure
--- Mais la meme salle peut etre reservee a des heures differentes
-```
-
----
-
-## 7. Hash index
-
-### 7.1 Principe
-
-Le Hash index utilise une **fonction de hachage** pour calculer directement la position d'une valeur. C'est un acces en **O(1)** théorique.
-
-```
- Hash Index :
-
- hash('alice@test.com') = 42  → bucket 42 → TID (0, 5)
- hash('bob@test.com')   = 17  → bucket 17 → TID (0, 8)
- hash('claire@test.com')= 42  → bucket 42 → TID (1, 2) (collision)
-
- ┌───────────────────────────┐
- │  Bucket 0  → (vide)      │
- │  Bucket 1  → TID (3, 1)  │
- │  ...                      │
- │  Bucket 17 → TID (0, 8)  │
- │  ...                      │
- │  Bucket 42 → TID (0, 5)  │
- │             → TID (1, 2)  │  (collision : chain)
- │  ...                      │
- └───────────────────────────┘
-```
-
-### 7.2 Quand utiliser un Hash index
-
-```sql
--- Creer un hash index
-CREATE INDEX idx_session_token_hash ON session USING HASH (token);
-```
-
-| Aspect | B-tree | Hash |
-|---|---|---|
-| **Egalite** (`=`) | Oui | **Oui (optimise)** |
-| **Plage** (`<`, `>`, `BETWEEN`) | **Oui** | Non |
-| **ORDER BY** | **Oui** | Non |
-| **IS NULL** | **Oui** | Non (avant PG10) |
-| **Multi-colonnes** | **Oui** | Non |
-| **Taille** | Plus grand | **Plus petit** |
-| **WAL-logged** (depuis PG10) | Oui | Oui |
-| **Cas d'usage** | Polyvalent | **Egalite uniquement** sur de longues chaines |
-
-> **Ce qu'il faut retenir** : Le Hash index est utile quand tu fais **exclusivement** des recherches par egalite (`=`) sur des valeurs longues (tokens, hash, URLs). Dans la plupart des cas, le B-tree est un meilleur choix car il supporte aussi les plages et le tri.
-
----
-
-## 8. Expression indexes (index sur fonction)
-
-### 8.1 Principe
-
-Un **expression index** indexe le résultat d'une **expression** ou d'une **fonction**, pas directement la valeur de la colonne.
-
-```sql
--- Probleme : recherche insensible a la casse
-SELECT * FROM employe WHERE email = 'Alice@Example.Com';
--- L'index sur email ne match pas (casse differente)
-
-SELECT * FROM employe WHERE LOWER(email) = 'alice@example.com';
--- L'index sur email ne peut PAS etre utilise car la requete utilise LOWER(email)
-
--- Solution : index sur l'expression LOWER(email)
-CREATE INDEX idx_employe_email_lower ON employe(LOWER(email));
-
--- Maintenant cette requete utilise l'index
-SELECT * FROM employe WHERE LOWER(email) = 'alice@example.com';
--- Index Scan using idx_employe_email_lower
-```
-
-### 8.2 Exemples courants
-
-```sql
--- Index sur l'annee d'une date
-CREATE INDEX idx_commande_annee ON commande(EXTRACT(YEAR FROM date_commande));
-
-SELECT * FROM commande WHERE EXTRACT(YEAR FROM date_commande) = 2024;
--- Utilise l'index
-
--- Index sur la longueur d'un texte
-CREATE INDEX idx_article_longueur ON article(LENGTH(contenu));
-
-SELECT * FROM article WHERE LENGTH(contenu) > 5000;
--- Utilise l'index
-
--- Index sur une extraction JSONB
-CREATE INDEX idx_event_page ON evenement((data->>'page'));
-
-SELECT * FROM evenement WHERE data->>'page' = '/accueil';
--- Utilise l'index
-
--- Index sur une colonne calculee (nom complet)
-CREATE INDEX idx_employe_nom_complet ON employe((prenom || ' ' || nom));
-
-SELECT * FROM employe WHERE prenom || ' ' || nom = 'Alice Dupont';
--- Utilise l'index
-```
-
-> **Piege classique** : L'expression dans la requête doit correspondre **exactement** a l'expression de l'index. Si l'index est sur `LOWER(email)`, la requête `WHERE lower(email) = ...` utilise l'index, mais `WHERE UPPER(email) = ...` ne l'utilise **pas**.
-
----
-
-## 9. Partial indexes (index partiels)
-
-### 9.1 Principe
-
-Un **index partiel** n'indexe qu'un **sous-ensemble** des lignes de la table, celles qui satisfont une condition `WHERE`.
-
-> **Analogie** : Au lieu d'indexer tous les livres de la bibliotheque, tu ne fais un index que pour les livres "empruntes en ce moment". Beaucoup plus petit, beaucoup plus rapide.
-
-```sql
--- Index seulement sur les employes actifs
-CREATE INDEX idx_employe_actif ON employe(nom, email)
-WHERE est_actif = true;
-
--- Cet index est utilise quand la requete inclut la meme condition
-SELECT nom, email FROM employe
-WHERE est_actif = true AND nom LIKE 'D%';
--- Index Scan using idx_employe_actif
-
--- Cet index n'est PAS utilise si la condition est differente
-SELECT nom, email FROM employe
-WHERE est_actif = false AND nom LIKE 'D%';
--- Seq Scan (ou autre index)
-```
-
-### 9.2 Cas d'usage classiques
-
-```sql
--- Index sur les commandes non traitees (generalement << 5% du total)
-CREATE INDEX idx_commande_en_attente ON commande(date_commande)
-WHERE statut = 'en_attente';
-
--- Index sur les lignes non supprimees (soft delete)
-CREATE INDEX idx_utilisateur_non_supprime ON utilisateur(email)
-WHERE supprime_le IS NULL;
-
--- Index unique partiel (unicite conditionnelle)
-CREATE UNIQUE INDEX idx_email_unique_actif ON employe(email)
-WHERE est_actif = true;
--- Permet plusieurs employes inactifs avec le meme email
--- Mais un seul employe actif par email
-```
-
-### 9.3 Avantages des index partiels
-
-| Avantage | Description |
-|---|---|
-| **Taille reduite** | L'index ne contient qu'un sous-ensemble des lignes |
-| **Maintenance rapide** | Moins de lignes a mettre a jour lors des INSERT/UPDATE |
-| **Cache efficace** | L'index tient mieux en mémoire (shared buffers) |
-| **Unicite conditionnelle** | Contrainte UNIQUE sur un sous-ensemble |
-
-```sql
--- Comparer la taille
-CREATE INDEX idx_complet ON commande(date_commande);
-CREATE INDEX idx_partiel ON commande(date_commande) WHERE statut = 'en_attente';
-
-SELECT
-    indexrelname AS index,
-    pg_size_pretty(pg_relation_size(indexrelid)) AS taille
-FROM pg_stat_user_indexes
-WHERE relname = 'commande';
-
--- idx_complet : 214 MB
--- idx_partiel : 2 MB   (100x plus petit !)
-```
-
----
-
-## 10. Le cout des index
-
-### 10.1 Espace disque
-
-Chaque index est une **structure supplementaire** stockee sur disque, en plus de la table elle-même.
-
-```sql
--- Voir la taille des tables et des index
-SELECT
-    relname AS nom,
-    relkind AS type,  -- 'r' = table, 'i' = index
-    pg_size_pretty(pg_relation_size(oid)) AS taille
-FROM pg_class
-WHERE relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public')
-ORDER BY pg_relation_size(oid) DESC;
-
--- Resume par table
-SELECT
-    schemaname,
-    tablename,
-    pg_size_pretty(pg_total_relation_size(schemaname || '.' || tablename)) AS total,
-    pg_size_pretty(pg_table_size(schemaname || '.' || tablename)) AS table_seule,
-    pg_size_pretty(pg_indexes_size(schemaname || '.' || tablename)) AS index_total
-FROM pg_tables
-WHERE schemaname = 'public'
-ORDER BY pg_total_relation_size(schemaname || '.' || tablename) DESC;
-```
-
-### 10.2 Ralentissement des ecritures
-
-Chaque `INSERT`, `UPDATE` ou `DELETE` doit mettre a jour **tous les index** de la table.
-
-```
- Impact des index sur les ecritures :
-
- INSERT INTO employe (nom, email, salaire) VALUES (...);
-
- Sans index :
- 1. Ecrire la ligne dans la table         ← 1 operation
-
- Avec 5 index :
- 1. Ecrire la ligne dans la table         ← 1 operation
- 2. Inserer dans idx_employe_email        ← +1 operation
- 3. Inserer dans idx_employe_nom          ← +1 operation
- 4. Inserer dans idx_employe_salaire      ← +1 operation
- 5. Inserer dans idx_employe_dep_id       ← +1 operation
- 6. Inserer dans idx_employe_cree_le      ← +1 operation
-                                          = 6 operations au total
-```
-
-### 10.3 HOT updates et quand un index les empeche
-
-PostgreSQL à une optimisation appelee **HOT** (Heap-Only Tuple) qui accelere les UPDATE en evitant de mettre a jour les index si les colonnes indexees n'ont pas change.
-
-```sql
--- Sans index sur 'salaire' : HOT update possible
-UPDATE employe SET salaire = 50000 WHERE id = 1;
--- → seule la table est modifiee, pas les index
-
--- Avec un index sur 'salaire' : HOT update IMPOSSIBLE
-CREATE INDEX idx_employe_salaire ON employe(salaire);
-UPDATE employe SET salaire = 50000 WHERE id = 1;
--- → la table ET l'index doivent etre mis a jour
-```
-
-> **Ce qu'il faut retenir** : Chaque index supplementaire ralentit les ecritures. Sur une table a forte volumetrie d'insertion (logs, événements, IoT), le nombre d'index doit etre minimise. Cree un index seulement si les requêtes de lecture le necessitent.
-
-### 10.4 Cout des index — résumé
-
-| Cout | Description |
-|---|---|
-| **Espace disque** | Chaque index occupe de l'espace (~50-100% de la taille de la table pour un B-tree) |
-| **Ralentissement INSERT** | Chaque index ajoute une écriture supplementaire |
-| **Ralentissement UPDATE** | Si la colonne indexee change, l'index doit etre mis a jour |
-| **Ralentissement DELETE** | Les entrees d'index doivent etre marquees comme supprimees |
-| **Maintenance** | VACUUM doit nettoyer les index en plus de la table |
-| **Temps de création** | Créer un index sur une grande table prend du temps et des ressources |
-
----
-
-## 11. Visibility Map et Index Only Scan
-
-### 11.1 Le problème : l'index ne suffit pas toujours
-
-Même quand un index couvre toutes les colonnes demandees par une requête, PostgreSQL doit parfois **retourner dans la table (heap)** pour vérifier que la ligne est visible par la transaction courante. C'est a cause de MVCC : l'index ne stocke pas les informations de visibilite (`xmin`, `xmax`).
-
-### 11.2 La Visibility Map
-
-La **Visibility Map** (VM) est une structure annexe, maintenue pour chaque table, qui indique quelles **pages sont "all-visible"** : toutes les lignes de la page sont visibles par toutes les transactions en cours.
-
-```
- Visibility Map pour la table "employe" :
-
- Page 0 : ✓ all-visible    (toutes les lignes sont visibles)
- Page 1 : ✓ all-visible
- Page 2 : ✗ pas all-visible (un UPDATE recent a cree des tuples morts)
- Page 3 : ✓ all-visible
- Page 4 : ✗ pas all-visible
- ...
-
- 1 bit par page → tres compact (ex: 1 Mo pour une table de 8 Go)
-```
-
-### 11.3 Index Only Scan : le scan ideal
-
-Quand un index couvre toutes les colonnes nécessaires **et** que la Visibility Map confirme que la page est all-visible, PostgreSQL peut repondre **uniquement à partir de l'index**, sans lire la table. C'est l'**Index Only Scan**.
-
-```
- Index Only Scan — parcours :
-
- ┌─────────────┐     ┌───────────────────┐
- │  Index      │     │  Visibility Map   │
- │  B-tree     │     │  Page 0: ✓        │
- │  (colonne)  │────▶│  Page 1: ✓        │
- │             │     │  Page 2: ✗        │
- └─────────────┘     └───────────────────┘
-       │                      │
-       │  Page all-visible ?  │
-       │                      │
-       ├── Oui → reponse directe depuis l'index (rapide)
-       │
-       └── Non → lire la page dans le heap pour verifier la visibilite
-```
-
-```sql
--- Exemple : Index Only Scan avec un index couvrant
-CREATE INDEX idx_employe_dept_sal ON employe(departement_id, salaire);
-
--- Cette requete ne demande que des colonnes presentes dans l'index
-EXPLAIN SELECT departement_id, salaire FROM employe
-WHERE departement_id = 1;
--- Index Only Scan using idx_employe_dept_sal on employe
--- Heap Fetches: 0   ← aucun acces au heap si toutes les pages sont all-visible
-```
-
-### 11.4 Impact de VACUUM sur la Visibility Map
-
-C'est **VACUUM** qui met a jour la Visibility Map. Après un VACUUM, les pages dont les tuples morts ont ete nettoyes sont marquees "all-visible". Sans VACUUM regulier, la VM est incomplète et les Index Only Scans tombent dans le cas lent (Heap Fetches).
-
-| Situation | Heap Fetches | Performance |
-|---|---|---|
-| VACUUM frequent (autovacuum OK) | Proches de 0 | Index Only Scan rapide |
-| VACUUM rare / table très active | Eleves | Index Only Scan degrade |
-| Table en lecture seule | 0 | Index Only Scan optimal |
-
-> **Ce qu'il faut retenir** : Pour beneficier pleinement des Index Only Scans, il faut (1) un index couvrant toutes les colonnes de la requête, et (2) un VACUUM regulier pour que la Visibility Map soit a jour. Surveille la colonne `Heap Fetches` dans le plan `EXPLAIN ANALYZE` : si elle est elevee, c'est que VACUUM doit passer.
-
----
-
-## 12. Quand ne PAS créer un index
+### Quand NE PAS créer un index
 
 | Situation | Raison |
 |---|---|
-| **Table très petite** (< 1000 lignes) | Seq Scan est déjà très rapide |
-| **Colonne rarement filtree** | L'index est maintenu en écriture mais jamais utilise en lecture |
-| **Faible selectivite** (ex: boolean) | Peu de valeurs distinctes → le planner préféré le Seq Scan |
-| **Table a très forte insertion** | Chaque index ralentit les INSERT |
-| **Colonne souvent modifiee** | Chaque UPDATE sur la colonne modifie aussi l'index |
-| **Index redondant** | `(A, B)` rend `(A)` redondant car le composite couvre déjà `A` seul |
+| Table < 1 000 lignes | Seq Scan déjà rapide ; overhead de navigation dans l'arbre dépasse le gain |
+| Colonne à faible sélectivité (boolean, statut à 2 valeurs) | Planner préfère Seq Scan si plus de 5-10 % des lignes sont retournées |
+| Colonne rarement utilisée en filtre | Index coûte en écriture mais n'est jamais utilisé |
+| Table à très forte volumétrie d'INSERT (logs, IoT) | Chaque index ralentit chaque insertion |
+| Colonne souvent modifiée | Chaque UPDATE sur la colonne modifie l'entrée d'index |
 
----
+### Coût des index en écriture
 
-## 13. Node.js : créer et vérifier des index
+Chaque index est une structure supplémentaire à maintenir. Chaque `INSERT` écrit dans la table **et** dans chacun de ses index :
 
-```typescript
-// fichier : index-management.mjs
-// Creer et verifier des index depuis Node.js
+```
+INSERT INTO posts (...) VALUES (...);
 
-import pg from 'pg';
-const { Pool } = pg;
-
-const pool = new Pool({
-  host: 'localhost',
-  port: 5432,
-  database: 'cours',
-  user: 'postgres',
-  password: 'postgres',
-});
-
-// Creer des index
-async function creerIndex() {
-  // Index simples
-  await pool.query(
-    'CREATE INDEX IF NOT EXISTS idx_employe_email ON employe(email)'
-  );
-  await pool.query(
-    'CREATE INDEX IF NOT EXISTS idx_employe_dep_id ON employe(departement_id)'
-  );
-
-  // Index composite
-  await pool.query(
-    'CREATE INDEX IF NOT EXISTS idx_employe_dep_nom ON employe(departement_id, nom)'
-  );
-
-  // Index partiel
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS idx_employe_actif_nom
-    ON employe(nom)
-    WHERE est_actif = true
-  `);
-
-  // Expression index
-  await pool.query(
-    'CREATE INDEX IF NOT EXISTS idx_employe_email_lower ON employe(LOWER(email))'
-  );
-
-  console.log('Index crees avec succes.');
-}
-
-// Lister les index d'une table
-async function listerIndex(nomTable) {
-  const { rows } = await pool.query(`
-    SELECT
-      i.relname AS nom_index,
-      am.amname AS type,
-      pg_size_pretty(pg_relation_size(i.oid)) AS taille,
-      idx.indisunique AS est_unique,
-      idx.indisvalid AS est_valide,
-      pg_get_indexdef(idx.indexrelid) AS definition
-    FROM pg_index idx
-    JOIN pg_class i ON i.oid = idx.indexrelid
-    JOIN pg_class t ON t.oid = idx.indrelid
-    JOIN pg_am am ON am.oid = i.relam
-    WHERE t.relname = $1
-    ORDER BY i.relname
-  `, [nomTable]);
-
-  console.log(`\nIndex de la table "${nomTable}" :`);
-  for (const idx of rows) {
-    console.log(`  ${idx.nom_index}`);
-    console.log(`    Type: ${idx.type}, Taille: ${idx.taille}, Unique: ${idx.est_unique}`);
-    console.log(`    Definition: ${idx.definition}`);
-    console.log();
-  }
-}
-
-// Verifier l'utilisation des index
-async function verifierUtilisation() {
-  const { rows } = await pool.query(`
-    SELECT
-      schemaname,
-      relname AS table_name,
-      indexrelname AS index_name,
-      idx_scan AS nb_utilisations,
-      idx_tup_read AS tuples_lus,
-      idx_tup_fetch AS tuples_retournes,
-      pg_size_pretty(pg_relation_size(indexrelid)) AS taille
-    FROM pg_stat_user_indexes
-    ORDER BY idx_scan DESC
-  `);
-
-  console.log('\nUtilisation des index :');
-  console.log('─'.repeat(80));
-  for (const r of rows) {
-    const usage = r.nb_utilisations > 0 ? 'UTILISE' : 'INUTILISE';
-    console.log(
-      `  [${usage}] ${r.index_name} (${r.table_name}) — ` +
-      `${r.nb_utilisations} scans, ${r.taille}`
-    );
-  }
-}
-
-async function main() {
-  try {
-    await creerIndex();
-    await listerIndex('employe');
-    await verifierUtilisation();
-  } finally {
-    await pool.end();
-  }
-}
-
-main();
+Sans index :  1 écriture  (table)
+Avec 4 index: 5 écritures (table + 4 index)
 ```
 
----
+Chaque `UPDATE` sur une colonne indexée oblige PostgreSQL à modifier l'index. Chaque `DELETE` marque les entrées d'index comme obsolètes (nettoyées par VACUUM).
 
-## 14. pg_stat_user_indexes : surveiller l'utilisation
+**Règle :** créer un index uniquement si une requête est prouvée lente par `EXPLAIN ANALYZE`. `pg_stat_user_indexes` (couvert dans le module 11) permet d'identifier les index jamais utilisés à supprimer.
 
-### 14.1 Trouver les index inutilises
+## 3. Worked examples
+
+### Exemple A — feed TribuZen (index composite + EXPLAIN pas-à-pas)
+
+Objectif : prouver que l'index `(family_id, created_at DESC)` couvre la requête de feed et élimine le nœud Sort.
 
 ```sql
--- Index qui n'ont JAMAIS ete utilises depuis le dernier reset des stats
-SELECT
-    schemaname || '.' || relname AS table,
-    indexrelname AS index,
-    idx_scan AS nb_scans,
-    pg_size_pretty(pg_relation_size(indexrelid)) AS taille
-FROM pg_stat_user_indexes
-WHERE idx_scan = 0
-  AND indexrelname NOT LIKE '%pkey'  -- exclure les PK (toujours utiles)
-  AND indexrelname NOT LIKE '%unique%'  -- exclure les contraintes UNIQUE
-ORDER BY pg_relation_size(indexrelid) DESC;
+-- Données de démo
+CREATE TABLE families (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+CREATE TABLE posts (
+  id         BIGSERIAL PRIMARY KEY,
+  family_id  TEXT NOT NULL REFERENCES families(id),
+  content    TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO families VALUES ('fam-1', 'Famille Dupont');
+INSERT INTO posts (family_id, content, created_at)
+SELECT 'fam-1', 'Post ' || i, now() - (random() * interval '365 days')
+FROM generate_series(1, 200000) i;
+
+ANALYZE posts;
+
+-- Plan SANS index
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, content, created_at
+FROM posts
+WHERE family_id = 'fam-1'
+ORDER BY created_at DESC
+LIMIT 20;
+-- → Seq Scan on posts  (... Rows Removed by Filter: ~100 000)
+--   + Sort node (tri des 100 000 lignes filtrées)
+-- Execution Time: ~300-800 ms selon disque
+
+-- Créer l'index composite
+CREATE INDEX idx_posts_family_created ON posts(family_id, created_at DESC);
+
+-- Plan AVEC index
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, content, created_at
+FROM posts
+WHERE family_id = 'fam-1'
+ORDER BY created_at DESC
+LIMIT 20;
+-- → Index Scan Backward using idx_posts_family_created on posts
+--   Index Cond: (family_id = 'fam-1')
+--   Buffers: shared hit=5
+-- Execution Time: ~0.1 ms
+-- Pas de Sort node : l'index fournit déjà les lignes dans l'ordre DESC.
 ```
 
-### 14.2 Trouver les tables sans index (qui pourraient en avoir besoin)
+Pas-à-pas : (1) `family_id = 'fam-1'` est un filtre d'égalité — première colonne du composite, sert de point d'entrée dans le B-tree ; (2) `ORDER BY created_at DESC` correspond à l'ordre physique de l'index (deuxième colonne, `DESC`) — PostgreSQL parcourt les feuilles de droite à gauche sans Sort node supplémentaire ; (3) `LIMIT 20` arrête la lecture après 20 entrées, aucune page de table supplémentaire n'est lue.
+
+### Exemple B — FK non indexée : impact silencieux sur DELETE
+
+Objectif : voir pourquoi l'oubli d'index sur FK est un bug de performance qui ne se voit pas au développement mais explose en production.
 
 ```sql
--- Tables avec beaucoup de Seq Scan et pas d'Index Scan
-SELECT
-    schemaname,
-    relname AS table,
-    seq_scan,
-    seq_tup_read,
-    idx_scan,
-    n_live_tup AS nb_lignes
-FROM pg_stat_user_tables
-WHERE seq_scan > 100         -- beaucoup de Seq Scan
-  AND idx_scan < seq_scan    -- moins d'Index Scan que de Seq Scan
-  AND n_live_tup > 10000     -- table de taille significative
-ORDER BY seq_scan DESC;
+-- Setup : table enfant sans index sur FK
+CREATE TABLE family_members (
+  id        BIGSERIAL PRIMARY KEY,
+  family_id TEXT NOT NULL REFERENCES families(id),
+  user_id   TEXT NOT NULL
+);
+
+INSERT INTO family_members (family_id, user_id)
+SELECT 'fam-1', 'user-' || i FROM generate_series(1, 50000) i;
+
+ANALYZE family_members;
+
+-- DELETE sur la table parente SANS index sur la FK
+EXPLAIN (ANALYZE, BUFFERS)
+DELETE FROM families WHERE id = 'fam-1';
+-- → Seq Scan on family_members
+--   Filter: (family_id = 'fam-1')
+--   Rows Removed by Filter: 0  (mais les 50 000 lignes ont été lues)
+-- PostgreSQL doit vérifier qu'aucun member ne référence fam-1 → scan complet.
+
+-- Créer l'index manquant
+CREATE INDEX idx_members_family_id ON family_members(family_id);
+
+-- Réinsérer pour re-tester
+INSERT INTO families VALUES ('fam-1', 'Famille Dupont');
+
+EXPLAIN (ANALYZE, BUFFERS)
+DELETE FROM families WHERE id = 'fam-1';
+-- → Index Scan using idx_members_family_id on family_members
+--   Index Cond: (family_id = 'fam-1')
+-- Saut direct aux lignes concernées, pas de lecture des 50 000 autres.
 ```
 
-### 14.3 Vérifier les index dupliques
+Pas-à-pas : (1) sans index, PostgreSQL lit `family_members` en entier à chaque DELETE sur `families` — coût O(n_members) par DELETE de famille, quelle que soit la taille de la famille supprimée ; (2) avec l'index, il saute directement aux lignes référençant `fam-1` ; (3) sur un produit avec des milliers de familles, l'absence d'index FK se transforme en blocage lors des suppressions ou des migrations.
 
-```sql
--- Trouver les index redondants (meme prefixe de colonnes)
-SELECT
-    a.indexrelid::regclass AS index_redondant,
-    b.indexrelid::regclass AS index_couvrant,
-    pg_size_pretty(pg_relation_size(a.indexrelid)) AS taille_redondante
-FROM pg_index a
-JOIN pg_index b ON a.indrelid = b.indrelid
-    AND a.indexrelid <> b.indexrelid
-    AND a.indkey::text = ANY(
-        SELECT string_to_array(b.indkey::text, ' ')::text[]
-    )
-WHERE a.indkey <> b.indkey
-ORDER BY pg_relation_size(a.indexrelid) DESC;
+## 4. Pièges & misconceptions
+
+- **« PostgreSQL indexe automatiquement les clés étrangères. »** Faux — seules les colonnes `PRIMARY KEY` et les contraintes `UNIQUE` génèrent un index automatique. Une FK sans index provoque un Seq Scan sur la table enfant à chaque DELETE sur la table parente. *Correct :* ajouter `CREATE INDEX` manuellement après chaque `ADD CONSTRAINT ... FOREIGN KEY`.
+
+- **« Plus d'index = meilleures performances. »** Faux — chaque index ralentit les écritures et consomme de l'espace disque. Un INSERT sur une table à 8 index exécute 9 écritures au lieu d'une. Sur une table de logs à 10 000 inserts/seconde, 4 index inutiles peuvent diviser le débit par 2. *Correct :* indexer uniquement les colonnes prouvées lentes par `EXPLAIN ANALYZE`.
+
+- **« L'index `(A, B)` couvre aussi la requête `WHERE B = …`. »** Faux — la Leftmost Prefix Rule impose de commencer par A. Si la requête filtre sur B seul, l'index n'est pas utilisé. *Correct :* créer un index séparé `(B)` si la requête sur B seule est fréquente.
+
+- **« `CREATE INDEX` est sans danger en production. »** Faux — sans `CONCURRENTLY`, PostgreSQL pose un verrou `ShareLock` qui bloque tous les INSERT/UPDATE/DELETE pendant la construction, potentiellement plusieurs minutes. *Correct :* toujours `CREATE INDEX CONCURRENTLY` sur les tables en production ; impossible dans une transaction `BEGIN`.
+
+- **« Un index sur une colonne boolean `is_active` est toujours utile. »** Faux — si 90 % des lignes ont `is_active = true`, un `WHERE is_active = true` retourne 90 % de la table : le planner choisira le Seq Scan car il est plus efficace que l'accès aléatoire via l'index. L'index n'aide que si la valeur filtrée est rare (< 5-10 % des lignes). *Correct :* vérifier la sélectivité avant d'indexer.
+
+- **« Un index composite `(A, B)` remplace deux index séparés `(A)` et `(B)`. »** Partiellement faux — `(A, B)` couvre `WHERE A` (préfixe) mais pas `WHERE B` seul. L'index composite rend seulement l'index `(A)` redondant. Si des requêtes filtrent sur B seul, un index séparé `(B)` reste nécessaire.
+
+## 5. Ancrage TribuZen
+
+Couche fil-rouge : **base PostgreSQL locale (Docker)** dans `smaurier/tribuzen`. L'indexation du feed est le cas d'usage central de ce module :
+
+- `posts.family_id` est la FK vers `families.id`. Sans `idx_posts_family_id`, chaque `DELETE FROM families` scanne tous les posts — catastrophique dès que le feed grossit au-delà de quelques dizaines de milliers de lignes.
+- L'index composite `(family_id, created_at DESC)` couvre la requête de feed **sans Sort node** : le gain en latence est directement perçu par l'utilisateur à l'ouverture du fil familial.
+- En production TribuZen, cet index se crée via une migration Prisma : `@@index([familyId, createdAt(sort: Desc)])` dans `schema.prisma` — Prisma génère le DDL et l'applique lors du `prisma migrate dev`.
+- L'index unique `(family_id, user_id)` sur `family_members` empêche un user d'apparaître deux fois dans la même famille, même en cas de double-clic concurrent sur "rejoindre" — complément à la transaction ACID du module 04.
+- En session, on exécute `EXPLAIN ANALYZE` sur la base Docker réelle **avant** et **après** chaque index, et on lit les plans côte à côte pour ancrer la différence O(n) → O(log n) sur des chiffres réels.
+
+## 6. Points clés
+
+1. Sans index, PostgreSQL parcourt toute la table (Seq Scan, O(n)) ; le B-tree réduit à O(log n).
+2. `CREATE INDEX [IF NOT EXISTS] idx_<table>_<col> ON <table>(<col>)` crée un index B-tree par défaut.
+3. En production, toujours `CREATE INDEX CONCURRENTLY` pour ne pas bloquer les écritures ; impossible dans une transaction.
+4. PostgreSQL n'indexe **pas** automatiquement les FK — ajouter un index manuellement après chaque `ADD CONSTRAINT ... FOREIGN KEY`.
+5. L'index composite `(A, B)` respecte la **Leftmost Prefix Rule** : utilisable pour `WHERE A`, `WHERE A AND B`, mais pas `WHERE B` seul.
+6. Ordre dans un composite : colonnes d'égalité d'abord, colonnes de plage ou de tri ensuite.
+7. L'index unique garantit l'unicité et accélère les recherches par égalité ; équivalent à une contrainte `UNIQUE` déclarée dans la table.
+8. Chaque index ralentit les écritures — ne créer un index que si une requête est prouvée lente par `EXPLAIN ANALYZE`.
+
+## 7. Seeds Anki
+
+```
+Qu'est-ce qu'un Seq Scan et pourquoi est-il problématique sur une grande table ?|PostgreSQL lit toutes les lignes une par une (O(n)). Sur 500 000 posts, il parcourt tout pour en retourner 20. Un index B-tree ramène ça à O(log n) : 3-4 sauts de pages au lieu de 500 000 lectures.
+PostgreSQL indexe-t-il automatiquement les clés étrangères ?|Non. Seules les colonnes PRIMARY KEY et UNIQUE ont un index automatique. Une FK sans index provoque un Seq Scan sur la table enfant à chaque DELETE sur la table parente.
+Qu'est-ce que la Leftmost Prefix Rule pour un index composite (A, B) ?|L'index est utilisable pour WHERE A seul ou WHERE A AND B, mais pas pour WHERE B seul. La requête doit commencer par la première colonne déclarée dans l'index.
+Pourquoi utiliser CREATE INDEX CONCURRENTLY en production ?|Sans CONCURRENTLY, PostgreSQL pose un verrou ShareLock qui bloque tous les INSERT/UPDATE/DELETE le temps de la construction (plusieurs minutes sur une grosse table). CONCURRENTLY évite ce blocage au prix de deux passes.
+Comment choisir l'ordre des colonnes dans un index composite ?|Colonnes d'égalité (=) en premier, colonnes de plage (BETWEEN, >, <) ou de tri (ORDER BY) ensuite. Ex : (family_id, created_at DESC) pour WHERE family_id = 'x' ORDER BY created_at DESC.
+Quel est le coût caché d'un index pour les écritures ?|Chaque INSERT/UPDATE/DELETE maintient tous les index de la table. Une table avec 4 index exécute 5 écritures par INSERT. Sur une table à forte insertion, trop d'index dégradent le débit d'écriture.
+Un index unique est-il différent d'une contrainte UNIQUE ?|Fonctionnellement non : PostgreSQL crée un index B-tree unique dans les deux cas. UNIQUE dans CREATE TABLE est du sucre syntaxique — il génère exactement le même index qu'un CREATE UNIQUE INDEX explicite.
 ```
 
----
+## Pont vers le lab
 
-## 15. Exercice mental
-
-1. **Tu as un index sur `(ville, nom)`. La requête `WHERE nom = 'Dupont'` utilise-t-elle l'index ?** (Non — la leftmost prefix rule impose de commencer par `ville`)
-
-2. **Tu as 1 million de lignes dont 999 000 avec `actif = true` et 1 000 avec `actif = false`. Quel index est le plus utile ?** (Un index partiel `WHERE actif = false` : petit et très selectif)
-
-3. **Tu as 20 index sur une table. Chaque INSERT est lent. Que faire ?** (Auditer les index inutilises avec `pg_stat_user_indexes`, supprimer les redondants et inutilises)
-
----
+> Lab associé : `10-postgresql/labs/lab-05-index-et-explain/`. Tu crées les index du feed TribuZen sur une base Docker réelle, tu lis les plans `EXPLAIN ANALYZE` avant et après, tu observes la FK non indexée sur DELETE, et tu testes la contrainte unique. Corrigé SQL commenté + variante J+30 dans le README du lab.
 
 ## Navigation
 
 | | Lien |
 |---|---|
-| Module précédent | [Module 04 — Transactions & ACID](./04-transactions-et-acid.md) |
-| Module suivant | [Module 06 — Le Query Planner](./06-query-planner.md) |
-| Lab associe | [Lab 05 — Créer et optimiser des index](../labs/lab-05.md) |
-
----
-
-> **Ce qu'il faut retenir** : Les index sont essentiels pour les performances en lecture (de O(n) a O(log n) avec le B-tree). L'ordre des colonnes dans un index composite suit la leftmost prefix rule. Les index partiels et d'expression offrent des optimisations ciblees. Mais chaque index à un cout en écriture et en espace. Surveille l'utilisation avec `pg_stat_user_indexes` et supprime les index inutilises.
-
----
-
-<!-- parcours-recommande -->
-
-::: tip Parcours recommandé
-1. **Screencast** : [screencast 05 index fondamentaux](../screencasts/screencast-05-index-fondamentaux.md)
-2. **Lab** : [lab-05-index-et-explain](../labs/lab-05-index-et-explain/README)
-3. **Visualisation** : [B-tree Index](../visualizations/btree-index.html)
-4. **Quiz** : [quiz 05 index fondamentaux](../quizzes/quiz-05-index-fondamentaux.html)
-:::
+| Module précédent | [Module 04 — Transactions et ACID](./04-transactions-et-acid.md) |
+| Module suivant | [Module 06 — Query Planner](./06-query-planner.md) |
+| Lab associé | [Lab 05 — Index et EXPLAIN](../labs/lab-05-index-et-explain/README.md) |

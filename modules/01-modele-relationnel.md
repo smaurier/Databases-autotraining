@@ -1,907 +1,329 @@
-# Module 01 — Le modèle relationnel
-
-> **Objectif** : Comprendre les fondements du modèle relationnel, maîtriser les types de donnees PostgreSQL, savoir créer des tables avec les bonnes contraintes et adopter les conventions de nommage professionnelles.
->
-> **Difficulte** : ⭐ (débutant)
-
+---
+titre: Modèle relationnel
+cours: 10-postgresql
+notions: [modèle relationnel, tables et relations, clé primaire, clé étrangère, contraintes NOT NULL UNIQUE CHECK, normalisation 1NF 2NF 3NF, types de données PostgreSQL, DDL CREATE TABLE]
+outcomes: [modéliser un schéma relationnel avec clés et contraintes, écrire le DDL de création de tables, appliquer la normalisation jusqu'en 3NF, choisir les bons types]
+prerequis: [00-prerequis-et-vue-ensemble]
+next: 02-crud-et-requetes
+libs: [{ name: postgresql, version: "17" }]
+tribuzen: schéma relationnel de TribuZen (users, families, family_members, posts) avec clés et contraintes
+last-reviewed: 2026-07
 ---
 
-## 1. L'invention du modèle relationnel
+# Modèle relationnel
 
-### 1.1 Edgar F. Codd et la revolution de 1970
+> **Outcomes — tu sauras FAIRE :** modéliser un schéma relationnel avec clés et contraintes, écrire le DDL de création de tables, appliquer la normalisation jusqu'en 3NF, choisir les bons types PostgreSQL.
+> **Difficulté :** :star:
 
-En 1970, Edgar Frank Codd, mathematicien chez IBM, publie un article qui va revolutionner l'informatique : *"A Relational Model of Data for Large Shared Data Banks"*. Avant cet article, les bases de donnees utilisaient des modèles **hierarchiques** ou **réseau** — des structures rigides, difficiles a interroger et a maintenir.
+## 1. Cas concret d'abord
 
-> **Analogie** : Avant Codd, les bases de donnees ressemblaient à un organigramme d'entreprise : pour trouver un employe, il fallait descendre la hiérarchie depuis le PDG. Si un employe changeait de service, il fallait restructurer tout l'arbre. Codd a propose de ranger les informations dans des tables plates, comme des feuilles de calcul, et de les relier par des clés — une revolution.
+TribuZen doit stocker des familles, leurs membres et leurs posts. Première ébauche naïve : une seule table `post` avec les infos famille et auteur répétées à chaque ligne.
 
-L'idee geniale de Codd repose sur la **théorie des ensembles** et l'**algebre relationnelle** :
-
-| Concept mathematique | Equivalent en base de donnees |
-|---|---|
-| **Relation** | Table |
-| **Tuple** | Ligne (enregistrement) |
-| **Attribut** | Colonne (champ) |
-| **Domaine** | Type de donnees (ensemble des valeurs possibles) |
-| **Cle** | Attribut(s) identifiant uniquement chaque tuple |
-
-### 1.2 Pourquoi le modèle relationnel a gagne
-
-| Critere | Modèle hiérarchique | Modèle réseau | Modèle relationnel |
-|---|---|---|---|
-| **Structure** | Arbre rigide | Graphe complexe | Tables plates |
-| **Navigation** | Parcours d'arbre obligatoire | Pointeurs entre enregistrements | SQL declaratif |
-| **Flexibilite** | Faible (restructuration couteuse) | Moyenne | Forte (vues, jointures) |
-| **Independance donnees/programme** | Non | Non | **Oui** (SQL abstrait le stockage) |
-| **Facilite d'apprentissage** | Difficile | Très difficile | Accessible |
-
-> **Ce qu'il faut retenir** : Le genie du modèle relationnel, c'est la **separation entre la structure logique (tables) et le stockage physique (fichiers)**. Tu ecris du SQL sans te soucier de comment les donnees sont stockees sur disque. C'est le SGBDR qui s'en occupe.
-
----
-
-## 2. Tables, lignes, colonnes — la terminologie
-
-### 2.1 Anatomie d'une table
-
-```
-                    Table "utilisateurs"
- ┌─────┬──────────────┬─────────────────────┬────────┐
- │ id  │     nom      │       email         │  age   │  ← Colonnes (Attributs)
- ├─────┼──────────────┼─────────────────────┼────────┤
- │  1  │ Alice Dupont │ alice@example.com   │   28   │  ← Ligne 1 (Tuple)
- │  2  │ Bob Martin   │ bob@example.com     │   35   │  ← Ligne 2 (Tuple)
- │  3  │ Claire Petit │ claire@example.com  │   42   │  ← Ligne 3 (Tuple)
- └─────┴──────────────┴─────────────────────┴────────┘
-         ▲
-         │
-    Cle primaire (PK) : identifiant unique de chaque ligne
+```sql
+-- Modélisation naïve (non relationnelle)
+-- post_id | post_content       | family_name | author_name | author_email
+-- --------|--------------------|-------------|-------------|------------------
+-- 1       | Joyeux anniversaire| Dupont      | Alice       | alice@tribu.fr
+-- 2       | Photo vacances     | Dupont      | Bob         | bob@tribu.fr
+-- 3       | Bonne année        | Martin      | Claire      | claire@tribu.fr
 ```
 
-### 2.2 Vocabulaire formel vs informel
+Trois problèmes immédiats : si Alice change d'email, il faut mettre à jour chaque post qu'elle a écrit. Si la famille Dupont change de nom, idem. Et rien n'empêche d'insérer `author_email = NULL` sur un post. Le modèle relationnel résout ça par la **séparation des entités**, les **clés étrangères** et les **contraintes**.
 
-| Formel (théorie) | Informel (pratique) | PostgreSQL |
+La suite montre les fondations théoriques, les types PostgreSQL, le DDL, la normalisation — et débouche sur le schéma réel de TribuZen.
+
+## 2. Théorie complète, concise
+
+### Le modèle relationnel
+
+Edgar Codd (IBM, 1970) propose de ranger les données dans des **relations** (tables), reliées entre elles par des clés plutôt que par des pointeurs. L'algèbre relationnelle fournit les opérations (sélection, projection, jointure) — SQL en est l'implémentation concrète.
+
+| Terme formel | Terme courant | DDL PostgreSQL |
 |---|---|---|
 | Relation | Table | `CREATE TABLE` |
-| Tuple | Ligne, enregistrement, row | Une rangee de donnees |
-| Attribut | Colonne, champ, field | `nom TEXT NOT NULL` |
-| Domaine | Type | `INTEGER`, `TEXT`, etc. |
-| Schema de relation | Structure de table | `\d nom_table` |
-| Cle candidate | Identifiant unique potentiel | `UNIQUE` |
-| Cle primaire | Identifiant officiel | `PRIMARY KEY` |
-| Cardinalite | Nombre de lignes | `SELECT COUNT(*)` |
-| Degre | Nombre de colonnes | Nombre d'attributs |
+| Tuple | Ligne, row | Une rangée de données |
+| Attribut | Colonne, champ | `email TEXT NOT NULL` |
+| Domaine | Type | `TEXT`, `INTEGER`, `TIMESTAMPTZ`… |
+| Clé candidate | Identifiant unique potentiel | `UNIQUE` |
+| Clé primaire | Identifiant officiel | `PRIMARY KEY` |
 
-> **Piege classique** : En théorie relationnelle, une "relation" n'est PAS une relation entre tables (c'est une table elle-même). La relation entre tables s'appelle une **association** et se materialise par une clé etrangere. Ne confonds pas les deux termes.
+Règle fondamentale : chaque table doit avoir une **clé primaire** — un ou plusieurs attributs qui identifient chaque ligne de façon unique et permanente.
 
----
+### Types de données PostgreSQL
 
-## 3. Types de donnees PostgreSQL
+Choisir le bon type, c'est déléguer la validation à la base plutôt qu'à l'application.
 
-PostgreSQL offre un système de types extremement riche. Voici les types les plus importants :
-
-### 3.1 Types texte
-
-| Type | Description | Taille max | Cas d'usage |
-|---|---|---|---|
-| `TEXT` | Texte de longueur illimitee | ~1 Go | **Recommande par defaut** pour tout texte |
-| `VARCHAR(n)` | Texte limite a n caracteres | n caracteres | Quand une limite stricte est nécessaire |
-| `CHAR(n)` | Texte de longueur fixe (padde avec des espaces) | n caracteres | **Rarement utilise** — codes fixes (ISO) |
-| `NAME` | Type interne PostgreSQL (63 octets) | 63 octets | Noms d'objets internes uniquement |
-
-> **Ce qu'il faut retenir** : En PostgreSQL, `TEXT` et `VARCHAR` ont **exactement les memes performances**. Il n'y a AUCUN avantage de performance à utiliser `VARCHAR(255)` par rapport a `TEXT`. Utilise `TEXT` par defaut, et `VARCHAR(n)` uniquement si tu as une contrainte metier réelle sur la longueur.
+**Texte**
 
 ```sql
--- Toutes ces declarations sont equivalentes en performance
-CREATE TABLE exemple_texte (
-    col1 TEXT,              -- recommande
-    col2 VARCHAR(255),      -- inutilement restrictif en general
-    col3 VARCHAR,           -- equivalent a TEXT
-    col4 CHAR(10)           -- eviter sauf cas specifique
-);
+-- TEXT : longueur illimitée, performances identiques à VARCHAR
+-- Recommandé par défaut ; utiliser VARCHAR(n) uniquement si contrainte métier stricte
+email       TEXT NOT NULL
+pseudo      TEXT NOT NULL
+description TEXT          -- nullable : champ optionnel
 ```
 
-### 3.2 Types numériques
-
-| Type | Taille | Plage | Cas d'usage |
-|---|---|---|---|
-| `SMALLINT` | 2 octets | -32 768 a 32 767 | Petits entiers (age, quantite limitee) |
-| `INTEGER` | 4 octets | -2 147 483 648 a 2 147 483 647 | **Entier par defaut** |
-| `BIGINT` | 8 octets | -9.2 × 10^18 a 9.2 × 10^18 | Compteurs, IDs a grande echelle |
-| `NUMERIC(p, s)` | Variable | Precision arbitraire | **Montants financiers** (exact) |
-| `REAL` | 4 octets | ~6 chiffres significatifs | Calculs scientifiques approximatifs |
-| `DOUBLE PRECISION` | 8 octets | ~15 chiffres significatifs | Calculs scientifiques |
-
-> **Piege classique** : N'utilise JAMAIS `REAL` ou `DOUBLE PRECISION` pour des montants financiers. Ces types utilisent la virgule flottante IEEE 754 et introduisent des erreurs d'arrondi. `0.1 + 0.2 ≠ 0.3` en virgule flottante ! Utilise `NUMERIC` ou `INTEGER` (stocker les centimes).
+**Nombres**
 
 ```sql
--- MAUVAIS : virgule flottante pour de l'argent
-SELECT 0.1::REAL + 0.2::REAL;
--- Resultat : 0.30000000000000004 (!!!)
-
--- BON : NUMERIC pour de l'argent
-SELECT 0.1::NUMERIC + 0.2::NUMERIC;
--- Resultat : 0.3 (exact)
-
--- BON : stocker en centimes avec INTEGER
--- 10.50 EUR → 1050 centimes
-SELECT 1050 + 2099;  -- 10.50 + 20.99 = 31.49 EUR → 3149 centimes
+-- INTEGER (4 octets) : entier standard — compteurs, IDs si pas de distribution
+-- BIGINT  (8 octets) : compteurs à grande échelle
+-- NUMERIC(p, s)      : montants financiers (exact), éviter REAL / DOUBLE PRECISION
+members_count  INTEGER  NOT NULL DEFAULT 0
+monthly_fee    NUMERIC(10, 2)
 ```
 
-### 3.3 Types auto-incrementes
-
-| Type | Equivalent | Recommandation |
-|---|---|---|
-| `SERIAL` | `INTEGER` + sequence automatique | Legacy, encore très utilise |
-| `BIGSERIAL` | `BIGINT` + sequence automatique | Legacy, pour grandes tables |
-| `GENERATED ALWAYS AS IDENTITY` | Standard SQL, plus strict | **Recommande (SQL standard)** |
-| `GENERATED BY DEFAULT AS IDENTITY` | Standard SQL, permet override | Quand on veut pouvoir spécifier l'ID |
+**Date et heure**
 
 ```sql
--- Ancien style (SERIAL) — fonctionne mais n'est pas standard SQL
-CREATE TABLE produits_v1 (
-    id SERIAL PRIMARY KEY,
-    nom TEXT NOT NULL
-);
-
--- Nouveau style (IDENTITY) — recommande depuis PostgreSQL 10+
-CREATE TABLE produits_v2 (
-    id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    nom TEXT NOT NULL
-);
-
--- La difference : IDENTITY empeche l'insertion manuelle d'un ID
-INSERT INTO produits_v2 (id, nom) VALUES (999, 'Test');
--- ERREUR : cannot insert a non-DEFAULT value into column "id"
-
--- Sauf si on force explicitement (overriding)
-INSERT INTO produits_v2 (id, nom) OVERRIDING SYSTEM VALUE VALUES (999, 'Test');
+-- TIMESTAMPTZ : date + heure + fuseau (stocké UTC, converti à la lecture)
+-- Ne jamais utiliser TIMESTAMP sans TZ : pas de fuseau = bugs multi-fuseaux
+created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 ```
 
-### 3.4 Types date et heure
-
-| Type | Taille | Description | Cas d'usage |
-|---|---|---|---|
-| `DATE` | 4 octets | Date seule (AAAA-MM-JJ) | Dates de naissance, echeances |
-| `TIME` | 8 octets | Heure seule (HH:MM:SS.µs) | Horaires (rare) |
-| `TIMESTAMP` | 8 octets | Date + heure SANS fuseau | **A éviter** |
-| `TIMESTAMPTZ` | 8 octets | Date + heure AVEC fuseau | **Toujours utiliser celui-ci** |
-| `INTERVAL` | 16 octets | Duree (jours, heures, etc.) | Calculs de duree |
-
-> **Piege classique** : Utilise TOUJOURS `TIMESTAMPTZ` et jamais `TIMESTAMP`. PostgreSQL stocke `TIMESTAMPTZ` en UTC interne et le convertit automatiquement selon le fuseau de la session. Avec `TIMESTAMP` (sans TZ), tu perds l'information de fuseau et tu auras des bugs quand tes utilisateurs sont dans différents fuseaux horaires.
+**Identifiants et booléens**
 
 ```sql
--- Demontrer la difference
-SET timezone = 'Europe/Paris';
-
-SELECT
-    '2024-06-15 14:00:00'::TIMESTAMP AS sans_tz,
-    '2024-06-15 14:00:00'::TIMESTAMPTZ AS avec_tz;
--- sans_tz : 2024-06-15 14:00:00
--- avec_tz : 2024-06-15 14:00:00+02
-
-SET timezone = 'America/New_York';
-SELECT '2024-06-15 14:00:00+02'::TIMESTAMPTZ;
--- Resultat : 2024-06-15 08:00:00-04 (conversion automatique !)
-
--- Fonctions utiles
-SELECT
-    now()                        AS maintenant,
-    CURRENT_DATE                 AS date_du_jour,
-    CURRENT_TIMESTAMP            AS timestamp_courant,
-    now() + INTERVAL '30 days'   AS dans_30_jours,
-    now() - INTERVAL '2 hours'   AS il_y_a_2h,
-    EXTRACT(YEAR FROM now())     AS annee,
-    EXTRACT(DOW FROM now())      AS jour_semaine; -- 0=dimanche
+-- UUID : id distribué, sûr à exposer dans les URLs d'API
+-- BOOLEAN : true / false / NULL
+id          UUID        NOT NULL DEFAULT gen_random_uuid()
+is_public   BOOLEAN     NOT NULL DEFAULT false
 ```
 
-### 3.5 Types booleens et autres
-
-| Type | Description | Cas d'usage |
-|---|---|---|
-| `BOOLEAN` | `true`, `false`, `NULL` | Drapeaux, états binaires |
-| `UUID` | Identifiant universel unique (128 bits) | IDs distribues, APIs publiques |
-| `JSONB` | JSON binaire indexable | Donnees semi-structurees |
-| `BYTEA` | Donnees binaires (bytes) | Fichiers, images (deconseille) |
-| `INET` / `CIDR` | Adresses IP / réseaux | Logs, sécurité |
-| `ARRAY` | Tableau de n'importe quel type | Listes simples |
+**Auto-incrément**
 
 ```sql
--- UUID : generer un identifiant unique
-SELECT gen_random_uuid();
--- Resultat : 550e8400-e29b-41d4-a716-446655440000
-
--- JSONB : stocker et interroger du JSON
-CREATE TABLE evenements (
-    id    INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    type  TEXT NOT NULL,
-    data  JSONB NOT NULL DEFAULT '{}'
-);
-
-INSERT INTO evenements (type, data) VALUES
-    ('click', '{"page": "/accueil", "bouton": "inscription", "duree_ms": 150}'),
-    ('view', '{"page": "/produits", "duree_ms": 3200}');
-
--- Interroger le JSONB
-SELECT type, data->>'page' AS page, (data->>'duree_ms')::INT AS duree
-FROM evenements
-WHERE data->>'page' = '/accueil';
-
--- ARRAY : stocker une liste
-CREATE TABLE articles (
-    id   SERIAL PRIMARY KEY,
-    titre TEXT NOT NULL,
-    tags  TEXT[] DEFAULT '{}'
-);
-
-INSERT INTO articles (titre, tags) VALUES
-    ('PostgreSQL pour les nuls', ARRAY['sql', 'postgresql', 'debutant']),
-    ('Optimisation avancee', ARRAY['postgresql', 'performance', 'index']);
-
--- Rechercher dans un array
-SELECT titre FROM articles WHERE 'postgresql' = ANY(tags);
+-- GENERATED ALWAYS AS IDENTITY : standard SQL (PG 10+), préférable à SERIAL
+id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY
+-- SERIAL : ancien style, évité dans les nouveaux projets
 ```
 
----
+Pour TribuZen, les tables `users`, `families`, `family_members` et `posts` utilisent des UUID comme clés primaires (exposition dans les API REST) et `TIMESTAMPTZ` pour toutes les dates.
 
-## 4. CREATE TABLE en detail
+### DDL CREATE TABLE
 
-### 4.1 Syntaxe complete
+La syntaxe complète avec les contraintes les plus utiles :
 
 ```sql
-CREATE TABLE [IF NOT EXISTS] nom_table (
-    nom_colonne  TYPE  [contrainte_colonne ...],
-    nom_colonne  TYPE  [contrainte_colonne ...],
-    ...
-    [contrainte_table, ...]
+CREATE TABLE nom_table (
+    -- Colonnes avec leurs contraintes inline
+    col_1  TYPE  NOT NULL,
+    col_2  TYPE  NOT NULL DEFAULT valeur,
+    col_3  TYPE  CHECK (condition),
+    col_4  TYPE  UNIQUE,
+
+    -- Contraintes de table (multi-colonnes ou nommées explicitement)
+    CONSTRAINT nom_contrainte UNIQUE (col_a, col_b),
+    CONSTRAINT nom_check CHECK (col_c > 0)
 );
 ```
 
-### 4.2 Exemple complet et commente
+**Clé étrangère (FOREIGN KEY / REFERENCES)**
 
 ```sql
--- Table representant des employes
-CREATE TABLE IF NOT EXISTS employes (
-    -- Identifiant auto-incremente (methode moderne)
-    id              INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+-- Inline (colonne unique)
+family_id UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE
 
-    -- Informations personnelles
-    prenom          TEXT NOT NULL,
-    nom             TEXT NOT NULL,
-    email           TEXT NOT NULL UNIQUE,
-    date_naissance  DATE,
-
-    -- Informations professionnelles
-    poste           TEXT NOT NULL DEFAULT 'Non defini',
-    salaire         NUMERIC(10, 2) CHECK (salaire > 0),
-    departement_id  INTEGER,  -- sera une FK plus tard
-    actif           BOOLEAN NOT NULL DEFAULT true,
-
-    -- Metadata
-    cree_le         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    modifie_le      TIMESTAMPTZ NOT NULL DEFAULT now(),
-
-    -- Contraintes de table (multi-colonnes)
-    CONSTRAINT employe_nom_prenom_unique UNIQUE (nom, prenom, date_naissance)
-);
-
--- Ajouter un commentaire sur la table
-COMMENT ON TABLE employes IS 'Table principale des employes de l''entreprise';
-COMMENT ON COLUMN employes.salaire IS 'Salaire brut annuel en euros';
+-- Niveau table (clé composite ou nom explicite)
+CONSTRAINT fk_family FOREIGN KEY (family_id) REFERENCES families(id) ON DELETE CASCADE
 ```
 
-### 4.3 IF NOT EXISTS
+Comportements `ON DELETE` utiles :
 
-```sql
--- Sans IF NOT EXISTS : erreur si la table existe deja
-CREATE TABLE test (id INT);
-CREATE TABLE test (id INT);
--- ERREUR : relation "test" already exists
-
--- Avec IF NOT EXISTS : pas d'erreur, silencieusement ignoree
-CREATE TABLE IF NOT EXISTS test (id INT);
--- NOTICE : relation "test" already exists, skipping
-```
-
-> **Ce qu'il faut retenir** : Utilise toujours `IF NOT EXISTS` dans tes scripts d'initialisation pour qu'ils soient **idempotents** (executables plusieurs fois sans erreur).
-
----
-
-## 5. Contraintes en detail
-
-Les contraintes sont le coeur de l'integrite relationnelle. Elles empechent les donnees invalides d'entrer dans ta base.
-
-### 5.1 NOT NULL
-
-```sql
--- La colonne ne peut pas contenir NULL
-CREATE TABLE clients (
-    id    SERIAL PRIMARY KEY,
-    nom   TEXT NOT NULL,        -- obligatoire
-    email TEXT NOT NULL,        -- obligatoire
-    phone TEXT                  -- optionnel (NULL autorise)
-);
-
-INSERT INTO clients (nom, email) VALUES ('Alice', 'alice@test.com');
--- OK
-
-INSERT INTO clients (nom, email) VALUES (NULL, 'test@test.com');
--- ERREUR : null value in column "nom" violates not-null constraint
-```
-
-> **Analogie** : `NOT NULL`, c'est comme un formulaire administratif ou certains champs sont marques d'un asterisque rouge (*). Tu ne peux pas soumettre le formulaire sans les remplir.
-
-### 5.2 UNIQUE
-
-```sql
--- Garantit l'unicite des valeurs dans une ou plusieurs colonnes
-CREATE TABLE utilisateurs (
-    id    SERIAL PRIMARY KEY,
-    email TEXT NOT NULL UNIQUE,    -- unicite simple
-    pseudo TEXT NOT NULL UNIQUE    -- unicite simple
-);
-
--- Unicite multi-colonnes
-CREATE TABLE reservations (
-    id      SERIAL PRIMARY KEY,
-    salle   TEXT NOT NULL,
-    date    DATE NOT NULL,
-    heure   TIME NOT NULL,
-    UNIQUE (salle, date, heure)   -- meme salle + meme date + meme heure = interdit
-);
-```
-
-> **Piege classique** : `UNIQUE` autorise plusieurs `NULL` dans PostgreSQL. Deux lignes peuvent avoir `phone = NULL` même si `phone` est `UNIQUE`. C'est conforme au standard SQL : `NULL ≠ NULL`.
-
-### 5.3 CHECK
-
-```sql
--- Verifie une condition sur les valeurs
-CREATE TABLE produits (
-    id    SERIAL PRIMARY KEY,
-    nom   TEXT NOT NULL,
-    prix  NUMERIC(10,2) NOT NULL CHECK (prix >= 0),
-    stock INTEGER NOT NULL DEFAULT 0 CHECK (stock >= 0),
-
-    -- CHECK multi-colonnes
-    prix_promo NUMERIC(10,2),
-    CONSTRAINT promo_inferieur_au_prix
-        CHECK (prix_promo IS NULL OR prix_promo < prix)
-);
-
-INSERT INTO produits (nom, prix, stock) VALUES ('Clavier', -10, 5);
--- ERREUR : new row for relation "produits" violates check constraint "produits_prix_check"
-```
-
-### 5.4 DEFAULT
-
-```sql
-CREATE TABLE commandes (
-    id         SERIAL PRIMARY KEY,
-    statut     TEXT NOT NULL DEFAULT 'en_attente',
-    priorite   INTEGER NOT NULL DEFAULT 0,
-    cree_le    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    reference  TEXT NOT NULL DEFAULT 'CMD-' || gen_random_uuid()::TEXT
-);
-
--- INSERT sans specifier les colonnes avec DEFAULT
-INSERT INTO commandes DEFAULT VALUES;
--- Toutes les colonnes prennent leur valeur par defaut
-```
-
-### 5.5 PRIMARY KEY
-
-La clé primaire est une combinaison de `NOT NULL` + `UNIQUE`. Chaque table doit avoir une et une seule clé primaire.
-
-```sql
--- Cle primaire simple (la plus courante)
-CREATE TABLE pays (
-    code CHAR(2) PRIMARY KEY,  -- 'FR', 'US', 'DE'
-    nom  TEXT NOT NULL
-);
-
--- Cle primaire composite (pour les tables de jonction)
-CREATE TABLE cours_etudiants (
-    cours_id    INTEGER NOT NULL REFERENCES cours(id),
-    etudiant_id INTEGER NOT NULL REFERENCES etudiants(id),
-    note        NUMERIC(4, 2),
-    PRIMARY KEY (cours_id, etudiant_id)
-);
-```
-
-> **Analogie** : La clé primaire, c'est le numéro de sécurité sociale. Chaque personne en à un, il est unique, et il ne change jamais. Dans une table, c'est l'adresse definitive de chaque ligne.
-
-### 5.6 Tableau récapitulatif des contraintes
-
-| Contrainte | Niveau | Null autorise ? | Duplicats autorises ? | Cas d'usage |
-|---|---|---|---|---|
-| `NOT NULL` | Colonne | Non | Oui | Champs obligatoires |
-| `UNIQUE` | Colonne ou table | Oui (multiples) | Non | Emails, pseudos |
-| `CHECK` | Colonne ou table | Oui | Oui | Validations metier |
-| `DEFAULT` | Colonne | — | — | Valeurs par defaut |
-| `PRIMARY KEY` | Colonne ou table | Non | Non | Identifiant unique |
-| `FOREIGN KEY` | Colonne ou table | Oui | Oui | Références entre tables |
-
----
-
-## 6. Sequences et SERIAL vs IDENTITY
-
-### 6.1 Qu'est-ce qu'une sequence ?
-
-Une sequence est un objet PostgreSQL qui généré des nombres uniques incrementaux.
-
-```sql
--- Creer une sequence manuellement
-CREATE SEQUENCE compteur_seq START 1 INCREMENT 1;
-
--- Utiliser la sequence
-SELECT nextval('compteur_seq');  -- 1
-SELECT nextval('compteur_seq');  -- 2
-SELECT nextval('compteur_seq');  -- 3
-
--- Voir la valeur courante (sans incrementer)
-SELECT currval('compteur_seq');  -- 3
-
--- Reinitialiser
-ALTER SEQUENCE compteur_seq RESTART WITH 1;
-```
-
-> **Piege classique** : Les sequences ne sont PAS transactionnelles pour la génération de valeurs. Si une transaction fait `nextval()` puis `ROLLBACK`, la valeur est "perdue" — la sequence ne revient pas en arriere. C'est normal et voulu : cela evite les blocages entre transactions concurrentes. Accepte les trous dans tes IDs.
-
-### 6.2 SERIAL : le raccourci historique
-
-```sql
--- SERIAL est un raccourci qui fait 3 choses :
--- 1. Cree une sequence
--- 2. Definit DEFAULT nextval('sequence')
--- 3. Marque la colonne comme NOT NULL
-CREATE TABLE t1 (
-    id SERIAL PRIMARY KEY
-);
-
--- Equivalent explicite :
-CREATE SEQUENCE t1_id_seq;
-CREATE TABLE t1 (
-    id INTEGER NOT NULL DEFAULT nextval('t1_id_seq')
-);
-ALTER SEQUENCE t1_id_seq OWNED BY t1.id;
-```
-
-### 6.3 IDENTITY : le standard SQL (recommande)
-
-```sql
--- GENERATED ALWAYS : interdit l'insertion manuelle d'un ID
-CREATE TABLE t2 (
-    id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    nom TEXT NOT NULL
-);
-
--- GENERATED BY DEFAULT : autorise l'insertion manuelle (comme SERIAL)
-CREATE TABLE t3 (
-    id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
-    nom TEXT NOT NULL
-);
-```
-
-| Aspect | `SERIAL` | `GENERATED ALWAYS AS IDENTITY` |
-|---|---|---|
-| Standard SQL | Non (PostgreSQL spécifique) | Oui |
-| Insertion manuelle | Autorisee (avec risque de conflit) | Interdite (sauf `OVERRIDING SYSTEM VALUE`) |
-| `pg_dump` | La sequence peut se desynchroniser | Mieux géré |
-| Recommandation | Legacy, fonctionne bien | **Preferer pour les nouveaux projets** |
-
----
-
-## 7. Bonnes pratiques de modelisation
-
-### 7.1 Conventions de nommage
-
-| Regle | Bon exemple | Mauvais exemple | Raison |
-|---|---|---|---|
-| **snake_case** pour tout | `date_naissance` | `dateNaissance`, `DateNaissance` | PostgreSQL convertit en minuscule par defaut |
-| **Tables au singulier** | `utilisateur` | `utilisateurs` | Coherence : `SELECT * FROM utilisateur` lit mieux |
-| **Tables au pluriel** (alternative) | `utilisateurs` | — | Convention aussi valide, mais sois **coherent** |
-| **Cle primaire : `id`** | `id` | `utilisateur_id`, `uid` | Simple, universel |
-| **Cle etrangere : `table_id`** | `departement_id` | `dept`, `dep_id`, `fk_dep` | Explicite et lisible |
-| **Pas d'abreviations** | `commande`, `produit` | `cmd`, `prod` | Lisibilite pour toute l'équipe |
-| **Prefixe pour les booleans** | `est_actif`, `a_paye` | `actif`, `paye` | Clarifie que c'est un boolean |
-| **Pas de mots reserves** | `commande` | `order`, `table`, `user` | Evite les conflits SQL |
-| **Pas de type dans le nom** | `email` | `email_varchar`, `str_email` | Le type est dans le schema |
-
-> **Piege classique** : Si tu utilises des majuscules dans un nom PostgreSQL, tu devras TOUJOURS le mettre entre guillemets doubles. `CREATE TABLE "MaTable" (...)` oblige à écrire `SELECT * FROM "MaTable"` partout. Utilise snake_case et tu n'auras jamais ce problème.
-
-```sql
--- BON : snake_case, tout en minuscule
-CREATE TABLE ligne_commande (
-    id              INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    commande_id     INTEGER NOT NULL,
-    produit_id      INTEGER NOT NULL,
-    quantite        INTEGER NOT NULL CHECK (quantite > 0),
-    prix_unitaire   NUMERIC(10, 2) NOT NULL CHECK (prix_unitaire >= 0)
-);
-
--- MAUVAIS : CamelCase, abreviations, mots reserves
-CREATE TABLE "OrderLine" (
-    "ID"         SERIAL PRIMARY KEY,
-    "OrderID"    INT,
-    "ProdID"     INT,
-    "Qty"        INT,
-    "Price"      DECIMAL
-);
-```
-
-### 7.2 Les 10 regles d'or
-
-1. **Toujours une clé primaire** — chaque table doit avoir un identifiant unique
-2. **Toujours `NOT NULL` sauf si NULL à un sens metier** — un email optionnel est acceptable, un nom NULL ne l'est pas
-3. **Utiliser les bons types** — `TIMESTAMPTZ` pas `TEXT` pour les dates, `NUMERIC` pas `REAL` pour l'argent
-4. **Contraintes dans la base, pas dans l'application** — ne fais pas confiance au code applicatif pour valider
-5. **Noms explicites** — un développeur qui lit le schema doit comprendre sans documentation
-6. **Éviter les colonnes "fourre-tout"** — pas de colonne `data TEXT` qui contient du JSON en serie
-7. **Normaliser** — éviter la duplication de donnees (voir modules suivants)
-8. **Pas de donnees calculees stockees** (sauf cache) — `total = prix * quantite` se calcule à la volee
-9. **Colonnes de metadata** — `cree_le`, `modifie_le` sur les tables importantes
-10. **Commentaires sur les colonnes ambigues** — `COMMENT ON COLUMN`
-
----
-
-## 8. Node.js : créer des tables programmatiquement
-
-### 8.1 Script de migration basique
-
-```typescript
-// fichier : migrations/001_create_tables.mjs
-// Script de creation des tables pour le module 01
-
-import pg from 'pg';
-const { Pool } = pg;
-
-const pool = new Pool({
-  host: 'localhost',
-  port: 5432,
-  database: 'cours',
-  user: 'postgres',
-  password: 'postgres',
-});
-
-async function creerTables() {
-  const client = await pool.connect();
-
-  try {
-    await client.query('BEGIN');
-
-    // Table des departements
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS departement (
-        id    INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-        nom   TEXT NOT NULL UNIQUE,
-        code  VARCHAR(10) NOT NULL UNIQUE,
-        etage INTEGER CHECK (etage >= 0 AND etage <= 50)
-      )
-    `);
-    console.log('Table "departement" creee.');
-
-    // Table des employes (avec FK vers departement)
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS employe (
-        id              INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-        prenom          TEXT NOT NULL,
-        nom             TEXT NOT NULL,
-        email           TEXT NOT NULL UNIQUE,
-        date_naissance  DATE,
-        poste           TEXT NOT NULL DEFAULT 'Non defini',
-        salaire         NUMERIC(10, 2) CHECK (salaire > 0),
-        departement_id  INTEGER REFERENCES departement(id) ON DELETE SET NULL,
-        est_actif       BOOLEAN NOT NULL DEFAULT true,
-        cree_le         TIMESTAMPTZ NOT NULL DEFAULT now(),
-        modifie_le      TIMESTAMPTZ NOT NULL DEFAULT now()
-      )
-    `);
-    console.log('Table "employe" creee.');
-
-    // Table des projets
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS projet (
-        id          INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-        titre       TEXT NOT NULL,
-        description TEXT,
-        debut       DATE NOT NULL DEFAULT CURRENT_DATE,
-        fin         DATE,
-        budget      NUMERIC(12, 2) CHECK (budget >= 0),
-        CONSTRAINT projet_dates_coherentes CHECK (fin IS NULL OR fin >= debut)
-      )
-    `);
-    console.log('Table "projet" creee.');
-
-    // Table de jonction employe <-> projet (N:M)
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS employe_projet (
-        employe_id  INTEGER NOT NULL REFERENCES employe(id) ON DELETE CASCADE,
-        projet_id   INTEGER NOT NULL REFERENCES projet(id) ON DELETE CASCADE,
-        role        TEXT NOT NULL DEFAULT 'contributeur',
-        depuis      DATE NOT NULL DEFAULT CURRENT_DATE,
-        PRIMARY KEY (employe_id, projet_id)
-      )
-    `);
-    console.log('Table "employe_projet" creee.');
-
-    await client.query('COMMIT');
-    console.log('Toutes les tables ont ete creees avec succes.');
-
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('Erreur lors de la creation des tables :', err.message);
-    throw err;
-  } finally {
-    client.release();
-  }
-}
-
-async function main() {
-  try {
-    await creerTables();
-  } finally {
-    await pool.end();
-  }
-}
-
-main();
-```
-
-### 8.2 Vérifier le schema depuis Node.js
-
-```typescript
-// fichier : check-schema.mjs
-// Verifier que les tables existent et afficher leur structure
-
-import pg from 'pg';
-const { Pool } = pg;
-
-const pool = new Pool({
-  host: 'localhost',
-  port: 5432,
-  database: 'cours',
-  user: 'postgres',
-  password: 'postgres',
-});
-
-async function listerTables() {
-  const resultat = await pool.query(`
-    SELECT table_name,
-           (SELECT COUNT(*) FROM information_schema.columns c
-            WHERE c.table_name = t.table_name
-              AND c.table_schema = 'public') AS nb_colonnes
-    FROM information_schema.tables t
-    WHERE table_schema = 'public'
-      AND table_type = 'BASE TABLE'
-    ORDER BY table_name
-  `);
-
-  console.log('Tables dans le schema public :');
-  console.log('─'.repeat(40));
-  for (const row of resultat.rows) {
-    console.log(`  ${row.table_name} (${row.nb_colonnes} colonnes)`);
-  }
-}
-
-async function decrireTable(nomTable) {
-  const resultat = await pool.query(`
-    SELECT
-      column_name,
-      data_type,
-      is_nullable,
-      column_default
-    FROM information_schema.columns
-    WHERE table_schema = 'public'
-      AND table_name = $1
-    ORDER BY ordinal_position
-  `, [nomTable]);
-
-  console.log(`\nStructure de "${nomTable}" :`);
-  console.log('─'.repeat(60));
-  for (const col of resultat.rows) {
-    const nullable = col.is_nullable === 'YES' ? 'NULL' : 'NOT NULL';
-    const defaut = col.column_default ? ` DEFAULT ${col.column_default}` : '';
-    console.log(`  ${col.column_name.padEnd(20)} ${col.data_type.padEnd(15)} ${nullable}${defaut}`);
-  }
-}
-
-async function main() {
-  try {
-    await listerTables();
-    await decrireTable('employe');
-    await decrireTable('departement');
-  } finally {
-    await pool.end();
-  }
-}
-
-main();
-```
-
----
-
-## 9. DROP TABLE, ALTER TABLE — modifications de schema
-
-### 9.1 DROP TABLE
-
-```sql
--- Supprimer une table
-DROP TABLE employe_projet;
-
--- Supprimer seulement si elle existe (pas d'erreur sinon)
-DROP TABLE IF EXISTS employe_projet;
-
--- Supprimer une table et toutes les tables qui en dependent (CASCADE)
-DROP TABLE departement CASCADE;
--- Attention : cela supprime aussi les FK dans les tables referentes
-
--- Supprimer plusieurs tables d'un coup
-DROP TABLE IF EXISTS employe_projet, projet, employe, departement CASCADE;
-```
-
-> **Piege classique** : `DROP TABLE CASCADE` ne demandé PAS de confirmation. Il supprime instantanement la table et toutes les dépendances. En production, c'est extremement dangereux. Toujours vérifier avec `\d+ nom_table` avant de supprimer.
-
-### 9.2 ALTER TABLE — les modifications les plus courantes
-
-```sql
--- Ajouter une colonne
-ALTER TABLE employe ADD COLUMN telephone TEXT;
-
--- Ajouter une colonne avec contrainte
-ALTER TABLE employe ADD COLUMN code_postal VARCHAR(5) CHECK (code_postal ~ '^\d{5}$');
-
--- Supprimer une colonne
-ALTER TABLE employe DROP COLUMN telephone;
-
--- Renommer une colonne
-ALTER TABLE employe RENAME COLUMN nom TO nom_famille;
-
--- Changer le type d'une colonne
-ALTER TABLE employe ALTER COLUMN poste TYPE VARCHAR(100);
-
--- Ajouter une contrainte NOT NULL
-ALTER TABLE employe ALTER COLUMN date_naissance SET NOT NULL;
-
--- Supprimer une contrainte NOT NULL
-ALTER TABLE employe ALTER COLUMN date_naissance DROP NOT NULL;
-
--- Ajouter une contrainte CHECK
-ALTER TABLE employe ADD CONSTRAINT salaire_raisonnable CHECK (salaire < 1000000);
-
--- Supprimer une contrainte
-ALTER TABLE employe DROP CONSTRAINT salaire_raisonnable;
-
--- Ajouter une valeur par defaut
-ALTER TABLE employe ALTER COLUMN poste SET DEFAULT 'Stagiaire';
-
--- Supprimer une valeur par defaut
-ALTER TABLE employe ALTER COLUMN poste DROP DEFAULT;
-
--- Renommer la table
-ALTER TABLE employe RENAME TO collaborateur;
-```
-
-> **Ce qu'il faut retenir** : La plupart des `ALTER TABLE` en PostgreSQL sont **très rapides** car elles ne modifient que le catalogue système (metadata), pas les donnees. Exceptions notables : `ALTER COLUMN TYPE` peut necessiter une reecriture complete de la table si le type change de façon incompatible.
-
-### 9.3 Tableau des operations ALTER et leur impact
-
-| Operation | Verrouillage | Reecriture table | Risque production |
-|---|---|---|---|
-| `ADD COLUMN` (nullable, sans defaut) | Leger | Non | Faible |
-| `ADD COLUMN` (avec DEFAULT volatile) | Leger (PG11+) | Non (PG11+) | Faible |
-| `DROP COLUMN` | Leger | Non (marque invisible) | Faible |
-| `ALTER TYPE` (compatible) | Leger | Non | Faible |
-| `ALTER TYPE` (incompatible) | Lourd | **Oui** | **Eleve** |
-| `ADD CONSTRAINT CHECK` | Lourd (scan) | Non | Moyen |
-| `ADD CONSTRAINT FK` | Lourd (scan) | Non | Moyen |
-| `SET NOT NULL` | Lourd (scan) | Non | Moyen |
-
----
-
-## 10. Exercice mental : modeliser une bibliotheque
-
-Imagine que tu dois modeliser la base de donnees d'une bibliotheque municipale. Reflechis aux questions suivantes avant de regarder la solution :
-
-1. Quelles sont les entites principales ? (livres, auteurs, adherents, emprunts...)
-2. Quelles sont les relations entre elles ? (un auteur écrit plusieurs livres, un adherent emprunte plusieurs livres...)
-3. Quelles contraintes metier faut-il appliquer ? (un emprunt à une date de retour prevue, un livre ne peut pas etre emprunte s'il est déjà sorti...)
-
-### Solution proposee
-
-```sql
--- Auteurs
-CREATE TABLE auteur (
-    id      INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    prenom  TEXT NOT NULL,
-    nom     TEXT NOT NULL,
-    pays    TEXT,
-    ne_le   DATE,
-    bio     TEXT
-);
-
--- Livres (un livre a un seul auteur principal pour simplifier)
-CREATE TABLE livre (
-    id          INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    titre       TEXT NOT NULL,
-    isbn        VARCHAR(13) UNIQUE,
-    auteur_id   INTEGER NOT NULL REFERENCES auteur(id),
-    genre       TEXT,
-    pages       INTEGER CHECK (pages > 0),
-    publie_en   INTEGER CHECK (publie_en > 0 AND publie_en <= 2030)
-);
-
--- Exemplaires (un livre peut avoir plusieurs exemplaires physiques)
-CREATE TABLE exemplaire (
-    id          INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    livre_id    INTEGER NOT NULL REFERENCES livre(id) ON DELETE CASCADE,
-    code_barre  TEXT NOT NULL UNIQUE,
-    etat        TEXT NOT NULL DEFAULT 'bon' CHECK (etat IN ('neuf','bon','use','abime')),
-    disponible  BOOLEAN NOT NULL DEFAULT true
-);
-
--- Adherents
-CREATE TABLE adherent (
-    id              INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    prenom          TEXT NOT NULL,
-    nom             TEXT NOT NULL,
-    email           TEXT NOT NULL UNIQUE,
-    telephone       TEXT,
-    inscrit_le      DATE NOT NULL DEFAULT CURRENT_DATE,
-    carte_valide    BOOLEAN NOT NULL DEFAULT true
-);
-
--- Emprunts
-CREATE TABLE emprunt (
-    id              INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    exemplaire_id   INTEGER NOT NULL REFERENCES exemplaire(id),
-    adherent_id     INTEGER NOT NULL REFERENCES adherent(id),
-    emprunte_le     DATE NOT NULL DEFAULT CURRENT_DATE,
-    retour_prevu    DATE NOT NULL,
-    retourne_le     DATE,
-    CONSTRAINT retour_apres_emprunt
-        CHECK (retour_prevu >= emprunte_le),
-    CONSTRAINT retour_reel_apres_emprunt
-        CHECK (retourne_le IS NULL OR retourne_le >= emprunte_le)
-);
-```
-
-```
- Relations :
- ┌────────┐     1:N     ┌───────┐     1:N     ┌───────────┐
- │ auteur │────────────▶│ livre │────────────▶│ exemplaire │
- └────────┘             └───────┘             └─────┬─────┘
-                                                    │
-                                                    │ N:1
-                                                    ▼
- ┌──────────┐    N:1    ┌─────────┐
- │ adherent │◀──────────│ emprunt │
- └──────────┘           └─────────┘
-
- Un auteur ecrit N livres.
- Un livre a N exemplaires physiques.
- Un adherent fait N emprunts.
- Chaque emprunt concerne 1 exemplaire et 1 adherent.
-```
-
----
-
-## 11. Navigation
-
-| | Lien |
+| Option | Effet |
 |---|---|
-| Module précédent | [Module 00 — Prérequis & Vue d'ensemble](./00-prerequis-et-vue-ensemble.md) |
-| Module suivant | [Module 02 — CRUD & Requetes SQL](./02-crud-et-requetes.md) |
-| Lab associe | [Lab 01 — Créer un schema de base de donnees](../labs/lab-01.md) |
+| `CASCADE` | Supprime les lignes enfant quand la ligne parent est supprimée |
+| `SET NULL` | Met la FK à NULL (colonne doit être nullable) |
+| `RESTRICT` (défaut) | Bloque la suppression si des lignes enfant existent |
 
----
+### Normalisation
 
-> **Ce qu'il faut retenir** : Le modèle relationnel repose sur des tables, des types stricts et des contraintes qui garantissent l'integrite des donnees. PostgreSQL offre un système de types extremement riche (TEXT, NUMERIC, TIMESTAMPTZ, UUID, JSONB, arrays...). Choisis tes types avec soin, nomme tes colonnes clairement en snake_case, et laisse la base de donnees valider tes donnees via les contraintes — c'est sa raison d'etre.
+La normalisation élimine la redondance et les anomalies de mise à jour. Les trois premières formes normales couvrent la quasi-totalité des cas pratiques.
 
----
+**1NF — valeurs atomiques, pas de groupes répétés**
 
-<!-- parcours-recommande -->
+Chaque cellule contient une seule valeur ; pas de colonnes répétées du type `role_1`, `role_2`, `role_3`.
 
-::: tip Parcours recommandé
-1. **Screencast** : [screencast 01 modèle relationnel](../screencasts/screencast-01-modele-relationnel.md)
-2. **Lab** : [lab-01-premiers-pas-psql](../labs/lab-01-premiers-pas-psql/README)
-3. **Quiz** : [quiz 01 modèle relationnel](../quizzes/quiz-01-modele-relationnel.html)
-:::
+```sql
+-- MAUVAIS : valeurs non atomiques, groupes répétés
+CREATE TABLE membre_bad (
+    id       INTEGER PRIMARY KEY,
+    roles    TEXT    -- 'owner,admin' — deux valeurs dans une colonne
+);
+
+-- BON : 1NF — chaque cellule = une valeur
+CREATE TABLE family_member (
+    family_id  UUID NOT NULL,
+    user_id    UUID NOT NULL,
+    role       TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member', 'guest')),
+    PRIMARY KEY (family_id, user_id)
+);
+```
+
+**2NF — dépendance totale à la clé primaire**
+
+S'applique aux tables avec clé composite : chaque attribut non-clé doit dépendre de **toute** la clé, pas d'une partie.
+
+```sql
+-- MAUVAIS : family_name dépend de family_id seulement, pas de (family_id, user_id)
+CREATE TABLE member_bad (
+    family_id    UUID NOT NULL,
+    user_id      UUID NOT NULL,
+    role         TEXT NOT NULL,
+    family_name  TEXT NOT NULL,   -- dépendance partielle !
+    PRIMARY KEY (family_id, user_id)
+);
+
+-- BON : family_name dans families, pas dans la table de jonction
+-- Voir schéma TribuZen complet ci-dessous
+```
+
+**3NF — pas de dépendance transitive**
+
+Aucun attribut non-clé ne doit dépendre d'un autre attribut non-clé.
+
+```sql
+-- MAUVAIS : city dépend de zip_code, pas de id (transitivité id -> zip_code -> city)
+CREATE TABLE user_bad (
+    id        UUID PRIMARY KEY,
+    zip_code  TEXT NOT NULL,
+    city      TEXT NOT NULL   -- dépend de zip_code, pas de id
+);
+
+-- BON : extraire la dépendance dans sa propre table
+CREATE TABLE zip_code (
+    code  TEXT PRIMARY KEY,
+    city  TEXT NOT NULL
+);
+CREATE TABLE users (
+    id        UUID PRIMARY KEY,
+    zip_code  TEXT REFERENCES zip_code(code)
+);
+```
+
+En pratique, un schéma TribuZen en 3NF signifie : les infos utilisateur vivent dans `users`, les infos famille dans `families`, l'appartenance dans `family_members`, les posts dans `posts` — chaque entité dans sa table, les relations via FK.
+
+## 3. Worked examples
+
+### Exemple A — Schéma TribuZen complet (users, families, family_members, posts)
+
+```sql
+-- Table des utilisateurs
+CREATE TABLE users (
+    id            UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+    email         TEXT        NOT NULL UNIQUE,
+    display_name  TEXT        NOT NULL,
+    avatar_url    TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Table des familles
+CREATE TABLE families (
+    id             UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+    name           TEXT        NOT NULL,
+    description    TEXT,
+    is_public      BOOLEAN     NOT NULL DEFAULT false,
+    members_count  INTEGER     NOT NULL DEFAULT 0 CHECK (members_count >= 0),
+    created_by     UUID        NOT NULL REFERENCES users(id),
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Table de jonction : appartenance d'un user à une famille
+-- Clé primaire composite : un user ne peut avoir qu'un rôle par famille
+CREATE TABLE family_members (
+    family_id   UUID        NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+    user_id     UUID        NOT NULL REFERENCES users(id)    ON DELETE CASCADE,
+    role        TEXT        NOT NULL DEFAULT 'member'
+                            CHECK (role IN ('owner', 'admin', 'member', 'guest')),
+    joined_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (family_id, user_id)
+);
+
+-- Table des posts
+CREATE TABLE posts (
+    id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+    family_id   UUID        NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+    author_id   UUID        NOT NULL REFERENCES users(id),
+    content     TEXT        NOT NULL CHECK (char_length(content) > 0),
+    is_pinned   BOOLEAN     NOT NULL DEFAULT false,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+Pas-à-pas : (1) `users` ne contient que les attributs propres à l'utilisateur — aucune info famille ; (2) `families` contient un `members_count` dénormalisé intentionnellement pour les performances (updated en transaction au module 04) ; (3) `family_members` est en 2NF : `role` et `joined_at` dépendent de `(family_id, user_id)` ensemble — pas d'un seul des deux ; (4) `posts` référence `families` et `users` par FK avec `ON DELETE CASCADE` : si une famille est supprimée, ses posts le sont aussi ; (5) tous les UUID ont `DEFAULT gen_random_uuid()` — l'application peut ne pas fournir l'id à l'insertion.
+
+### Exemple B — Évolution du schéma : ajouter une contrainte NOT NULL après coup
+
+En développement, tu ajoutes une colonne sans la rendre obligatoire, puis tu veux la contraindre après avoir rempli les données existantes.
+
+```sql
+-- Étape 1 : ajouter la colonne nullable (rapide, pas de réécriture de table)
+ALTER TABLE users ADD COLUMN timezone TEXT;
+
+-- Étape 2 : remplir les lignes existantes
+UPDATE users SET timezone = 'UTC' WHERE timezone IS NULL;
+
+-- Étape 3 : ajouter NOT NULL + DEFAULT (scan de la table, mais pas de réécriture complète)
+ALTER TABLE users
+    ALTER COLUMN timezone SET NOT NULL,
+    ALTER COLUMN timezone SET DEFAULT 'UTC';
+```
+
+Pas-à-pas : l'ordre compte. Ajouter `NOT NULL` directement sur une table remplie avec des NULLs échouerait. En production, on fait les trois étapes dans une migration — idéalement sans downtime si la table est grande (zero-downtime ALTER est un sujet avancé couvert au module index).
+
+## 4. Pièges & misconceptions
+
+- **`TIMESTAMP` au lieu de `TIMESTAMPTZ`.** `TIMESTAMP` ne stocke pas l'information de fuseau. Si ton serveur passe de Paris à UTC, toutes tes dates "glissent". *Correct* : toujours `TIMESTAMPTZ` ; PostgreSQL stocke en UTC interne et convertit selon le fuseau de session.
+
+- **`REAL` ou `DOUBLE PRECISION` pour les montants.** Ces types utilisent la virgule flottante IEEE 754 : `0.1 + 0.2 = 0.30000000000000004`. *Correct* : `NUMERIC(p, s)` pour les montants exacts, ou stocker des centimes en `INTEGER`.
+
+- **`VARCHAR(255)` comme reflexe.** En PostgreSQL, `TEXT` et `VARCHAR(n)` ont exactement les mêmes performances de stockage et d'accès. `VARCHAR(255)` n'optimise rien — il ajoute une contrainte arbitraire. *Correct* : utiliser `TEXT` par défaut, `VARCHAR(n)` uniquement si une limite métier réelle existe (code ISO à 3 caractères par exemple).
+
+- **UNIQUE autorise plusieurs NULL.** `UNIQUE` garantit qu'aucune valeur non-NULL n'est dupliquée, mais plusieurs lignes peuvent avoir `NULL` dans une colonne `UNIQUE`. C'est conforme au standard SQL (`NULL ≠ NULL`). *Correct* : ajouter `NOT NULL` si le champ doit être à la fois unique et obligatoire.
+
+- **Clé primaire entière sur une API publique.** Exposer `id = 42` dans une URL permet d'énumérer les ressources (IDOR). *Correct* : UUID (`gen_random_uuid()`) pour les entités exposées en API, séquences entières pour les tables purement internes.
+
+- **Normaliser à l'excès.** La 3NF dit de supprimer les dépendances transitives, pas de tout extraire dans des tables séparées. `members_count` dans `families` est une dénormalisation *intentionnelle et documentée* pour éviter un `COUNT(*)` à chaque affichage du profil famille. La dénormalisation est acceptable quand le coût de la cohérence est géré explicitement (transaction + contrainte CHECK).
+
+- **`ON DELETE CASCADE` partout sans réfléchir.** Sur `family_members → families`, `CASCADE` est justifié : les membres d'une famille supprimée n'ont plus de sens. Sur `posts → users`, `CASCADE` supprimerait tous les posts d'un utilisateur si on le supprime — souvent non voulu (on veut garder l'historique avec un `author_id` anonymisé). *Correct* : choisir `ON DELETE SET NULL` ou `RESTRICT` selon la sémantique métier.
+
+## 5. Ancrage TribuZen
+
+Couche fil-rouge : **schéma relationnel de TribuZen** (`smaurier/tribuzen`).
+
+- Les quatre tables (`users`, `families`, `family_members`, `posts`) forment le noyau du produit. Toute feature TribuZen (invitation, RBAC, feed de posts, stats famille) s'appuie sur ces tables.
+- La clé composite de `family_members (family_id, user_id)` est en 2NF stricte : `role` et `joined_at` dépendent du couple complet, pas d'un seul id. Cela interdit naturellement qu'un user ait deux rôles dans la même famille.
+- Les FK avec `ON DELETE CASCADE` sur `family_members` et `posts` garantissent qu'une famille supprimée ne laisse pas de lignes orphelines — intégrité référentielle gérée par le moteur, pas par l'application.
+- Le `members_count` dans `families` est une dénormalisation documentée : la colonne est maintenue à jour via une transaction atomique (module 04 — Transactions et ACID). Le `CHECK (members_count >= 0)` est un filet de sécurité contre un bug de synchronisation.
+- En session, ce schéma sera créé sur une vraie base Postgres locale (Docker), les CRUD exercés au module 02, les transactions au module 04, les index au module 05.
+
+> **Note pratique :** la pratique SQL sur ce schéma commence au module 02 (CRUD et requêtes). Ce module est conceptuel et de design — l'objectif est de savoir écrire et justifier le DDL avant de le peupler.
+
+## 6. Points clés
+
+1. Le modèle relationnel organise les données en tables (relations), lignes (tuples) et colonnes (attributs), reliées par des clés — pas par des pointeurs.
+2. Chaque table doit avoir une clé primaire : `GENERATED ALWAYS AS IDENTITY` pour les entiers, `UUID DEFAULT gen_random_uuid()` pour les API exposées.
+3. Contraintes fondamentales : `NOT NULL` (champ obligatoire), `UNIQUE` (valeur unique, plusieurs NULL autorisés), `CHECK (condition)`, `DEFAULT valeur`.
+4. `FOREIGN KEY … REFERENCES` matérialise une relation entre tables ; `ON DELETE CASCADE / SET NULL / RESTRICT` pilote le comportement à la suppression du parent.
+5. Types à retenir : `TEXT` (texte par défaut, pas `VARCHAR(255)`), `NUMERIC(p, s)` (montants), `TIMESTAMPTZ` (jamais `TIMESTAMP`), `UUID`, `BOOLEAN`, `INTEGER` / `BIGINT`.
+6. 1NF : une valeur par cellule, pas de groupes répétés. 2NF : dépendance totale à la clé primaire. 3NF : pas de dépendance transitive entre attributs non-clés.
+7. `ON DELETE CASCADE` est justifié quand l'enfant n'a pas de sens sans le parent (membres → famille) ; `SET NULL` ou `RESTRICT` quand l'historique doit être conservé.
+8. La dénormalisation intentionnelle (ex. `members_count`) est acceptable si la cohérence est garantie par une transaction et une contrainte `CHECK`.
+
+## 7. Seeds Anki
+
+```
+Différence TIMESTAMPTZ vs TIMESTAMP en PostgreSQL ?|TIMESTAMPTZ stocke en UTC interne et convertit au fuseau de session ; TIMESTAMP ignore le fuseau, source de bugs multi-fuseaux. Toujours utiliser TIMESTAMPTZ.
+Pourquoi TEXT est préféré à VARCHAR(255) en PostgreSQL ?|En PostgreSQL TEXT et VARCHAR ont exactement les mêmes performances. VARCHAR(255) ajoute une contrainte arbitraire sans bénéfice. Utiliser TEXT par défaut.
+Qu'est-ce que la 2NF et quand s'applique-t-elle ?|La 2NF s'applique aux tables à clé composite : chaque attribut non-clé doit dépendre de TOUTE la clé, pas d'une partie seulement. Exemple : family_name dans family_members est une dépendance partielle vers family_id — violation de la 2NF.
+Que garantit ON DELETE CASCADE sur une FK ?|Quand la ligne parente est supprimée, toutes les lignes enfant référençant cette clé sont automatiquement supprimées. Utile pour les entités sans sens sans le parent (ex. family_members → families).
+Différence entre PRIMARY KEY et UNIQUE en PostgreSQL ?|PRIMARY KEY = NOT NULL + UNIQUE + identifiant officiel de la table (une seule par table). UNIQUE = unicité des valeurs non-NULL, plusieurs NULL autorisés, plusieurs colonnes UNIQUE possibles par table.
+Pourquoi NUMERIC(p, s) pour les montants et pas REAL ?|REAL utilise la virgule flottante IEEE 754 : 0.1 + 0.2 = 0.30000000000000004. NUMERIC est un type à précision exacte, sans erreur d'arrondi. Indispensable pour les montants financiers.
+Qu'est-ce que la 3NF ?|Troisième forme normale : aucun attribut non-clé ne dépend d'un autre attribut non-clé (pas de dépendance transitive). Exemple : si city dépend de zip_code et zip_code de id, city viole la 3NF — extraire zip_code dans sa propre table.
+Pourquoi utiliser UUID comme clé primaire sur une API publique ?|Un id entier auto-incrémenté (1, 2, 3…) permet l'énumération des ressources (IDOR). Un UUID est opaque et non devinable. gen_random_uuid() génère un UUID v4 aléatoire dans PostgreSQL 13+.
+Que se passe-t-il si on insère NULL dans une colonne UNIQUE ?|PostgreSQL autorise plusieurs NULL dans une colonne UNIQUE (NULL ≠ NULL selon le standard SQL). Pour interdire les NULL ET garantir l'unicité, combiner UNIQUE et NOT NULL.
+```

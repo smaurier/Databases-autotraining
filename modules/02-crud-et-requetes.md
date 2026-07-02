@@ -1,1193 +1,320 @@
-# Module 02 — CRUD & Requetes SQL
-
-> **Objectif** : Maîtriser les quatre operations fondamentales (Create, Read, Update, Delete), les fonctions d'agregation, les sous-requêtes et l'intégration securisee avec Node.js via des requêtes parametrees.
->
-> **Difficulte** : ⭐ (débutant)
-
+---
+titre: CRUD et requêtes
+cours: 10-postgresql
+notions: [INSERT, SELECT avec WHERE, UPDATE, DELETE, ORDER BY et LIMIT OFFSET, opérateurs et filtres, fonctions d'agrégation, GROUP BY et HAVING, DISTINCT et RETURNING]
+outcomes: [écrire des requêtes CRUD complètes, filtrer et trier, agréger avec GROUP BY et HAVING, utiliser RETURNING]
+prerequis: [01-modele-relationnel]
+next: 03-relations-et-jointures
+libs: [{ name: postgresql, version: "17" }]
+tribuzen: CRUD sur les familles et posts de TribuZen (créer une famille, lister les posts récents)
+last-reviewed: 2026-07
 ---
 
-## 1. INSERT — ajouter des donnees
+# CRUD et requêtes
 
-### 1.1 Insertion simple
+> **Outcomes — tu sauras FAIRE :** écrire des requêtes CRUD complètes en SQL, filtrer et trier avec WHERE / ORDER BY / LIMIT OFFSET, agréger des données avec GROUP BY et HAVING, et récupérer les lignes modifiées avec RETURNING.
+> **Difficulté :** :star::star:
+
+## 1. Cas concret d'abord
+
+Dans TribuZen, quand un utilisateur crée une famille, le serveur doit enchaîner deux écritures : insérer la famille, puis insérer le créateur comme premier membre. La deuxième écriture a besoin de l'`id` UUID généré par la première. Sans `RETURNING`, il faut un second `SELECT` après l'INSERT — un aller-retour réseau de plus et une fenêtre de concurrence.
 
 ```sql
--- Syntaxe de base
-INSERT INTO nom_table (colonne1, colonne2, ...) VALUES (valeur1, valeur2, ...);
+-- Sans RETURNING : deux requêtes, fenêtre de race condition entre les deux
+INSERT INTO family (name, created_by) VALUES ('Les Maurier', 'u-1');
+SELECT id FROM family WHERE name = 'Les Maurier' AND created_by = 'u-1'; -- non atomique !
 
--- Exemple concret
-INSERT INTO produit (nom, prix, categorie)
-VALUES ('Clavier mecanique', 89.99, 'peripherique');
+-- Avec RETURNING : une seule requête, l'id est disponible immédiatement
+INSERT INTO family (name, created_by)
+VALUES ('Les Maurier', 'u-1')
+RETURNING id, name, created_at;
+-- → { id: 'fam-abc', name: 'Les Maurier', created_at: '2026-07-01T10:00:00Z' }
 ```
 
-> **Analogie** : `INSERT`, c'est comme remplir un formulaire et le deposer dans le bon classeur. Chaque champ du formulaire correspond à une colonne, et le classeur est la table.
+Même logique pour un `UPDATE` ou `DELETE` : `RETURNING` évite le `SELECT` de confirmation. La suite couvre INSERT, SELECT, UPDATE, DELETE, les filtres et les agrégations — tous ancrés sur le schéma TribuZen.
 
-### 1.2 Insertion multiple
+## 2. Théorie complète, concise
 
-```sql
--- Inserer plusieurs lignes en une seule requete (beaucoup plus performant)
-INSERT INTO produit (nom, prix, categorie) VALUES
-    ('Souris sans fil', 34.99, 'peripherique'),
-    ('Ecran 27"', 349.00, 'ecran'),
-    ('Cable HDMI 2m', 12.50, 'cable'),
-    ('Webcam HD', 59.99, 'peripherique'),
-    ('Hub USB-C', 29.99, 'accessoire');
-```
-
-> **Ce qu'il faut retenir** : Inserer 1000 lignes avec un seul `INSERT ... VALUES (row1), (row2), ...` est **10 a 100 fois plus rapide** qu'exécuter 1000 `INSERT` individuels. Chaque `INSERT` individuel est une transaction complete (parse, plan, exécuté, WAL write, commit).
-
-### 1.3 RETURNING — récupérer les donnees inserees
+### Schéma de référence
 
 ```sql
--- RETURNING : obtenir les donnees inserees (notamment l'ID genere)
-INSERT INTO produit (nom, prix, categorie)
-VALUES ('Casque audio', 149.99, 'audio')
-RETURNING id, nom, prix;
-
--- Resultat :
---  id |    nom      |  prix
--- ----+-------------+--------
---   7 | Casque audio| 149.99
-
--- RETURNING * : toutes les colonnes
-INSERT INTO produit (nom, prix, categorie)
-VALUES ('Tapis de souris', 19.99, 'accessoire')
-RETURNING *;
-```
-
-> **Ce qu'il faut retenir** : `RETURNING` est une extension PostgreSQL extremement utile. Elle evite de faire un `SELECT` après l'`INSERT` pour récupérer l'ID généré. C'est **une seule operation** au lieu de deux.
-
-### 1.4 INSERT ... ON CONFLICT (Upsert)
-
-L'upsert (update or insert) est un pattern très courant : si la ligne existe déjà, on la met a jour au lieu de générer une erreur.
-
-```sql
--- Creer une table avec contrainte UNIQUE
-CREATE TABLE configuration (
-    cle     TEXT PRIMARY KEY,
-    valeur  TEXT NOT NULL,
-    maj_le  TIMESTAMPTZ NOT NULL DEFAULT now()
+CREATE TABLE family (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name          TEXT NOT NULL,
+  created_by    UUID NOT NULL,
+  members_count INT  NOT NULL DEFAULT 1,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Premier insert : cree la ligne
-INSERT INTO configuration (cle, valeur) VALUES ('theme', 'sombre');
-
--- Deuxieme insert : conflit sur la PK → mettre a jour
-INSERT INTO configuration (cle, valeur)
-VALUES ('theme', 'clair')
-ON CONFLICT (cle) DO UPDATE
-SET valeur = EXCLUDED.valeur,
-    maj_le = now();
-
--- EXCLUDED fait reference aux valeurs qu'on essayait d'inserer
-
--- ON CONFLICT DO NOTHING : ignorer silencieusement les doublons
-INSERT INTO configuration (cle, valeur)
-VALUES ('theme', 'bleu')
-ON CONFLICT (cle) DO NOTHING;
--- Pas d'erreur, pas de modification
-
--- Upsert avec condition supplementaire
-INSERT INTO configuration (cle, valeur)
-VALUES ('version', '2.0')
-ON CONFLICT (cle) DO UPDATE
-SET valeur = EXCLUDED.valeur,
-    maj_le = now()
-WHERE configuration.valeur <> EXCLUDED.valeur;
--- Mise a jour uniquement si la valeur change reellement
+CREATE TABLE post (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  family_id  UUID NOT NULL REFERENCES family(id),
+  author_id  UUID NOT NULL,
+  content    TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 ```
 
-```
- ┌─────────────────────────────────────────────────┐
- │                  INSERT ... ON CONFLICT          │
- │                                                  │
- │   Donnees ──▶ Conflit ?                          │
- │                  │                               │
- │          Non ◄───┤───▶ Oui                       │
- │           │             │                        │
- │       INSERT        DO UPDATE ?                  │
- │       normal            │                        │
- │                 Oui ◄───┤───▶ Non                │
- │                  │             │                  │
- │              UPDATE        DO NOTHING            │
- │           avec EXCLUDED    (ignorer)             │
- └─────────────────────────────────────────────────┘
-```
-
-### 1.5 INSERT ... SELECT
+### INSERT
 
 ```sql
--- Inserer des donnees a partir d'une autre requete
-INSERT INTO archive_produit (nom, prix, archive_le)
-SELECT nom, prix, now()
-FROM produit
-WHERE categorie = 'obsolete';
+-- Insertion simple
+INSERT INTO family (name, created_by)
+VALUES ('Les Dupont', 'u-42');
 
--- Utile pour : archivage, duplication, transformation
+-- Insertion multiple (batch) — bien plus rapide que N INSERT individuels
+-- Un seul cycle parse / plan / WAL write pour toutes les lignes
+INSERT INTO post (family_id, author_id, content) VALUES
+  ('fam-1', 'u-1', 'Bonjour famille !'),
+  ('fam-1', 'u-2', 'Heureux d''être ici'),
+  ('fam-1', 'u-1', 'Premier album partagé');
+
+-- RETURNING : récupère les colonnes de la ou des lignes insérées
+INSERT INTO family (name, created_by)
+VALUES ('Les Martin', 'u-9')
+RETURNING id, name, created_at;
 ```
 
----
+`RETURNING` est une extension PostgreSQL ; elle fonctionne aussi sur `UPDATE` et `DELETE` et peut retourner `*` ou n'importe quelles colonnes.
 
-## 2. SELECT — lire des donnees
-
-### 2.1 Les bases
+### SELECT, WHERE et opérateurs de filtre
 
 ```sql
--- Toutes les colonnes, toutes les lignes
-SELECT * FROM produit;
+-- Toutes les colonnes
+SELECT * FROM post WHERE family_id = 'fam-1';
 
--- Colonnes specifiques
-SELECT nom, prix FROM produit;
+-- Colonnes choisies + alias
+SELECT content, created_at AS posted_at FROM post WHERE family_id = 'fam-1';
 
--- Avec alias (AS)
-SELECT
-    nom AS nom_produit,
-    prix AS prix_ttc,
-    prix * 0.8 AS prix_ht,
-    prix * 0.2 AS tva
-FROM produit;
-
--- Expressions calculees
-SELECT
-    nom,
-    prix,
-    CASE
-        WHEN prix < 20 THEN 'pas cher'
-        WHEN prix < 100 THEN 'moyen'
-        ELSE 'cher'
-    END AS gamme
-FROM produit;
+-- Opérateurs courants
+SELECT * FROM family WHERE members_count >= 3;
+SELECT * FROM post WHERE family_id IN ('fam-1', 'fam-2');
+SELECT * FROM post WHERE content ILIKE '%photo%';          -- insensible à la casse
+SELECT * FROM post WHERE created_at >= now() - INTERVAL '7 days';
+SELECT * FROM post WHERE author_id IS NOT NULL;            -- jamais = NULL !
 ```
 
-### 2.2 DISTINCT — eliminer les doublons
+**Règle NULL** : toute comparaison avec `NULL` retourne `NULL`, pas `false`. `WHERE col = NULL` ne retourne jamais rien. Toujours `IS NULL` / `IS NOT NULL`.
+
+### ORDER BY et LIMIT OFFSET
 
 ```sql
--- Valeurs uniques d'une colonne
-SELECT DISTINCT categorie FROM produit;
+-- Posts les plus récents en premier
+SELECT id, content, created_at
+FROM post
+WHERE family_id = 'fam-1'
+ORDER BY created_at DESC;
 
--- Combinaison unique de colonnes
-SELECT DISTINCT categorie, en_stock FROM produit;
+-- Pagination classique : page 1, 20 résultats
+SELECT id, content, created_at
+FROM post
+WHERE family_id = 'fam-1'
+ORDER BY created_at DESC
+LIMIT 20 OFFSET 0;
 
--- DISTINCT ON (PostgreSQL specifique) — premier de chaque groupe
-SELECT DISTINCT ON (categorie) categorie, nom, prix
-FROM produit
-ORDER BY categorie, prix DESC;
--- Pour chaque categorie, retourne le produit le plus cher
-```
-
-> **Piege classique** : `SELECT DISTINCT` trie implicitement les résultats pour eliminer les doublons. Sur une grande table, c'est couteux. Si tu as besoin de `DISTINCT` souvent, c'est peut-etre un signe que ton modèle est mal normalise.
-
-### 2.3 Expressions et operateurs utiles
-
-```sql
--- Concatenation de texte
-SELECT prenom || ' ' || nom AS nom_complet FROM employe;
-
--- Fonctions texte
-SELECT
-    UPPER(nom) AS majuscule,
-    LOWER(email) AS minuscule,
-    LENGTH(nom) AS longueur,
-    TRIM('  espaces  ') AS sans_espaces,
-    LEFT(nom, 3) AS debut,
-    REPLACE(nom, 'a', '@') AS remplace
-FROM employe;
-
--- Fonctions de date
-SELECT
-    CURRENT_DATE AS aujourdhui,
-    EXTRACT(YEAR FROM date_naissance) AS annee_naissance,
-    AGE(date_naissance) AS age_exact,
-    DATE_PART('month', cree_le) AS mois_creation,
-    TO_CHAR(cree_le, 'DD/MM/YYYY HH24:MI') AS date_formatee
-FROM employe;
-
--- Coalesce : premiere valeur non NULL
-SELECT
-    nom,
-    COALESCE(telephone, email, 'aucun contact') AS contact
-FROM client;
-
--- NULLIF : retourne NULL si les deux valeurs sont egales
-SELECT NULLIF(stock, 0) AS stock_ou_null FROM produit;
--- Utile pour eviter les divisions par zero :
-SELECT total / NULLIF(quantite, 0) AS prix_unitaire FROM ligne;
-```
-
----
-
-## 3. WHERE — filtrer les résultats
-
-### 3.1 Operateurs de comparaison
-
-| Operateur | Description | Exemple |
-|---|---|---|
-| `=` | Egal | `WHERE prix = 29.99` |
-| `<>` ou `!=` | Different | `WHERE statut <> 'annule'` |
-| `<` | Inferieur | `WHERE prix < 100` |
-| `>` | Superieur | `WHERE prix > 50` |
-| `<=` | Inferieur ou egal | `WHERE stock <= 10` |
-| `>=` | Superieur ou egal | `WHERE note >= 4.0` |
-
-### 3.2 Operateurs logiques et speciaux
-
-```sql
--- AND / OR
-SELECT * FROM produit
-WHERE categorie = 'peripherique'
-  AND prix < 100
-  AND en_stock = true;
-
-SELECT * FROM produit
-WHERE prix < 20 OR categorie = 'promo';
-
--- BETWEEN (inclusif des deux cotes)
-SELECT * FROM produit
-WHERE prix BETWEEN 20 AND 100;
--- Equivalent a : prix >= 20 AND prix <= 100
-
--- IN : appartenance a une liste
-SELECT * FROM produit
-WHERE categorie IN ('peripherique', 'audio', 'ecran');
-
--- NOT IN
-SELECT * FROM produit
-WHERE categorie NOT IN ('cable', 'accessoire');
-
--- LIKE : pattern matching (% = n'importe quoi, _ = un caractere)
-SELECT * FROM produit WHERE nom LIKE 'Clavier%';
-SELECT * FROM produit WHERE nom LIKE '____'; -- exactement 4 caracteres
-
--- ILIKE : LIKE insensible a la casse (PostgreSQL specifique)
-SELECT * FROM produit WHERE nom ILIKE '%souris%';
-
--- IS NULL / IS NOT NULL (JAMAIS utiliser = NULL !)
-SELECT * FROM employe WHERE telephone IS NULL;
-SELECT * FROM employe WHERE telephone IS NOT NULL;
-
--- Expressions regulieres PostgreSQL
-SELECT * FROM produit WHERE nom ~ '^[A-Z].*\d$'; -- commence par majuscule, finit par chiffre
-SELECT * FROM produit WHERE nom ~* 'clavier'; -- insensible a la casse
-```
-
-> **Piege classique** : `NULL` n'est pas une valeur, c'est l'**absence de valeur**. On ne peut pas comparer avec `=` :
-> - `WHERE telephone = NULL` → **ne retourne JAMAIS rien** (même si des lignes ont `telephone` NULL)
-> - `WHERE telephone IS NULL` → **correct**
-> - `NULL = NULL` → `NULL` (pas `true` !)
-> - `NULL <> 42` → `NULL` (pas `true` !)
-
-```sql
--- Demonstration du piege NULL
-SELECT NULL = NULL;     -- NULL (pas true)
-SELECT NULL <> NULL;    -- NULL (pas false)
-SELECT NULL IS NULL;    -- true
-SELECT 1 IN (1, NULL);  -- true (1 est dans la liste)
-SELECT 2 IN (1, NULL);  -- NULL (pas false ! car on ne sait pas si NULL = 2)
-SELECT 2 NOT IN (1, NULL); -- NULL (pas true !)
-```
-
-> **Ce qu'il faut retenir** : En SQL, la logique est **trivalente** : `true`, `false`, `NULL`. Toute comparaison impliquant `NULL` retourne `NULL`. `WHERE` ne garde que les lignes ou la condition est `true` (pas `NULL`).
-
----
-
-## 4. ORDER BY, LIMIT, OFFSET — tri et pagination
-
-### 4.1 ORDER BY
-
-```sql
--- Tri ascendant (par defaut)
-SELECT nom, prix FROM produit ORDER BY prix;
-SELECT nom, prix FROM produit ORDER BY prix ASC; -- equivalent
-
--- Tri descendant
-SELECT nom, prix FROM produit ORDER BY prix DESC;
-
--- Tri multi-colonnes
-SELECT nom, categorie, prix
-FROM produit
-ORDER BY categorie ASC, prix DESC;
--- D'abord par categorie (A→Z), puis par prix decroissant dans chaque categorie
-
--- Tri avec NULLS FIRST / NULLS LAST
-SELECT nom, telephone FROM employe
-ORDER BY telephone NULLS LAST;
--- Les employes sans telephone apparaissent a la fin
-
--- Tri par position de colonne (deconseille mais possible)
-SELECT nom, prix FROM produit ORDER BY 2 DESC; -- trie par la 2e colonne (prix)
-```
-
-### 4.2 LIMIT et OFFSET
-
-```sql
--- Les 10 premiers resultats
-SELECT nom, prix FROM produit ORDER BY prix DESC LIMIT 10;
-
--- Pagination : page 1 (lignes 1-10)
-SELECT * FROM produit ORDER BY id LIMIT 10 OFFSET 0;
-
--- Pagination : page 2 (lignes 11-20)
-SELECT * FROM produit ORDER BY id LIMIT 10 OFFSET 10;
-
--- Pagination : page N (lignes (N-1)*10+1 a N*10)
--- OFFSET = (page - 1) * taille_page
-```
-
-> **Piege classique** : La pagination par `OFFSET` est **très inefficace** sur les grandes tables. `OFFSET 1000000` oblige PostgreSQL a lire 1 000 000 de lignes, puis a les jeter. Pour une pagination performante, utilise la **pagination par curseur** (keyset pagination) :
-
-```sql
--- MAUVAIS : pagination par OFFSET (lent sur les grandes pages)
-SELECT * FROM produit ORDER BY id LIMIT 20 OFFSET 100000;
--- PostgreSQL lit 100 020 lignes, jette les 100 000 premieres
-
--- BON : pagination par curseur (keyset pagination)
--- Le client se souvient du dernier ID vu
-SELECT * FROM produit
-WHERE id > 100000        -- dernier ID de la page precedente
-ORDER BY id
+-- Pagination keyset (performante sur les grandes tables)
+-- Le client mémorise le dernier created_at vu et l'envoie comme curseur
+SELECT id, content, created_at
+FROM post
+WHERE family_id = 'fam-1'
+  AND created_at < '2026-06-30T12:00:00Z'   -- curseur = dernier vu
+ORDER BY created_at DESC
 LIMIT 20;
--- PostgreSQL utilise l'index sur id, lit directement les 20 lignes
 ```
 
-```
- Comparaison de performance : OFFSET vs Keyset
+`OFFSET N` force PostgreSQL à lire et ignorer N lignes — coût O(N). La pagination keyset est O(1) via l'index sur `(family_id, created_at)`.
 
- Page       OFFSET (temps)     Keyset (temps)
- ─────────────────────────────────────────────
- 1          ~1 ms              ~1 ms
- 10         ~2 ms              ~1 ms
- 100        ~15 ms             ~1 ms
- 1 000      ~150 ms            ~1 ms
- 10 000     ~1 500 ms          ~1 ms
- 100 000    ~15 000 ms         ~1 ms
-              ▲                   ▲
-         Lineaire O(n)       Constant O(1)
-```
-
----
-
-## 5. UPDATE — modifier des donnees
-
-### 5.1 Syntaxe de base
+### UPDATE
 
 ```sql
--- Mettre a jour une colonne
-UPDATE produit
-SET prix = 79.99
-WHERE id = 1;
+-- Modifier un post + récupérer le résultat
+UPDATE post
+SET content = 'Photo de famille mise à jour'
+WHERE id = 'post-7'
+RETURNING id, content;
 
--- Mettre a jour plusieurs colonnes
-UPDATE produit
-SET prix = 79.99,
-    nom = 'Clavier mecanique RGB',
-    modifie_le = now()
-WHERE id = 1;
-
--- ATTENTION : sans WHERE, TOUTES les lignes sont modifiees !
-UPDATE produit SET prix = 0;  -- DANGER : tous les prix a zero !
+-- Danger : sans WHERE, toutes les lignes sont modifiées
+-- UPDATE post SET content = '';  ← détruit tout le contenu de toute la table
 ```
 
-> **Piege classique** : Un `UPDATE` sans `WHERE` modifie **toutes** les lignes de la table. C'est l'une des erreurs les plus frequentes et les plus destructrices en SQL. Toujours vérifier ta clause `WHERE` avec un `SELECT` d'abord :
+Toujours vérifier la clause `WHERE` avec un `SELECT` avant d'exécuter un `UPDATE` en production, ou utiliser `BEGIN` / `ROLLBACK`.
+
+### DELETE
 
 ```sql
--- Etape 1 : verifier quelles lignes seront affectees
-SELECT id, nom, prix FROM produit WHERE categorie = 'obsolete';
+-- Supprimer un post précis
+DELETE FROM post
+WHERE id = 'post-7'
+RETURNING id, author_id;
 
--- Etape 2 : une fois satisfait, executer l'UPDATE
-UPDATE produit SET en_stock = false WHERE categorie = 'obsolete';
+-- Supprimer les vieux posts d'une famille
+DELETE FROM post
+WHERE family_id = 'fam-1'
+  AND created_at < now() - INTERVAL '1 year'
+RETURNING id;
+
+-- Danger : sans WHERE, toute la table est vidée
+-- DELETE FROM post;  ← supprime tous les posts de toutes les familles
 ```
 
-### 5.2 UPDATE avec RETURNING
+### DISTINCT
 
 ```sql
--- Recuperer les lignes modifiees
-UPDATE produit
-SET prix = prix * 1.10  -- augmentation de 10%
-WHERE categorie = 'peripherique'
-RETURNING id, nom, prix AS nouveau_prix;
+-- Familles ayant au moins un post (sans doublons)
+SELECT DISTINCT family_id FROM post;
+
+-- Auteurs uniques d'une famille
+SELECT DISTINCT author_id FROM post WHERE family_id = 'fam-1';
 ```
 
-### 5.3 UPDATE avec sous-requête
+`DISTINCT` déclenche un tri implicite pour éliminer les doublons — coûteux sur les grandes tables. Si tu en as besoin souvent, c'est souvent un signal de modèle à revoir.
+
+### Fonctions d'agrégation
 
 ```sql
--- Mettre a jour une colonne a partir d'une autre table
-UPDATE employe
-SET departement_id = (
-    SELECT id FROM departement WHERE code = 'IT'
-)
-WHERE poste LIKE '%developpeur%';
+-- Compter les posts d'une famille
+SELECT COUNT(*) AS nb_posts FROM post WHERE family_id = 'fam-1';
 
--- UPDATE avec FROM (syntaxe PostgreSQL)
-UPDATE employe e
-SET salaire = salaire * 1.05
-FROM departement d
-WHERE e.departement_id = d.id
-  AND d.nom = 'Recherche';
-```
-
-### 5.4 UPDATE conditionnel avec CASE
-
-```sql
--- Augmentation differenciee selon l'anciennete
-UPDATE employe
-SET salaire = salaire * CASE
-    WHEN cree_le < now() - INTERVAL '5 years' THEN 1.08   -- +8% pour 5+ ans
-    WHEN cree_le < now() - INTERVAL '2 years' THEN 1.05   -- +5% pour 2-5 ans
-    ELSE 1.03                                               -- +3% pour < 2 ans
-END
-WHERE est_actif = true
-RETURNING id, nom, salaire;
-```
-
----
-
-## 6. DELETE — supprimer des donnees
-
-### 6.1 Syntaxe de base
-
-```sql
--- Supprimer des lignes specifiques
-DELETE FROM produit WHERE id = 42;
-
--- Supprimer avec condition complexe
-DELETE FROM produit
-WHERE en_stock = false
-  AND modifie_le < now() - INTERVAL '1 year';
-
--- RETURNING : savoir ce qu'on a supprime
-DELETE FROM produit
-WHERE categorie = 'obsolete'
-RETURNING id, nom;
-
--- ATTENTION : sans WHERE, TOUTES les lignes sont supprimees !
-DELETE FROM produit;  -- supprime tout le contenu
-```
-
-### 6.2 DELETE avec sous-requête
-
-```sql
--- Supprimer les employes des departements fermes
-DELETE FROM employe
-WHERE departement_id IN (
-    SELECT id FROM departement WHERE est_ferme = true
-);
-
--- Syntaxe USING (PostgreSQL specifique)
-DELETE FROM employe e
-USING departement d
-WHERE e.departement_id = d.id
-  AND d.est_ferme = true;
-```
-
-### 6.3 TRUNCATE — vider une table entièrement
-
-```sql
--- TRUNCATE : beaucoup plus rapide que DELETE pour vider une table
-TRUNCATE TABLE produit;
-
--- TRUNCATE avec reinitialisation de la sequence
-TRUNCATE TABLE produit RESTART IDENTITY;
-
--- TRUNCATE en cascade (vide aussi les tables dependantes)
-TRUNCATE TABLE departement CASCADE;
-```
-
-| Aspect | `DELETE FROM table` | `TRUNCATE TABLE table` |
-|---|---|---|
-| **Vitesse** | Lent (supprime ligne par ligne) | Très rapide (desalloue les pages) |
-| **WHERE** | Oui | Non (tout ou rien) |
-| **RETURNING** | Oui | Non |
-| **Triggers** | Oui (FOR EACH ROW) | Non (sauf FOR EACH STATEMENT) |
-| **Transactionnel** | Oui | Oui (en PostgreSQL !) |
-| **VACUUM nécessaire** | Oui | Non |
-| **Reinitialiser SERIAL** | Non | Oui (avec RESTART IDENTITY) |
-
----
-
-## 7. Fonctions d'agregation
-
-Les fonctions d'agregation calculent une valeur à partir d'un **ensemble** de lignes.
-
-### 7.1 Les fonctions de base
-
-```sql
--- COUNT : nombre de lignes
-SELECT COUNT(*) AS total FROM produit;                    -- toutes les lignes
-SELECT COUNT(telephone) AS avec_tel FROM employe;          -- lignes ou telephone IS NOT NULL
-SELECT COUNT(DISTINCT categorie) AS nb_categories FROM produit;  -- valeurs uniques
-
--- SUM : somme
-SELECT SUM(prix) AS valeur_totale FROM produit WHERE en_stock = true;
-
--- AVG : moyenne
-SELECT AVG(prix)::NUMERIC(10,2) AS prix_moyen FROM produit;
-
--- MIN / MAX
+-- Statistiques temporelles
 SELECT
-    MIN(prix) AS moins_cher,
-    MAX(prix) AS plus_cher,
-    MAX(prix) - MIN(prix) AS ecart
-FROM produit;
+  COUNT(*)          AS total_posts,
+  MIN(created_at)   AS premier_post,
+  MAX(created_at)   AS dernier_post
+FROM post
+WHERE family_id = 'fam-1';
+```
 
--- Tout en une requete
+`COUNT(*)` compte toutes les lignes y compris celles avec des `NULL`. `COUNT(col)` ignore les `NULL` de cette colonne.
+
+### GROUP BY et HAVING
+
+```sql
+-- Nombre de posts par famille
 SELECT
-    COUNT(*) AS total,
-    SUM(prix) AS somme,
-    AVG(prix)::NUMERIC(10,2) AS moyenne,
-    MIN(prix) AS minimum,
-    MAX(prix) AS maximum,
-    STDDEV(prix)::NUMERIC(10,2) AS ecart_type
-FROM produit;
-```
+  family_id,
+  COUNT(*) AS nb_posts
+FROM post
+GROUP BY family_id
+ORDER BY nb_posts DESC;
 
-> **Piege classique** : `AVG` et `SUM` ignorent les valeurs `NULL`. Si tu as 10 lignes dont 3 avec `NULL`, `AVG` calcule la moyenne sur 7 lignes, pas 10. Utilise `COALESCE(colonne, 0)` si tu veux traiter les `NULL` comme des zeros :
-
-```sql
--- Moyenne sur les non-NULL uniquement (par defaut)
-SELECT AVG(note) FROM avis; -- 4.2 (sur 7 avis non-NULL)
-
--- Moyenne incluant les NULL comme 0
-SELECT AVG(COALESCE(note, 0)) FROM avis; -- 2.94 (sur 10 avis)
-```
-
-### 7.2 Fonctions d'agregation avancees
-
-```sql
--- STRING_AGG : concatener des valeurs texte
+-- Familles avec plus de 5 posts (filtre appliqué après regroupement)
 SELECT
-    categorie,
-    STRING_AGG(nom, ', ' ORDER BY nom) AS produits
-FROM produit
-GROUP BY categorie;
--- peripherique | Clavier mecanique, Souris sans fil, Webcam HD
+  family_id,
+  COUNT(*) AS nb_posts
+FROM post
+GROUP BY family_id
+HAVING COUNT(*) > 5
+ORDER BY nb_posts DESC;
+```
 
--- ARRAY_AGG : collecter les valeurs dans un tableau
+**Ordre logique d'exécution :** `FROM` → `WHERE` → `GROUP BY` → `HAVING` → `SELECT` → `ORDER BY` → `LIMIT`.
+
+`WHERE` filtre les lignes **avant** le regroupement. `HAVING` filtre les groupes **après**. Toujours préférer `WHERE` pour les filtres sélectifs.
+
+Toute colonne dans `SELECT` hors d'une agrégation **doit** apparaître dans `GROUP BY`. Sinon PostgreSQL lève une erreur.
+
+## 3. Worked examples
+
+### Exemple A — créer une famille et ses premiers posts
+
+Objectif : insérer la famille, chaîner sur son `id` retourné par `RETURNING`, insérer trois posts en une requête batch.
+
+```sql
+-- Étape 1 : créer la famille, récupérer son id immédiatement
+INSERT INTO family (name, created_by)
+VALUES ('Les Bertrand', 'u-55')
+RETURNING id, name, created_at;
+-- → { id: 'fam-b3c9', name: 'Les Bertrand', created_at: '2026-07-01T10:00:00Z' }
+
+-- Étape 2 : insérer trois posts en batch avec l'id récupéré
+INSERT INTO post (family_id, author_id, content) VALUES
+  ('fam-b3c9', 'u-55', 'Bienvenue dans notre espace !'),
+  ('fam-b3c9', 'u-55', 'Première photo de famille ajoutée'),
+  ('fam-b3c9', 'u-56', 'Contente d''être dans ce groupe')
+RETURNING id, author_id, created_at;
+```
+
+Pas-à-pas : (1) `RETURNING id` dans le premier INSERT évite un SELECT de confirmation ; l'`id` sert immédiatement pour les INSERT suivants sans aller-retour supplémentaire. (2) L'INSERT batch est environ 10× plus rapide que trois INSERT individuels : un seul parse/plan/WAL write pour les trois lignes. (3) `RETURNING` sur le batch retourne les trois lignes — utile pour loguer ou confirmer côté applicatif.
+
+### Exemple B — lister et analyser l'activité des familles
+
+Objectif : produire le feed des 20 posts récents d'une famille et le classement des familles les plus actives.
+
+```sql
+-- Feed des 20 derniers posts de la famille
 SELECT
-    categorie,
-    ARRAY_AGG(nom ORDER BY prix DESC) AS produits
-FROM produit
-GROUP BY categorie;
--- peripherique | {Webcam HD, Clavier mecanique, Souris sans fil}
+  p.id,
+  p.content,
+  p.author_id,
+  p.created_at
+FROM post p
+WHERE p.family_id = 'fam-1'
+ORDER BY p.created_at DESC
+LIMIT 20;
 
--- BOOL_AND / BOOL_OR
+-- Classement des 5 familles les plus actives (au moins 3 posts)
 SELECT
-    categorie,
-    BOOL_AND(en_stock) AS tous_en_stock,
-    BOOL_OR(en_stock) AS au_moins_un_en_stock
-FROM produit
-GROUP BY categorie;
-
--- PERCENTILE (fonctions d'ensemble ordonne)
-SELECT
-    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY prix) AS mediane,
-    PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY prix) AS p95
-FROM produit;
-```
-
----
-
-## 8. GROUP BY et HAVING
-
-### 8.1 GROUP BY
-
-`GROUP BY` regroupe les lignes qui ont les memes valeurs et permet d'appliquer des fonctions d'agregation par groupe.
-
-```sql
--- Nombre de produits par categorie
-SELECT
-    categorie,
-    COUNT(*) AS nb_produits,
-    AVG(prix)::NUMERIC(10,2) AS prix_moyen,
-    MIN(prix) AS moins_cher,
-    MAX(prix) AS plus_cher
-FROM produit
-GROUP BY categorie
-ORDER BY nb_produits DESC;
-```
-
-```
- Resultat :
- ┌───────────────┬────────────┬────────────┬────────────┬───────────┐
- │  categorie    │ nb_produits│ prix_moyen │ moins_cher │ plus_cher │
- ├───────────────┼────────────┼────────────┼────────────┼───────────┤
- │ peripherique  │     3      │   61.66    │   34.99    │  89.99    │
- │ accessoire    │     2      │   24.99    │   19.99    │  29.99    │
- │ ecran         │     1      │  349.00    │  349.00    │ 349.00    │
- │ cable         │     1      │   12.50    │   12.50    │  12.50    │
- │ audio         │     1      │  149.99    │  149.99    │ 149.99    │
- └───────────────┴────────────┴────────────┴────────────┴───────────┘
-```
-
-> **Piege classique** : Toute colonne dans le `SELECT` qui n'est PAS dans une fonction d'agregation DOIT etre dans le `GROUP BY`. Sinon PostgreSQL ne sait pas quelle valeur afficher pour le groupe.
-
-```sql
--- ERREUR : "nom" n'est ni dans GROUP BY ni dans une agregation
-SELECT categorie, nom, COUNT(*) FROM produit GROUP BY categorie;
--- ERROR: column "produit.nom" must appear in the GROUP BY clause
--- or be used in an aggregate function
-
--- CORRECT
-SELECT categorie, COUNT(*), STRING_AGG(nom, ', ') FROM produit GROUP BY categorie;
-```
-
-### 8.2 GROUP BY avec plusieurs colonnes
-
-```sql
--- Statistiques par categorie ET par disponibilite
-SELECT
-    categorie,
-    en_stock,
-    COUNT(*) AS total,
-    SUM(prix) AS valeur
-FROM produit
-GROUP BY categorie, en_stock
-ORDER BY categorie, en_stock;
-```
-
-### 8.3 HAVING — filtrer les groupes
-
-`HAVING` est au `GROUP BY` ce que `WHERE` est au `SELECT` : un filtre. Mais `HAVING` s'applique **après** le regroupement, sur les résultats agreges.
-
-```sql
--- Categories avec plus de 2 produits
-SELECT
-    categorie,
-    COUNT(*) AS nb_produits
-FROM produit
-GROUP BY categorie
-HAVING COUNT(*) > 2;
-
--- Categories dont le prix moyen depasse 50 EUR
-SELECT
-    categorie,
-    AVG(prix)::NUMERIC(10,2) AS prix_moyen,
-    COUNT(*) AS nb_produits
-FROM produit
-WHERE en_stock = true          -- WHERE filtre AVANT le GROUP BY
-GROUP BY categorie
-HAVING AVG(prix) > 50         -- HAVING filtre APRES le GROUP BY
-ORDER BY prix_moyen DESC;
-```
-
-> **Ce qu'il faut retenir** : L'ordre d'exécution logique d'une requête SQL est :
->
-> 1. `FROM` (quelle table ?)
-> 2. `WHERE` (filtrer les lignes)
-> 3. `GROUP BY` (regrouper)
-> 4. `HAVING` (filtrer les groupes)
-> 5. `SELECT` (choisir les colonnes)
-> 6. `DISTINCT` (eliminer les doublons)
-> 7. `ORDER BY` (trier)
-> 8. `LIMIT` / `OFFSET` (paginer)
-
-```
- Ordre d'execution logique :
- ┌──────────┐
- │  FROM    │  1. Identifier la/les table(s)
- └────┬─────┘
-      ▼
- ┌──────────┐
- │  WHERE   │  2. Filtrer les lignes individuelles
- └────┬─────┘
-      ▼
- ┌──────────┐
- │ GROUP BY │  3. Regrouper les lignes restantes
- └────┬─────┘
-      ▼
- ┌──────────┐
- │  HAVING  │  4. Filtrer les groupes
- └────┬─────┘
-      ▼
- ┌──────────┐
- │  SELECT  │  5. Calculer les expressions, alias
- └────┬─────┘
-      ▼
- ┌──────────┐
- │ ORDER BY │  6. Trier les resultats
- └────┬─────┘
-      ▼
- ┌──────────┐
- │  LIMIT   │  7. Limiter le nombre de resultats
- └──────────┘
-```
-
----
-
-## 9. Sous-requêtes
-
-### 9.1 Sous-requête scalaire (retourne une seule valeur)
-
-```sql
--- Produits plus chers que la moyenne
-SELECT nom, prix
-FROM produit
-WHERE prix > (SELECT AVG(prix) FROM produit);
-
--- Employes du departement qui a le plus d'effectifs
-SELECT nom, prenom
-FROM employe
-WHERE departement_id = (
-    SELECT departement_id
-    FROM employe
-    GROUP BY departement_id
-    ORDER BY COUNT(*) DESC
-    LIMIT 1
-);
-```
-
-### 9.2 Sous-requête avec IN
-
-```sql
--- Employes qui travaillent dans un departement a Paris
-SELECT nom, prenom
-FROM employe
-WHERE departement_id IN (
-    SELECT id FROM departement WHERE ville = 'Paris'
-);
-
--- Produits qui n'ont jamais ete commandes
-SELECT nom
-FROM produit
-WHERE id NOT IN (
-    SELECT DISTINCT produit_id FROM ligne_commande
-    WHERE produit_id IS NOT NULL  -- IMPORTANT : eviter le piege NOT IN + NULL
-);
-```
-
-> **Piege classique** : `NOT IN` avec une sous-requête qui contient des `NULL` retourne un ensemble VIDE. C'est contre-intuitif mais logique : `2 NOT IN (1, NULL)` → `NULL` (pas `true`), et `WHERE NULL` ne garde rien. Utilise `NOT EXISTS` à la place.
-
-### 9.3 Sous-requête avec EXISTS
-
-```sql
--- Employes qui ont au moins un projet
-SELECT e.nom, e.prenom
-FROM employe e
-WHERE EXISTS (
-    SELECT 1 FROM employe_projet ep WHERE ep.employe_id = e.id
-);
-
--- Employes qui n'ont aucun projet
-SELECT e.nom, e.prenom
-FROM employe e
-WHERE NOT EXISTS (
-    SELECT 1 FROM employe_projet ep WHERE ep.employe_id = e.id
-);
-```
-
-> **Ce qu'il faut retenir** : `EXISTS` est généralement **plus performant** que `IN` pour les sous-requêtes correlees, car il s'arrete des qu'il trouve une correspondance (`short-circuit`). Privilegie `EXISTS` / `NOT EXISTS` quand c'est possible.
-
-### 9.4 Sous-requête dans le FROM (table derivee)
-
-```sql
--- Statistiques par categorie, puis filtrage
-SELECT *
-FROM (
-    SELECT
-        categorie,
-        COUNT(*) AS nb,
-        AVG(prix)::NUMERIC(10,2) AS prix_moyen
-    FROM produit
-    GROUP BY categorie
-) AS stats
-WHERE stats.nb >= 2 AND stats.prix_moyen > 30;
-```
-
-### 9.5 CTE (Common Table Expression) — WITH
-
-Les CTE rendent les requêtes complexes lisibles et maintenables.
-
-```sql
--- Meme requete avec CTE (beaucoup plus lisible)
-WITH stats_categorie AS (
-    SELECT
-        categorie,
-        COUNT(*) AS nb,
-        AVG(prix)::NUMERIC(10,2) AS prix_moyen
-    FROM produit
-    GROUP BY categorie
-)
-SELECT *
-FROM stats_categorie
-WHERE nb >= 2 AND prix_moyen > 30;
-
--- CTE multiples
-WITH
-employes_it AS (
-    SELECT e.*
-    FROM employe e
-    JOIN departement d ON e.departement_id = d.id
-    WHERE d.code = 'IT'
-),
-projets_actifs AS (
-    SELECT *
-    FROM projet
-    WHERE fin IS NULL OR fin > CURRENT_DATE
-)
-SELECT
-    e.nom,
-    e.prenom,
-    p.titre AS projet
-FROM employes_it e
-JOIN employe_projet ep ON e.id = ep.employe_id
-JOIN projets_actifs p ON ep.projet_id = p.id;
-```
-
----
-
-## 10. Requetes parametrees et protection SQL injection (Node.js)
-
-### 10.1 Le danger de l'injection SQL
-
-```typescript
-// MAUVAIS : injection SQL possible !!!
-const nom = "'; DROP TABLE utilisateur; --";
-const query = `SELECT * FROM utilisateur WHERE nom = '${nom}'`;
-// Resultat : SELECT * FROM utilisateur WHERE nom = ''; DROP TABLE utilisateur; --'
-// La table est SUPPRIMEE !
-```
-
-> **Analogie** : L'injection SQL, c'est comme si tu demandais a quelqu'un de remplir un formulaire, et au lieu d'écrire son nom, il écrit des instructions qui modifient le formulaire lui-même. Les requêtes parametrees empechent cela en separant les donnees des instructions.
-
-### 10.2 Requetes parametrees avec pg
-
-```typescript
-// fichier : securise.mjs
-// Demonstration de requetes parametrees securisees
-
-import pg from 'pg';
-const { Pool } = pg;
-
-const pool = new Pool({
-  host: 'localhost',
-  port: 5432,
-  database: 'cours',
-  user: 'postgres',
-  password: 'postgres',
-});
-
-async function main() {
-  // BON : requete parametree avec $1, $2, $3
-  // Les valeurs sont envoyees separement du SQL → impossible d'injecter
-  const nom = "O'Brien";  // meme les apostrophes sont gerees
-  const resultat = await pool.query(
-    'SELECT * FROM employe WHERE nom = $1',
-    [nom]
-  );
-  console.log('Resultats :', resultat.rows);
-
-  // INSERT parametree
-  const nouvel_employe = {
-    prenom: 'Jean',
-    nom: 'Dupont',
-    email: 'jean.dupont@example.com',
-    poste: 'Developpeur',
-    salaire: 45000,
-  };
-
-  const insertion = await pool.query(
-    `INSERT INTO employe (prenom, nom, email, poste, salaire)
-     VALUES ($1, $2, $3, $4, $5)
-     RETURNING id`,
-    [
-      nouvel_employe.prenom,
-      nouvel_employe.nom,
-      nouvel_employe.email,
-      nouvel_employe.poste,
-      nouvel_employe.salaire,
-    ]
-  );
-  console.log('Employe cree avec ID :', insertion.rows[0].id);
-
-  // SELECT avec plusieurs parametres
-  const recherche = await pool.query(
-    `SELECT nom, prenom, salaire
-     FROM employe
-     WHERE salaire BETWEEN $1 AND $2
-       AND departement_id = $3
-     ORDER BY salaire DESC`,
-    [30000, 60000, 1]
-  );
-  console.log('Employes trouves :', recherche.rows.length);
-
-  // UPDATE parametree
-  const mise_a_jour = await pool.query(
-    `UPDATE employe
-     SET salaire = $1, modifie_le = now()
-     WHERE id = $2
-     RETURNING nom, salaire`,
-    [48000, insertion.rows[0].id]
-  );
-  console.log('Mis a jour :', mise_a_jour.rows[0]);
-
-  // DELETE parametree
-  const suppression = await pool.query(
-    'DELETE FROM employe WHERE id = $1 RETURNING nom',
-    [insertion.rows[0].id]
-  );
-  console.log('Supprime :', suppression.rows[0].nom);
-
-  await pool.end();
-}
-
-main();
-```
-
-### 10.3 Pattern d'acces aux donnees (DAO)
-
-```typescript
-// fichier : dao/produit-dao.mjs
-// Data Access Object pour la table produit
-
-import pg from 'pg';
-const { Pool } = pg;
-
-const pool = new Pool({
-  host: 'localhost',
-  port: 5432,
-  database: 'cours',
-  user: 'postgres',
-  password: 'postgres',
-});
-
-export const produitDAO = {
-  // Lire tous les produits
-  async findAll({ limit = 20, offset = 0 } = {}) {
-    const { rows } = await pool.query(
-      'SELECT * FROM produit ORDER BY id LIMIT $1 OFFSET $2',
-      [limit, offset]
-    );
-    return rows;
-  },
-
-  // Lire un produit par ID
-  async findById(id) {
-    const { rows } = await pool.query(
-      'SELECT * FROM produit WHERE id = $1',
-      [id]
-    );
-    return rows[0] || null;
-  },
-
-  // Rechercher par nom (insensible a la casse)
-  async searchByNom(terme) {
-    const { rows } = await pool.query(
-      'SELECT * FROM produit WHERE nom ILIKE $1 ORDER BY nom',
-      [`%${terme}%`]
-    );
-    return rows;
-  },
-
-  // Creer un produit
-  async create({ nom, prix, categorie }) {
-    const { rows } = await pool.query(
-      `INSERT INTO produit (nom, prix, categorie)
-       VALUES ($1, $2, $3)
-       RETURNING *`,
-      [nom, prix, categorie]
-    );
-    return rows[0];
-  },
-
-  // Mettre a jour un produit
-  async update(id, { nom, prix, categorie }) {
-    const { rows } = await pool.query(
-      `UPDATE produit
-       SET nom = COALESCE($1, nom),
-           prix = COALESCE($2, prix),
-           categorie = COALESCE($3, categorie),
-           modifie_le = now()
-       WHERE id = $4
-       RETURNING *`,
-      [nom, prix, categorie, id]
-    );
-    return rows[0] || null;
-  },
-
-  // Supprimer un produit
-  async delete(id) {
-    const { rows } = await pool.query(
-      'DELETE FROM produit WHERE id = $1 RETURNING *',
-      [id]
-    );
-    return rows[0] || null;
-  },
-};
-```
-
----
-
-## 11. COPY et bulk operations
-
-### 11.1 COPY — import/export haute performance
-
-```sql
--- Exporter une table vers un fichier CSV
-COPY produit TO '/tmp/produits.csv' WITH (FORMAT csv, HEADER true);
-
--- Importer un fichier CSV dans une table
-COPY produit (nom, prix, categorie)
-FROM '/tmp/produits.csv'
-WITH (FORMAT csv, HEADER true);
-
--- Avec des options avancees
-COPY produit TO '/tmp/produits.csv'
-WITH (
-    FORMAT csv,
-    HEADER true,
-    DELIMITER ';',
-    NULL 'N/A',
-    QUOTE '"',
-    ENCODING 'UTF8'
-);
-```
-
-### 11.2 \copy depuis psql (cote client)
-
-```sql
--- \copy fonctionne cote client (pas besoin d'acces filesystem serveur)
-\copy produit TO 'produits.csv' WITH (FORMAT csv, HEADER true)
-\copy produit FROM 'produits.csv' WITH (FORMAT csv, HEADER true)
-```
-
-### 11.3 Bulk insert depuis Node.js
-
-```typescript
-// fichier : bulk-insert.mjs
-// Insertion massive avec pg-copy-streams ou multi-VALUES
-
-import pg from 'pg';
-const { Pool } = pg;
-
-const pool = new Pool({
-  host: 'localhost',
-  port: 5432,
-  database: 'cours',
-  user: 'postgres',
-  password: 'postgres',
-});
-
-// Methode 1 : Multi-VALUES (bon pour < 10 000 lignes)
-async function bulkInsertValues(produits) {
-  // Construire la requete parametree dynamiquement
-  const valeurs = [];
-  const params = [];
-  let index = 1;
-
-  for (const p of produits) {
-    valeurs.push(`($${index++}, $${index++}, $${index++})`);
-    params.push(p.nom, p.prix, p.categorie);
-  }
-
-  const sql = `
-    INSERT INTO produit (nom, prix, categorie)
-    VALUES ${valeurs.join(', ')}
-    RETURNING id
-  `;
-
-  const { rows } = await pool.query(sql, params);
-  return rows;
-}
-
-// Methode 2 : UNNEST (plus propre, recommandee pour PostgreSQL)
-async function bulkInsertUnnest(produits) {
-  const noms = produits.map(p => p.nom);
-  const prix = produits.map(p => p.prix);
-  const categories = produits.map(p => p.categorie);
-
-  const { rows } = await pool.query(
-    `INSERT INTO produit (nom, prix, categorie)
-     SELECT * FROM UNNEST($1::text[], $2::numeric[], $3::text[])
-     RETURNING id`,
-    [noms, prix, categories]
-  );
-  return rows;
-}
-
-// Utilisation
-async function main() {
-  const produits = Array.from({ length: 1000 }, (_, i) => ({
-    nom: `Produit ${i + 1}`,
-    prix: Math.round(Math.random() * 10000) / 100,
-    categorie: ['electronique', 'vetement', 'alimentation'][i % 3],
-  }));
-
-  console.time('Multi-VALUES');
-  const ids1 = await bulkInsertValues(produits);
-  console.timeEnd('Multi-VALUES');
-  console.log(`${ids1.length} produits inseres.`);
-
-  await pool.end();
-}
-
-main();
-```
-
----
-
-## 12. Exercice mental
-
-Avant de passer au module suivant, ecris mentalement (où sur papier) les requêtes pour :
-
-1. **Trouver les 5 produits les plus chers** de la categorie 'electronique'
-2. **Compter le nombre d'employes par departement**, en n'affichant que les departements avec plus de 3 employes
-3. **Trouver les produits dont le prix est superieur à la moyenne de leur categorie** (indice : sous-requête correlee)
-4. **Faire un upsert** : inserer un employe, et si l'email existe déjà, mettre a jour le nom et le poste
-
-### Solutions
-
-```sql
--- 1. Top 5 produits les plus chers en electronique
-SELECT nom, prix
-FROM produit
-WHERE categorie = 'electronique'
-ORDER BY prix DESC
+  f.name,
+  COUNT(p.id)       AS nb_posts,
+  MAX(p.created_at) AS dernier_post
+FROM family f
+JOIN post p ON p.family_id = f.id
+GROUP BY f.id, f.name
+HAVING COUNT(p.id) >= 3
+ORDER BY nb_posts DESC
 LIMIT 5;
-
--- 2. Departements avec plus de 3 employes
-SELECT d.nom, COUNT(*) AS effectif
-FROM employe e
-JOIN departement d ON e.departement_id = d.id
-GROUP BY d.nom
-HAVING COUNT(*) > 3
-ORDER BY effectif DESC;
-
--- 3. Produits plus chers que la moyenne de leur categorie
-SELECT p.nom, p.prix, p.categorie
-FROM produit p
-WHERE p.prix > (
-    SELECT AVG(p2.prix)
-    FROM produit p2
-    WHERE p2.categorie = p.categorie
-);
-
--- 4. Upsert employe
-INSERT INTO employe (prenom, nom, email, poste)
-VALUES ('Marie', 'Curie', 'marie.curie@lab.fr', 'Chercheur')
-ON CONFLICT (email) DO UPDATE
-SET nom = EXCLUDED.nom,
-    poste = EXCLUDED.poste,
-    modifie_le = now();
 ```
 
----
+Pas-à-pas : (1) `ORDER BY created_at DESC LIMIT 20` avec un index sur `(family_id, created_at)` permet à PostgreSQL de lire exactement 20 lignes via l'index — pas de scan complet de la table. (2) `COUNT(p.id)` plutôt que `COUNT(*)` : si on passait à un `LEFT JOIN`, les familles sans post auraient `p.id = NULL` et `COUNT(p.id)` retournerait 0 là où `COUNT(*)` retournerait 1 — prendre l'habitude maintenant. (3) `GROUP BY f.id, f.name` : `f.id` suffit fonctionnellement (PK → `f.name` dépendant), mais PostgreSQL requiert que `f.name` soit dans le `GROUP BY` puisqu'il est dans le `SELECT` sans agrégation.
 
-## Navigation
+## 4. Pièges & misconceptions
 
-| | Lien |
-|---|---|
-| Module précédent | [Module 01 — Le modèle relationnel](./01-modele-relationnel.md) |
-| Module suivant | [Module 03 — Relations & Jointures](./03-relations-et-jointures.md) |
-| Lab associe | [Lab 02 — CRUD operations](../labs/lab-02.md) |
+- **UPDATE / DELETE sans WHERE.** `UPDATE post SET content = ''` vide le contenu de **tous** les posts. `DELETE FROM post` supprime **toute** la table. *Correct* : tester avec `SELECT * FROM post WHERE <condition>` avant d'exécuter, ou ouvrir un `BEGIN` et vérifier les lignes affectées avant `COMMIT` / `ROLLBACK`.
 
----
+- **Comparer à NULL avec `=`.** `WHERE author_id = NULL` ne retourne jamais rien — `NULL = NULL` retourne `NULL`, pas `true`. *Correct* : `WHERE author_id IS NULL` / `IS NOT NULL`.
 
-> **Ce qu'il faut retenir** : Les operations CRUD sont le pain quotidien du développeur SQL. `INSERT ... RETURNING` et `ON CONFLICT` sont des outils puissants spécifiques a PostgreSQL. Utilise TOUJOURS des requêtes parametrees ($1, $2...) en Node.js pour te proteger des injections SQL. Les fonctions d'agregation + GROUP BY + HAVING forment un trio indispensable pour l'analyse de donnees.
+- **`HAVING` à la place de `WHERE`.** Mettre `HAVING family_id = 'fam-1'` force PostgreSQL à agréger **toutes** les lignes puis à filtrer. *Correct* : `WHERE family_id = 'fam-1'` filtre **avant** le regroupement — beaucoup plus efficace et est planifiable via un index.
 
----
+- **Colonne SELECT non agrégée absente du GROUP BY.** `SELECT family_id, content, COUNT(*) FROM post GROUP BY family_id` déclenche `ERROR: column "post.content" must appear in the GROUP BY clause or be used in an aggregate function`. *Correct* : inclure `content` dans `GROUP BY` ou l'envelopper dans `STRING_AGG(content, ', ')`.
 
-<!-- parcours-recommande -->
+- **`OFFSET` lent sur les grandes tables.** `OFFSET 50000 LIMIT 20` force PostgreSQL à lire et ignorer 50 000 lignes — O(N). À page 2500 la requête peut dépasser 10 secondes. *Correct* : pagination keyset `WHERE created_at < $cursor ORDER BY created_at DESC LIMIT 20` — O(1) par index.
 
-::: tip Parcours recommandé
-1. **Screencast** : [screencast 02 crud et requêtes](../screencasts/screencast-02-crud-et-requetes.md)
-2. **Lab** : [lab-02-crud-complet](../labs/lab-02-crud-complet/README)
-3. **Quiz** : [quiz 02 crud et requêtes](../quizzes/quiz-02-crud-et-requetes.html)
-:::
+- **`RETURNING` n'est pas du SQL standard.** `RETURNING` est une extension PostgreSQL (supportée aussi par MariaDB ≥ 10.5, SQLite ≥ 3.35). Sur MySQL strict ou d'autres BDD, il faut adapter ou supprimer.
+
+## 5. Ancrage TribuZen
+
+Couche fil-rouge : **schéma + requêtes CRUD** dans `smaurier/tribuzen`. INSERT, SELECT, UPDATE et DELETE sur `family` et `post` sont les requêtes les plus fréquentes du produit :
+
+- `INSERT INTO family ... RETURNING id` (Exemple A) est le point d'entrée de toute création de famille : l'`id` UUID sert immédiatement pour le `family_member` du créateur — `RETURNING` n'est pas optionnel dans ce flux, il évite la race condition.
+- Le feed `ORDER BY created_at DESC LIMIT 20` (Exemple B) est la requête la plus fréquente de TribuZen : l'index `(family_id, created_at)` posé au module 05 (Index fondamentaux) la rend sous-milliseconde même à grande échelle.
+- `GROUP BY f.id HAVING COUNT(p.id) >= 3` produit la base du tableau de bord d'activité — données des notifications de relance ("ta famille n'a pas posté depuis 7 jours").
+- `DELETE FROM post WHERE id = $1 RETURNING id` confirme la suppression sans SELECT supplémentaire : le serveur peut répondre 204 uniquement si la ligne existait bien.
+- En session, toutes ces requêtes s'écrivent sur une vraie base PostgreSQL 17 locale (Docker), pas un sandbox — elles servent de base aux modules suivants (jointures, index, transactions).
+
+## 6. Points clés
+
+1. `INSERT ... RETURNING` récupère les colonnes de la ligne insérée (dont l'`id` auto-généré) en une seule opération — évite le `SELECT` de confirmation.
+2. L'INSERT batch `VALUES (r1), (r2), ...` est 10× à 100× plus rapide que N INSERT individuels : un seul cycle parse/plan/WAL write.
+3. `UPDATE` et `DELETE` sans `WHERE` modifient ou suppriment **toutes** les lignes — toujours tester avec un `SELECT` d'abord ou travailler dans une transaction.
+4. `NULL` n'est pas une valeur : toute comparaison avec `=` retourne `NULL`. Toujours `IS NULL` / `IS NOT NULL`.
+5. `WHERE` filtre les lignes **avant** le regroupement ; `HAVING` filtre les groupes **après** — les filtres sélectifs vont en `WHERE`.
+6. Toute colonne dans `SELECT` hors d'une agrégation doit être dans `GROUP BY`, sans quoi PostgreSQL lève une erreur.
+7. `DISTINCT` déclenche un tri implicite — coûteux sur les grandes tables.
+8. `OFFSET N` est O(N) — préférer la pagination keyset `WHERE col < $cursor` (O(1) par index).
+
+## 7. Seeds Anki
+
+```
+Qu'est-ce que RETURNING dans PostgreSQL ?|Extension PostgreSQL qui retourne les colonnes des lignes affectées par INSERT, UPDATE ou DELETE — évite un SELECT de confirmation séparé
+Pourquoi WHERE col = NULL ne retourne-t-il jamais rien ?|NULL n'est pas une valeur : toute comparaison avec = retourne NULL (pas false). Utiliser IS NULL ou IS NOT NULL
+Différence WHERE vs HAVING ?|WHERE filtre les lignes individuelles AVANT le GROUP BY ; HAVING filtre les groupes APRÈS — un filtre en WHERE est plus efficace car il réduit le volume avant l'agrégation
+Règle GROUP BY : quelle colonne doit y apparaître ?|Toute colonne dans SELECT qui n'est pas dans une agrégation (COUNT, SUM, AVG…) doit figurer dans GROUP BY — sinon erreur PostgreSQL
+Pourquoi OFFSET est-il lent sur les grandes tables ?|OFFSET N force PostgreSQL à lire et ignorer N lignes (coût O(N)) — la pagination keyset (WHERE col < curseur ORDER BY col LIMIT N) utilise l'index en O(1)
+Avantage de INSERT batch VALUES (r1),(r2)… sur N INSERT individuels ?|Un seul cycle parse/plan/WAL write pour toutes les lignes — 10× à 100× plus rapide
+Comment vérifier un UPDATE sûr en production ?|Tester la clause WHERE avec SELECT d'abord, ou ouvrir BEGIN et vérifier les lignes affectées avant COMMIT — sans WHERE toutes les lignes sont modifiées
+Différence COUNT(*) vs COUNT(col) ?|COUNT(*) compte toutes les lignes y compris celles avec NULL ; COUNT(col) ignore les lignes où col est NULL
+```
+
+## Pont vers le lab
+
+> Lab associé : `10-postgresql/labs/lab-02-crud-complet/`. Tu écris les requêtes CRUD complètes sur le schéma TribuZen (famille + posts) : INSERT avec RETURNING pour chaîner les ID, feed paginé avec ORDER BY et LIMIT, agrégation GROUP BY / HAVING pour le tableau de bord d'activité, UPDATE et DELETE avec RETURNING. Corrigé SQL complet commenté + variante J+30 dans le README du lab.

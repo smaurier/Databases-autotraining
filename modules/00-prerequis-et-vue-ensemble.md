@@ -1,622 +1,328 @@
-# Module 00 — Prérequis & Vue d'ensemble
-
-<!-- nav-cours-précédent -->
-
-> **Cours précédent** : [NestJS](../../09-nestjs/modules/26-graphql-nestjs.md). Si tu arrives ici sans avoir fait les cours précédents, consulte le [guide de démarrage](../../GUIDE-DEMARRAGE.md).
-
-> **Objectif** : Comprendre ce qu'est un SGBDR, pourquoi PostgreSQL est le choix de référence, installer un environnement de travail complet et etablir un premier contact avec la base de donnees via `psql` et Node.js.
->
-> **Difficulte** : ⭐ (débutant)
-
+---
+titre: Prérequis et vue d'ensemble
+cours: 10-postgresql
+notions: [rôle d'une base de données, SGBD relationnel, présentation de PostgreSQL, installation et client psql, tables lignes colonnes, types de base, exécuter une requête, objectif du cours]
+outcomes: [installer PostgreSQL et se connecter avec psql, exécuter des requêtes SQL de base, comprendre le modèle tables/lignes/colonnes, situer le parcours du cours]
+prerequis: [notions informatiques de base]
+next: 01-modele-relationnel
+libs: [{ name: postgresql, version: "17" }]
+tribuzen: mettre en place la base de données de TribuZen (première connexion, premières tables)
+last-reviewed: 2026-07
 ---
 
-## 1. Ce que ce cours va t'apprendre
+# Prérequis et vue d'ensemble
 
-Ce cours est un parcours complet a travers PostgreSQL, de la première requête `SELECT` jusqu'aux mécanismes internes du moteur. Voici les grandes compétences que tu vas acquerir :
+> **Outcomes — tu sauras FAIRE :** installer PostgreSQL via Docker et te connecter avec psql, exécuter tes premières requêtes SQL, comprendre le modèle tables/lignes/colonnes, et situer le plan du cours.
+> **Difficulté :** :star:
 
-| Domaine                  | Ce que tu sauras faire                                                        |
-| ------------------------ | ----------------------------------------------------------------------------- |
-| **SQL fondamental**      | Écrire des requêtes CRUD, des jointures, des sous-requêtes, des agregations   |
-| **Modelisation**         | Concevoir un schema relationnel normalise avec les bonnes contraintes         |
-| **Transactions**         | Gérer la concurrence, comprendre ACID, éviter les anomalies                   |
-| **Performance**          | Lire un plan d'exécution, créer les bons index, optimiser des requêtes lentes |
-| **Index avances**        | Utiliser GIN, GiST, BRIN selon le cas d'usage                                 |
-| **PostgreSQL internals** | Comprendre le WAL, le VACUUM, le query planner, les mécanismes MVCC           |
-| **Node.js + pg**         | Intégrer PostgreSQL dans une application backend JavaScript moderne           |
-| **Administration**       | Gérer les roles, les permissions, les backups, la surveillance                |
+## 1. Cas concret d'abord
 
-> **Analogie** : Imagine que PostgreSQL est une voiture de course. Ce cours t'apprend d'abord a conduire (SQL), puis à comprendre le moteur (internals), et enfin a regler les performances (tuning). Tu ne seras pas juste un conducteur, tu seras un mecanicien capable de diagnostiquer et optimiser.
+Tu démarres le backend de TribuZen. L'app gère des familles (`family`), des membres (`member_user`), et des invitations. Ces données doivent persister — survivre aux redémarrages du serveur, rester cohérentes si deux utilisateurs écrivent en même temps, être interrogeables avec des filtres.
 
-### Ce que ce cours n'est PAS
+Tu pourrais stocker ça dans un fichier JSON :
 
-- Ce n'est pas un cours de théorie pure : chaque concept est accompagne de code executable.
-- Ce n'est pas un cours Node.js : on suppose que tu connais les bases de JavaScript et les modules ES.
-- Ce n'est pas un cours d'administration système : on utilise Docker pour simplifier l'installation.
+```json
+{
+  "families": [
+    { "id": "fam-1", "name": "Les Dupont", "owner_id": "u-1" }
+  ],
+  "members": [
+    { "family_id": "fam-1", "user_id": "u-2" }
+  ]
+}
+```
 
----
+Problèmes immédiats : deux requêtes en parallèle corrompent le fichier. Pour lister les membres d'une famille avec leur email, tu charges tout en mémoire et filtres en JavaScript. Si tu supprimes `fam-1`, les membres orphelins restent — aucune contrainte ne les bloque.
 
-## 2. Qu'est-ce qu'un SGBDR
-
-### 2.1 Definition
-
-Un **SGBDR** (Système de Gestion de Base de Donnees Relationnelles) est un logiciel qui :
-
-1. **Stocke** des donnees structurees dans des tables (lignes et colonnes)
-2. **Garantit** l'integrite des donnees via des contraintes et des transactions
-3. **Permet** d'interroger les donnees via un langage standardise : **SQL**
-4. **Gere** les acces concurrents de multiples utilisateurs
-
-> **Analogie** : Un SGBDR, c'est comme une bibliotheque très bien organisee. Chaque livre (ligne) est range dans une etagere précisé (table), avec un système de classification (index). Le bibliothecaire (le moteur) sait exactement ou trouver chaque livre et géré les emprunts simultanement sans conflit.
-
-### 2.2 Comparaison avec d'autres approches de stockage
-
-| Critere               | Fichier texte/CSV    | Excel                 | NoSQL (MongoDB)               | SGBDR (PostgreSQL)              |
-| --------------------- | -------------------- | --------------------- | ----------------------------- | ------------------------------- |
-| **Structure**         | Libre, aucune        | Feuilles, cellules    | Documents flexibles (JSON)    | Tables, colonnes typees         |
-| **Integrite**         | Aucune               | Faible (formules)     | Faible (pas de schema impose) | Forte (contraintes, FK, CHECK)  |
-| **Concurrence**       | Aucune               | Fichier verrouille    | Bonne (document-level)        | Excellente (MVCC, transactions) |
-| **Requetes**          | `grep`, scripts      | Filtres, formules     | Aggregation pipeline          | SQL standardise                 |
-| **Relations**         | Manuelles            | Manuelles (VLOOKUP)   | Denormalisees (embedded)      | Jointures natives               |
-| **Transactions ACID** | Non                  | Non                   | Partiel (depuis 4.0)          | Oui, complet                    |
-| **Scalabilite**       | Limite (~MB)         | Limite (~1M lignes)   | Horizontale (sharding)        | Verticale + extensions          |
-| **Cas d'usage**       | Logs simples, config | Rapports, prototypage | Documents, real-time          | Applications metier, finance    |
-
-> **Piege classique** : Beaucoup de débutants pensent que NoSQL est "mieux" que SQL parce que c'est "plus moderne". En realite, les bases relationnelles restent le choix dominant pour toute application qui a besoin de coherence des donnees, de transactions fiables et de requêtes complexes. PostgreSQL supporte aussi le JSON (JSONB), ce qui offre le meilleur des deux mondes.
-
-### 2.3 Le langage SQL
-
-SQL (Structured Query Language) est un langage **declaratif** : tu dis **ce que tu veux**, pas **comment l'obtenir**.
+PostgreSQL résout les trois : **transactions** pour la concurrence, **SQL** pour les requêtes expressives, **clés étrangères** pour l'intégrité. Voici ce que tu vas installer et écrire dès ce module :
 
 ```sql
--- Tu dis : "donne-moi les utilisateurs actifs de Paris"
-SELECT nom, email
-FROM utilisateurs
-WHERE ville = 'Paris'
-  AND actif = true
-ORDER BY nom;
-
--- Tu ne dis PAS : "ouvre le fichier, lis ligne par ligne,
--- verifie si ville = Paris ET actif = true, trie par nom..."
-```
-
-> **Analogie** : SQL, c'est comme commander au restaurant. Tu dis "je veux le plat du jour avec une salade". Tu ne dis pas au chef comment couper les legumes, a quelle temperature cuire, etc. Le SGBDR (le chef) decide de la meilleure façon d'exécuter ta demandé.
-
-SQL se divise en plusieurs sous-langages :
-
-| Sous-langage                 | Acronyme | Exemples                               | Role                   |
-| ---------------------------- | -------- | -------------------------------------- | ---------------------- |
-| Data Definition Language     | **DDL**  | `CREATE`, `ALTER`, `DROP`              | Définir la structure   |
-| Data Manipulation Language   | **DML**  | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | Manipuler les donnees  |
-| Data Control Language        | **DCL**  | `GRANT`, `REVOKE`                      | Gérer les permissions  |
-| Transaction Control Language | **TCL**  | `BEGIN`, `COMMIT`, `ROLLBACK`          | Gérer les transactions |
-
----
-
-## 3. Pourquoi PostgreSQL
-
-### 3.1 Un peu d'histoire
-
-PostgreSQL à une histoire remarquable qui explique sa robustesse :
-
-| Annee | Événement                                                             |
-| ----- | --------------------------------------------------------------------- |
-| 1973  | Ingres, ancetre de PostgreSQL, nait a UC Berkeley                     |
-| 1986  | Le projet **POSTGRES** (Post-Ingres) demarre sous Michael Stonebraker |
-| 1995  | Ajout du support SQL → renomme **PostgreSQL**                         |
-| 1996  | Premier release open-source, communaute mondiale                      |
-| 2005  | Support natif du JSONB, extensions                                    |
-| 2017  | Replication logique, partitionnement declaratif                       |
-| 2023  | PostgreSQL 16 : parallelisme ameliore, performance I/O                |
-| 2024  | PostgreSQL 17 — JSON_TABLE, incremental backup, MERGE RETURNING       |
-| 2024  | PostgreSQL est elu "DBMS of the Year" par DB-Engines (4e fois)        |
-
-### 3.2 PostgreSQL vs les autres
-
-| Critere              | PostgreSQL                                            | MySQL                           | SQLite           | SQL Server      |
-| -------------------- | ----------------------------------------------------- | ------------------------------- | ---------------- | --------------- |
-| **Licence**          | PostgreSQL (MIT-like)                                 | GPL / Commercial                | Domaine public   | Commercial      |
-| **Conformite SQL**   | Très elevee                                           | Moyenne                         | Limitee          | Elevee          |
-| **Types de donnees** | Très riche (JSONB, arrays, ranges, hstore, geometric) | Standard                        | Standard         | Riche           |
-| **Extensions**       | Oui (PostGIS, pg_trgm, pgvector...)                   | Limitees                        | Non              | Limitees        |
-| **MVCC**             | Natif, complet                                        | Depend du moteur (InnoDB)       | WAL-mode         | Oui             |
-| **Full-text search** | Integre (tsvector, tsquery)                           | Basique                         | FTS5 (extension) | Integre         |
-| **Replication**      | Streaming + logique                                   | Basique                         | Non              | Oui             |
-| **Partitionnement**  | Declaratif (natif)                                    | Range, List, Hash               | Non              | Oui             |
-| **JSON**             | JSONB indexable (GIN)                                 | JSON (pas indexable nativement) | JSON1 extension  | JSON            |
-| **Parallelisme**     | Requetes paralleles                                   | Limite                          | Non              | Oui             |
-| **Prix**             | Gratuit                                               | Gratuit / payant                | Gratuit          | ~15 000 $/coeur |
-| **Communaute**       | Enorme, active                                        | Enorme                          | Moderee          | Corporate       |
-
-> **Ce qu'il faut retenir** : PostgreSQL est le SGBDR open-source le plus complet et le plus conforme aux standards SQL. Si tu ne sais pas quoi choisir, choisis PostgreSQL. Tu ne le regretteras pas.
-
-### 3.3 Qui utilise PostgreSQL
-
-PostgreSQL est utilise en production par des geants du web et de la finance :
-
-- **Apple** : iCloud, services backend
-- **Instagram** : stockage principal (des milliards de lignes)
-- **Spotify** : metadata des chansons et playlists
-- **Reddit** : base de donnees principale
-- **GitLab** : stockage de tous les repositories et metadata
-- **Banques** : Goldman Sachs, JP Morgan pour les systèmes transactionnels
-
----
-
-## 4. Architecture de PostgreSQL
-
-### 4.1 Vue d'ensemble
-
-PostgreSQL utilise un modèle **client-serveur** avec une architecture **multi-processus** (pas multi-thread).
-
-```
-                     Architecture PostgreSQL
- ┌──────────────────────────────────────────────────────────┐
- │                    Postmaster (PID 1)                     │
- │         Processus principal, accepte les connexions       │
- │                          │                                │
- │     ┌────────────────────┼────────────────────┐           │
- │     │                    │                    │           │
- │  ┌──▼──┐  ┌──────┐  ┌──▼──┐                             │
- │  │Back │  │Back  │  │Back │   Backend processes          │
- │  │end 1│  │end 2 │  │end 3│   (1 par connexion)          │
- │  └──┬──┘  └──┬───┘  └──┬──┘                             │
- │     │        │         │                                  │
- │     ▼        ▼         ▼                                  │
- │  ┌─────────────────────────────────┐                     │
- │  │       Shared Buffers            │  Memoire partagee    │
- │  │  (cache des pages de donnees)   │  (shared_buffers)    │
- │  └──────────────┬──────────────────┘                     │
- │                 │                                         │
- │     ┌───────────┼───────────┐                            │
- │     ▼           ▼           ▼                            │
- │  ┌──────┐  ┌────────┐  ┌──────────┐                     │
- │  │ WAL  │  │ Check  │  │ Autovac  │  Background workers  │
- │  │Writer│  │pointer │  │  uum     │                      │
- │  └──┬───┘  └───┬────┘  └──────────┘                     │
- │     │          │                                          │
- │     ▼          ▼                                          │
- │  ┌──────┐  ┌──────────┐                                  │
- │  │ WAL  │  │ Fichiers │   Stockage disque                │
- │  │files │  │ donnees  │   (PGDATA)                       │
- │  └──────┘  └──────────┘                                  │
- └──────────────────────────────────────────────────────────┘
-```
-
-### 4.2 Les composants principaux
-
-| Composant           | Role                                                                                  | Analogie                                                                              |
-| ------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| **Postmaster**      | Processus principal qui ecoute les connexions entrantes et fork un backend par client | Le maitre d'hotel qui accueille les clients et assigne un serveur a chacun            |
-| **Backend process** | Un processus dedie par connexion client, exécuté les requêtes                         | Le serveur qui s'occupe exclusivement de ta table                                     |
-| **Shared Buffers**  | Cache mémoire partage entre tous les backends, stocke les pages de donnees            | Le plan de travail commun en cuisine                                                  |
-| **WAL Writer**      | Ecrit les journaux de transactions (Write-Ahead Log) sur disque                       | Le scribe qui note chaque operation AVANT qu'elle soit effectuee                      |
-| **Checkpointer**    | Ecrit periodiquement les pages modifiees (dirty pages) du cache vers le disque        | Le comptable qui fait le bilan periodique                                             |
-| **Autovacuum**      | Nettoie les lignes mortes (tuples morts) laissees par MVCC                            | L'équipe de nettoyage qui passe après les clients                                     |
-| **WAL files**       | Journaux de transactions sur disque, garantissent la durabilite                       | Le journal de bord : même si le bateau coule, on peut reconstituer ce qui s'est passe |
-| **Data files**      | Les fichiers physiques contenant les tables et les index                              | Les etageres de la bibliotheque                                                       |
-
-### 4.3 Le cycle de vie d'une requête
-
-Quand tu executes `SELECT * FROM utilisateurs WHERE id = 42`, voici ce qui se passe :
-
-```
- Client (psql / Node.js)
-        │
-        │ 1. Connexion TCP
-        ▼
-    Postmaster
-        │
-        │ 2. Fork un backend
-        ▼
-  Backend process
-        │
-        │ 3. Parse SQL → arbre syntaxique
-        │ 4. Analyze → resolution des noms
-        │ 5. Rewrite → application des regles
-        │ 6. Plan → choix du meilleur plan d'execution
-        │ 7. Execute → lecture des donnees
-        │
-        │ 8. Cherche d'abord dans Shared Buffers
-        │    Si pas trouve → lit depuis le disque
-        │
-        │ 9. Renvoie les resultats au client
-        ▼
-    Client recoit les lignes
-```
-
-> **Exercice mental** : Quand PostgreSQL exécuté un `INSERT`, a quel moment les donnees sont-elles vraiment "en sécurité" ? Reponse : quand le WAL Writer a écrit l'entree dans le journal sur disque. Les donnees dans les Shared Buffers ne sont pas encore ecrites dans les fichiers de donnees — c'est le Checkpointer qui s'en charge plus tard.
-
----
-
-## 5. Setup : Docker, psql, pgAdmin
-
-### 5.1 Installation avec Docker
-
-Docker est la façon la plus simple et la plus propre d'installer PostgreSQL pour le développement.
-
-```bash
-# Telecharger et demarrer PostgreSQL 17
-docker run \
-  --name pg-cours \
-  -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_USER=postgres \
-  -e POSTGRES_DB=cours \
-  -p 5432:5432 \
-  -v pgdata:/var/lib/postgresql/data \
-  -d \
-  postgres:17
-
-# Verifier que le conteneur tourne
-docker ps
-
-# Voir les logs de PostgreSQL
-docker logs pg-cours
-```
-
-> **Piege classique** : N'oublie pas le flag `-v pgdata:/var/lib/postgresql/data`. Sans ce volume, tes donnees seront perdues à chaque redemarrage du conteneur. Le volume Docker persiste les donnees même si le conteneur est supprime.
-
-### 5.2 Se connecter avec psql
-
-`psql` est le client en ligne de commande officiel de PostgreSQL. C'est l'outil incontournable.
-
-```bash
-# Se connecter depuis Docker
-docker exec -it pg-cours psql -U postgres -d cours
-
-# Ou si psql est installe localement
-psql -h localhost -p 5432 -U postgres -d cours
-```
-
-### 5.3 Commandes psql essentielles
-
-| Commande         | Description                                         | Exemple            |
-| ---------------- | --------------------------------------------------- | ------------------ |
-| `\l`             | Lister toutes les bases de donnees                  | `\l`               |
-| `\c nomdb`       | Se connecter à une base                             | `\c cours`         |
-| `\dt`            | Lister les tables du schema courant                 | `\dt`              |
-| `\dt+`           | Lister les tables avec taille et description        | `\dt+`             |
-| `\d nomtable`    | Decrire une table (colonnes, types, contraintes)    | `\d utilisateurs`  |
-| `\d+ nomtable`   | Description detaillee (avec stockage, stats)        | `\d+ utilisateurs` |
-| `\di`            | Lister les index                                    | `\di`              |
-| `\dn`            | Lister les schemas                                  | `\dn`              |
-| `\du`            | Lister les roles/utilisateurs                       | `\du`              |
-| `\timing`        | Activer/désactiver l'affichage du temps d'exécution | `\timing`          |
-| `\x`             | Activer/désactiver l'affichage etendu (vertical)    | `\x`               |
-| `\e`             | Ouvrir l'editeur pour écrire une requête            | `\e`               |
-| `\i fichier.sql` | Exécuter un fichier SQL                             | `\i setup.sql`     |
-| `\q`             | Quitter psql                                        | `\q`               |
-| `\?`             | Aide sur les commandes psql                         | `\?`               |
-| `\h SELECT`      | Aide sur la syntaxe SQL                             | `\h CREATE TABLE`  |
-
-### 5.4 pgAdmin (interface graphique)
-
-```bash
-# Demarrer pgAdmin 4 via Docker
-docker run \
-  --name pgadmin \
-  -e PGADMIN_DEFAULT_EMAIL=admin@local.dev \
-  -e PGADMIN_DEFAULT_PASSWORD=admin \
-  -p 8080:80 \
-  --link pg-cours:pg-cours \
-  -d \
-  dpage/pgadmin4
-
-# Ouvrir http://localhost:8080 dans le navigateur
-# Ajouter un serveur : host=pg-cours, port=5432, user=postgres, password=postgres
-```
-
----
-
-## 6. Premier contact : psql basics
-
-### 6.1 Créer et explorer une base de donnees
-
-```sql
--- Creer une base de donnees
-CREATE DATABASE boutique;
-
--- Se connecter a cette base
-\c boutique
-
--- Creer une premiere table
-CREATE TABLE produits (
-    id          SERIAL PRIMARY KEY,
-    nom         TEXT NOT NULL,
-    prix        NUMERIC(10, 2) NOT NULL CHECK (prix >= 0),
-    en_stock    BOOLEAN DEFAULT true,
-    cree_le     TIMESTAMPTZ DEFAULT now()
+-- Dans psql, connecté à la base tribuzen
+CREATE TABLE family (
+    id         TEXT        PRIMARY KEY,
+    name       TEXT        NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Verifier la structure
-\d produits
+INSERT INTO family (id, name) VALUES ('fam-1', 'Les Dupont');
 
--- Inserer des donnees
-INSERT INTO produits (nom, prix) VALUES
-    ('Clavier mecanique', 89.99),
-    ('Souris ergonomique', 45.50),
-    ('Ecran 27 pouces', 349.00),
-    ('Cable USB-C', 12.99);
-
--- Voir les donnees
-SELECT * FROM produits;
-
--- Resultat :
---  id |        nom         |  prix  | en_stock |          cree_le
--- ----+--------------------+--------+----------+-------------------------------
---   1 | Clavier mecanique  |  89.99 | t        | 2024-01-15 10:30:00.123456+01
---   2 | Souris ergonomique |  45.50 | t        | 2024-01-15 10:30:00.123456+01
---   3 | Ecran 27 pouces    | 349.00 | t        | 2024-01-15 10:30:00.123456+01
---   4 | Cable USB-C        |  12.99 | t        | 2024-01-15 10:30:00.123456+01
+SELECT id, name FROM family;
+--  id    |   name
+-- -------+-----------
+--  fam-1 | Les Dupont
 ```
 
-### 6.2 Quelques requêtes de base
+Trois instructions SQL. Pas de bibliothèque, pas de code JavaScript. Tu te connectes, tu crées, tu interroges. Ce module explique comment arriver là et pose le socle de tout le cours.
+
+## 2. Théorie complète, concise
+
+### Rôle d'une base de données
+
+Une base de données fait quatre choses qu'un fichier JSON ne garantit pas :
+
+1. **Persistance structurée** — les données survivent aux redémarrages et respectent un schéma déclaré à l'avance.
+2. **Cohérence** — les contraintes (`NOT NULL`, `UNIQUE`, clé étrangère) sont vérifiées automatiquement à chaque écriture par le moteur.
+3. **Concurrence** — des milliers de lectures et écritures simultanées sans corruption de données.
+4. **Interrogation** — filtres, jointures, agrégations exprimés en SQL, exécutés par le moteur sans code applicatif de tri ou de boucle.
+
+### SGBD relationnel
+
+Un **SGBD** (Système de Gestion de Base de Données) est le logiciel qui gère la base. **Relationnel** signifie que les données sont organisées en **tables** liées entre elles par des références. Trois concepts fondamentaux :
+
+| Concept | Définition | Exemple TribuZen |
+|---------|-----------|-----------------|
+| **Table** | Ensemble de données de même nature | `family`, `member_user`, `invitation` |
+| **Ligne (tuple)** | Un enregistrement individuel | une famille spécifique |
+| **Colonne (attribut)** | Une propriété typée de chaque ligne | `name TEXT`, `created_at TIMESTAMPTZ` |
+
+Chaque table a une **clé primaire** — identifiant unique par ligne (`id`). Les tables se relient via des **clés étrangères** : `member.family_id` référence `family.id`, empêchant les membres orphelins.
+
+SQL (Structured Query Language) est le langage **déclaratif** qui interroge ces tables : tu décris *ce que tu veux*, pas *comment l'obtenir*. Le moteur choisit le plan d'exécution optimal.
+
+### Présentation de PostgreSQL
+
+PostgreSQL est un SGBD relationnel open-source lancé en 1986 à UC Berkeley, distribué sous licence PostgreSQL (MIT-like). Il est élu "DBMS of the Year" par DB-Engines en 2017, 2018, 2023 et 2024. Points clés pour ce cours :
+
+- **Conformité SQL très élevée** — ce que tu apprends ici est du SQL standard, transférable.
+- **Types riches** — `JSONB`, `ARRAY`, `UUID`, `TIMESTAMPTZ`, types géométriques, ranges.
+- **Extensions** — `PostGIS` (géo), `pgvector` (embeddings IA), `pg_trgm` (recherche approximative).
+- **MVCC natif** — les lectures ne bloquent pas les écritures (Multi-Version Concurrency Control, cf. module 09).
+- **WAL** — les données commitées survivent à un crash (Write-Ahead Log, cf. module 04).
+- **Gratuit et auto-hébergeable** — utilisé en production par Apple, Instagram, GitLab, Shopify.
+
+PostgreSQL 17 (octobre 2024) apporte `JSON_TABLE`, les sauvegardes incrémentales, et `MERGE RETURNING`.
+
+### Installation et client psql
+
+La façon la plus reproductible d'installer PostgreSQL en développement est Docker. Un seul `docker run` suffit :
+
+```bash
+docker run \
+  --name tribuzen-pg \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_DB=tribuzen \
+  -p 5432:5432 \
+  -v tribuzen-pgdata:/var/lib/postgresql/data \
+  -d \
+  postgres:17
+```
+
+`psql` est le client officiel en ligne de commande. Il se connecte au conteneur via `docker exec` :
+
+```bash
+docker exec -it tribuzen-pg psql -U postgres -d tribuzen
+```
+
+Le prompt `tribuzen=#` confirme la connexion. Les **méta-commandes** psql commencent par `\` et ne sont pas du SQL :
+
+| Commande | Action |
+|----------|--------|
+| `\l` | lister les bases de données |
+| `\c nomdb` | se connecter à une base |
+| `\dt` | lister les tables du schéma courant |
+| `\d nomtable` | décrire une table (colonnes, types, contraintes) |
+| `\timing` | afficher le temps d'exécution de chaque requête |
+| `\x` | basculer en affichage vertical (une colonne par ligne) |
+| `\i fichier.sql` | exécuter un fichier SQL |
+| `\q` | quitter psql |
+| `\h SELECT` | aide syntaxe d'une commande SQL |
+
+### Tables, lignes, colonnes, types de base
+
+Une table se déclare avec `CREATE TABLE`. Chaque colonne a un **type** qui contraint les valeurs acceptées :
 
 ```sql
--- Filtrer avec WHERE
-SELECT nom, prix FROM produits WHERE prix > 50;
-
--- Trier
-SELECT nom, prix FROM produits ORDER BY prix DESC;
-
--- Compter
-SELECT COUNT(*) AS total_produits FROM produits;
-
--- Moyenne des prix
-SELECT AVG(prix)::NUMERIC(10,2) AS prix_moyen FROM produits;
-
--- Mettre a jour
-UPDATE produits SET prix = 79.99 WHERE nom = 'Clavier mecanique';
-
--- Supprimer
-DELETE FROM produits WHERE id = 4;
-
--- Verifier
-SELECT * FROM produits;
+CREATE TABLE family (
+    id         TEXT        PRIMARY KEY,   -- identifiant unique, texte libre
+    name       TEXT        NOT NULL,      -- obligatoire, refuse NULL
+    max_size   INTEGER     DEFAULT 10,    -- entier, valeur par défaut
+    is_active  BOOLEAN     DEFAULT true,  -- vrai/faux
+    created_at TIMESTAMPTZ DEFAULT now() -- horodatage avec fuseau horaire
+);
 ```
 
----
+Types fondamentaux à retenir pour TribuZen :
 
-## 7. Node.js + pg driver : hello world complet
+| Type | Usage | Exemple |
+|------|-------|---------|
+| `TEXT` | chaîne de longueur variable | `'Les Dupont'` |
+| `INTEGER` | entier 32 bits | `10` |
+| `BIGINT` | entier 64 bits (compteurs, grands IDs) | `9007199254740992` |
+| `NUMERIC(p,s)` | décimal exact (finances) | `NUMERIC(10,2)` |
+| `BOOLEAN` | vrai/faux | `true`, `false` |
+| `TIMESTAMPTZ` | horodatage + fuseau UTC | `'2026-07-01 14:00+02'` |
+| `UUID` | identifiant universel unique | `gen_random_uuid()` |
+| `JSONB` | JSON binaire indexable | `'{"key": "val"}'` |
 
-### 7.1 Installation
+### Exécuter une requête
+
+Les quatre opérations CRUD en SQL sur TribuZen :
+
+```sql
+-- INSERT — créer une ligne
+INSERT INTO family (id, name) VALUES ('fam-1', 'Les Dupont');
+
+-- SELECT — lire des données
+SELECT id, name, created_at FROM family WHERE is_active = true ORDER BY name;
+
+-- UPDATE — modifier une ligne
+UPDATE family SET name = 'Dupont-Martin' WHERE id = 'fam-1';
+
+-- DELETE — supprimer une ligne
+DELETE FROM family WHERE id = 'fam-1';
+```
+
+Toute instruction SQL se termine par un **point-virgule** en psql. Sans lui, psql attend silencieusement la suite (prompt `tribuzen(#-`), sans exécuter ni afficher d'erreur.
+
+## 3. Worked examples
+
+### Exemple A — démarrer PostgreSQL et créer les premières tables TribuZen
+
+Objectif : lancer le conteneur, se connecter avec psql, créer les tables `family` et `member_user`, insérer des données et les lire.
 
 ```bash
-# Creer un nouveau projet
-mkdir pg-hello && cd pg-hello
-npm init -y
+# 1. Démarrer le conteneur PostgreSQL 17
+docker run \
+  --name tribuzen-pg \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_DB=tribuzen \
+  -p 5432:5432 \
+  -v tribuzen-pgdata:/var/lib/postgresql/data \
+  -d postgres:17
 
-# Installer le driver pg
-npm install pg
+# 2. Vérifier que le conteneur tourne
+docker ps
 
-# Ajouter "type": "module" dans package.json pour utiliser les imports ES
+# 3. Se connecter avec psql
+docker exec -it tribuzen-pg psql -U postgres -d tribuzen
 ```
 
-### 7.2 Premier script complet
+```sql
+-- 4. Créer la table family
+CREATE TABLE family (
+    id         TEXT        PRIMARY KEY,
+    name       TEXT        NOT NULL,
+    max_size   INTEGER     DEFAULT 10,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
 
-```typescript
-// fichier : index.mjs
-// Premier contact avec PostgreSQL depuis Node.js
+-- 5. Créer la table member_user (USER est un mot réservé SQL)
+CREATE TABLE member_user (
+    id           TEXT NOT NULL PRIMARY KEY,
+    email        TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    created_at   TIMESTAMPTZ DEFAULT now()
+);
 
-import pg from "pg";
-const { Pool } = pg;
+-- 6. Vérifier les structures créées
+\dt
+\d family
+\d member_user
 
-// Configuration de la connexion
-const pool = new Pool({
-  host: "localhost",
-  port: 5432,
-  database: "cours",
-  user: "postgres",
-  password: "postgres",
-  // Nombre maximum de connexions dans le pool
-  max: 10,
-  // Temps maximum d'attente pour une connexion (ms)
-  connectionTimeoutMillis: 5000,
-  // Temps maximum d'inactivite d'une connexion avant fermeture (ms)
-  idleTimeoutMillis: 30000,
-});
+-- 7. Insérer des données
+INSERT INTO family (id, name) VALUES
+    ('fam-1', 'Les Dupont'),
+    ('fam-2', 'Les Martin');
 
-// Gestion des erreurs du pool
-pool.on("error", (err: Error) => {
-  console.error("Erreur inattendue sur le pool :", err.message);
-  process.exit(1);
-});
+INSERT INTO member_user (id, email, display_name) VALUES
+    ('u-1', 'alice@tribu.fr', 'Alice Dupont'),
+    ('u-2', 'bob@tribu.fr',   'Bob Martin');
 
-async function main(): Promise<void> {
-  try {
-    // Test de connexion
-    const resultat = await pool.query("SELECT version()");
-    console.log("Connecte a PostgreSQL !");
-    console.log("Version :", resultat.rows[0].version);
-
-    // Creer une table
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS messages (
-        id    SERIAL PRIMARY KEY,
-        texte TEXT NOT NULL,
-        date  TIMESTAMPTZ DEFAULT now()
-      )
-    `);
-    console.log('Table "messages" creee (ou deja existante).');
-
-    // Inserer un message (requete parametree pour eviter les injections SQL)
-    const texte = "Bonjour PostgreSQL depuis Node.js !";
-    const insertion = await pool.query(
-      "INSERT INTO messages (texte) VALUES ($1) RETURNING *",
-      [texte],
-    );
-    console.log("Message insere :", insertion.rows[0]);
-
-    // Lire tous les messages
-    const lecture = await pool.query(
-      "SELECT id, texte, date FROM messages ORDER BY date DESC",
-    );
-    console.log("Tous les messages :");
-    for (const msg of lecture.rows) {
-      console.log(`  [${msg.id}] ${msg.texte} (${msg.date})`);
-    }
-
-    // Compter les messages
-    const comptage = await pool.query(
-      "SELECT COUNT(*)::int AS total FROM messages",
-    );
-    console.log("Nombre total de messages :", comptage.rows[0].total);
-  } catch (err) {
-    console.error("Erreur :", err.message);
-  } finally {
-    // Toujours fermer le pool a la fin
-    await pool.end();
-    console.log("Pool ferme. Au revoir !");
-  }
-}
-
-main();
+-- 8. Lire les données
+SELECT id, name, max_size FROM family ORDER BY name;
+SELECT id, email, display_name FROM member_user;
 ```
 
-### 7.3 Exécuter
+Pas-à-pas : (1) le flag `-v tribuzen-pgdata:/var/lib/postgresql/data` crée un volume Docker nommé — les données survivent à `docker rm` ; (2) `TEXT PRIMARY KEY` déclare la clé primaire sans `SERIAL` — l'ID sera géré côté applicatif (UUID en production) ; (3) `UNIQUE` sur `email` délègue le contrôle des doublons au moteur, pas à l'appli ; (4) `\d member_user` dans psql affiche les colonnes, leurs types et la contrainte `member_user_email_key` créée automatiquement par l'index unique.
 
-```bash
-node index.mjs
+### Exemple B — tester les contraintes et explorer avec les méta-commandes
+
+Objectif : observer qu'une contrainte `UNIQUE` bloque une insertion en doublon, et utiliser les méta-commandes psql pour naviguer dans la base.
+
+```sql
+-- Tenter d'insérer un email déjà présent
+INSERT INTO member_user (id, email, display_name)
+VALUES ('u-3', 'alice@tribu.fr', 'Alice Bis');
+-- ERROR:  duplicate key value violates unique constraint "member_user_email_key"
+-- DETAIL: Key (email)=(alice@tribu.fr) already exists.
+-- PostgreSQL refuse l'insertion — erreur moteur, pas applicative.
+
+-- Activer le timing pour mesurer les requêtes
+\timing
+
+SELECT COUNT(*) AS total FROM family;
+--  total
+-- -------
+--      2
+-- Time: 0.543 ms
+
+-- Basculer en affichage vertical
+\x
+
+SELECT * FROM member_user;
+-- -[ RECORD 1 ]-----------
+-- id           | u-1
+-- email        | alice@tribu.fr
+-- display_name | Alice Dupont
+-- created_at   | 2026-07-01 14:00:00+02
+
+-- Revenir à l'affichage tabulaire
+\x
+\timing
+\q
 ```
 
-Sortie attendue :
+Pas-à-pas : (1) l'erreur `duplicate key value violates unique constraint` vient du moteur — même si l'appli n'effectue pas de vérification, PostgreSQL bloque ; (2) `\timing` s'active/désactive par alternance — le temps en ms apparaît sous chaque résultat ; (3) `\x` bascule l'affichage vertical : utile pour les tables larges ou les lignes avec de nombreuses colonnes ; (4) `\q` quitte proprement psql et libère la connexion.
+
+## 4. Pièges & misconceptions
+
+- **Oublier le point-virgule.** En psql, une commande sans `;` n'est pas exécutée — le prompt passe à `tribuzen(#-` et attend la suite. Aucun message d'erreur, attente silencieuse indéfinie. *Correct* : terminer chaque instruction par `;` avant Entrée.
+
+- **Supprimer le conteneur sans volume nommé.** `docker rm tribuzen-pg` puis `docker run ...` sans `-v` recrée un conteneur vide — toutes les données sont perdues. *Correct* : nommer le volume (`-v tribuzen-pgdata:/var/lib/postgresql/data`) dès le premier `docker run`. Le volume persiste indépendamment du conteneur.
+
+- **Utiliser `user` comme nom de table.** `USER` est un mot réservé SQL — `CREATE TABLE user (...)` provoque une erreur de syntaxe. Même chose pour `order`, `group`, `table`, `select`. *Correct* : nommer `member_user`, `app_user`, ou `account` — vérifier avec `\h` les mots réservés.
+
+- **Croire que `VARCHAR(255)` est plus performant que `TEXT`.** En PostgreSQL, `TEXT` et `VARCHAR` sans longueur ont des performances identiques. `VARCHAR(255)` n'apporte aucun gain de vitesse — c'est un mythe hérité de MySQL. *Correct* : utiliser `TEXT` par défaut ; réserver `VARCHAR(n)` uniquement quand la longueur maximale est une contrainte métier explicite.
+
+- **Confondre `TIMESTAMP` et `TIMESTAMPTZ`.** `TIMESTAMP` stocke l'heure sans fuseau — si le serveur change de timezone ou si des utilisateurs sont dans plusieurs pays, les données deviennent ambiguës. *Correct* : toujours utiliser `TIMESTAMPTZ` — PostgreSQL stocke en UTC et convertit à l'affichage selon la timezone de la session.
+
+- **Croire que `SELECT *` est neutre.** `SELECT *` retourne les colonnes dans l'ordre de définition de la table. Si la table évolue (ajout ou réordonnancement de colonne), le code qui suppose une position par index (`rows[0][2]`) se casse silencieusement. *Correct* : nommer les colonnes explicitement dans le code applicatif ; `SELECT *` reste acceptable pour l'exploration interactive en psql.
+
+## 5. Ancrage TribuZen
+
+Couche fil-rouge : **base de données de TribuZen** dans `smaurier/tribuzen`.
+
+- Les tables `family` et `member_user` créées dans les Worked examples sont les premières tables réelles de TribuZen. Elles seront enrichies à chaque module : clés étrangères (module 01), CRUD complet via Prisma (module 02), jointures pour récupérer les membres d'une famille (module 03), transactions pour l'acceptation d'invitation (module 04).
+- Le conteneur `tribuzen-pg` avec le volume `tribuzen-pgdata` devient l'environnement de développement local du cours — il reste actif tout au long des modules suivants. Pour reprendre après un arrêt : `docker start tribuzen-pg`, pas `docker run`.
+- La connexion psql directe est l'outil de débogage de premier recours tout au long du cours : inspecter l'état réel de la base, tester une requête avant intégration, vérifier une contrainte après migration.
+- `gen_random_uuid()` (fonction native PostgreSQL 17, sans extension) remplacera les IDs textuels manuels à partir du module 01 — adapté à une app multi-appareils où les IDs doivent être uniques sans coordination centrale.
+
+## 6. Points clés
+
+1. Une base de données relationnelle garantit persistance, cohérence, concurrence et interrogeabilité — ce qu'un fichier JSON ne peut pas offrir de manière fiable.
+2. PostgreSQL est le SGBD open-source le plus conforme SQL, extensible, et utilisé en production à grande échelle. Version de référence du cours : PostgreSQL 17.
+3. Le modèle est simple : **tables** (noms) → **colonnes** (types) → **lignes** (valeurs). Les tables se relient par clés étrangères.
+4. Démarrer avec Docker (`postgres:17`) + volume nommé = environnement reproductible, données persistées entre redémarrages.
+5. `psql` est l'outil de référence : méta-commandes `\dt`, `\d nomtable`, `\timing`, `\x`, `\q` suffisent pour explorer et déboguer toute la durée du cours.
+6. Types essentiels : `TEXT`, `INTEGER`, `BOOLEAN`, `NUMERIC`, `TIMESTAMPTZ`, `UUID`. Préférer `TEXT` à `VARCHAR(n)` sans raison, et `TIMESTAMPTZ` à `TIMESTAMP` systématiquement.
+7. Toute instruction SQL se termine par `;` en psql. Sans lui, le prompt attend en silence.
+8. `USER`, `ORDER`, `GROUP`, `TABLE`, `SELECT` sont des mots réservés SQL — ne pas les utiliser comme noms de table.
+
+## 7. Seeds Anki
 
 ```
-Connecte a PostgreSQL !
-Version : PostgreSQL 17.x on x86_64-pc-linux-gnu, compiled by gcc...
-Table "messages" creee (ou deja existante).
-Message insere : { id: 1, texte: 'Bonjour PostgreSQL depuis Node.js !', date: 2024-01-15T10:30:00.000Z }
-Tous les messages :
-  [1] Bonjour PostgreSQL depuis Node.js ! (2024-01-15T10:30:00.000Z)
-Nombre total de messages : 1
-Pool ferme. Au revoir !
+Qu'est-ce qu'un SGBD relationnel ?|Un logiciel qui stocke des données dans des tables liées, garantit leur cohérence par des contraintes, gère la concurrence, et les interroge via SQL
+Différence entre TIMESTAMP et TIMESTAMPTZ en PostgreSQL ?|TIMESTAMP stocke l'heure sans fuseau (ambiguë si timezone change) ; TIMESTAMPTZ stocke l'instant UTC et l'affiche dans la timezone de la session — toujours utiliser TIMESTAMPTZ
+Pourquoi TEXT est préférable à VARCHAR(255) en PostgreSQL ?|TEXT et VARCHAR sans longueur sont identiques en performance ; VARCHAR(n) n'apporte aucun gain et est un mythe hérité d'autres SGBD
+Commande psql pour décrire la structure d'une table ?|\d nomtable — affiche les colonnes, types, valeurs par défaut et contraintes
+Que se passe-t-il si on oublie le point-virgule dans psql ?|psql attend silencieusement la suite (prompt base(#-) — aucune exécution, aucun message d'erreur
+Pourquoi nommer le volume Docker de PostgreSQL ?|Sans volume nommé les données sont perdues à docker rm ; avec -v tribuzen-pgdata:/var/lib/postgresql/data elles survivent à la suppression du conteneur
+Pourquoi éviter USER comme nom de table en PostgreSQL ?|USER est un mot réservé SQL — CREATE TABLE user provoque une erreur de syntaxe ; utiliser member_user ou account
+Rôle de la contrainte UNIQUE sur une colonne email ?|Interdit deux lignes avec la même valeur — PostgreSQL rejette l'INSERT avec duplicate key value violates unique constraint, sans code applicatif
 ```
 
-### 7.4 Pool vs Client
+## Pont vers le lab
 
-|                    | `Pool`                                                                  | `Client`                                   |
-| ------------------ | ----------------------------------------------------------------------- | ------------------------------------------ |
-| **Utilisation**    | Applications web (connexions partagees)                                 | Scripts ponctuels, transactions            |
-| **Connexions**     | Reutilise les connexions existantes                                     | 1 connexion dediee                         |
-| **Transactions**   | Pas directement (chaque `query` peut utiliser une connexion différente) | Oui (BEGIN / COMMIT sur la même connexion) |
-| **Recommandation** | **Utiliser par defaut**                                                 | Utiliser pour les transactions explicites  |
-
-> **Piege classique** : Ne fais JAMAIS `BEGIN` directement sur un `Pool` avec `pool.query('BEGIN')`. Les requêtes suivantes pourraient etre executees sur une AUTRE connexion du pool. Utilise `pool.connect()` pour obtenir un `Client` dedie, puis fais ta transaction sur ce client.
-
-```typescript
-// MAUVAIS : transaction sur un pool
-await pool.query("BEGIN"); // connexion A
-await pool.query("INSERT ..."); // connexion B (!!!)
-await pool.query("COMMIT"); // connexion C (!!!)
-
-// BON : transaction sur un client dedie
-const client = await pool.connect();
-try {
-  await client.query("BEGIN");
-  await client.query("INSERT ...");
-  await client.query("COMMIT");
-} catch (err) {
-  await client.query("ROLLBACK");
-  throw err;
-} finally {
-  client.release(); // remettre la connexion dans le pool
-}
-```
-
----
-
-## 8. Glossaire des termes clés
-
-| Terme                  | Definition                                             | Analogie                                            |
-| ---------------------- | ------------------------------------------------------ | --------------------------------------------------- |
-| **SGBDR**              | Système de Gestion de Base de Donnees Relationnelles   | La bibliotheque entière avec son système de gestion |
-| **Table (Relation)**   | Structure qui stocke des donnees en lignes et colonnes | Une etagere avec des rangements standardises        |
-| **Ligne (Tuple)**      | Un enregistrement dans une table                       | Un livre sur l'etagere                              |
-| **Colonne (Attribut)** | Un champ type d'une table                              | Une propriété du livre (titre, auteur, ISBN)        |
-| **Cle primaire (PK)**  | Identifiant unique d'une ligne                         | Le numéro ISBN du livre                             |
-| **Cle etrangere (FK)** | Référence vers la clé primaire d'une autre table       | La référence bibliographique                        |
-| **Index**              | Structure accelerant les recherches                    | L'index alphabetique à la fin du livre              |
-| **Transaction**        | Groupe d'operations atomique (tout ou rien)            | Un virement bancaire                                |
-| **ACID**               | Atomicity, Consistency, Isolation, Durability          | Les 4 garanties du contrat bancaire                 |
-| **WAL**                | Write-Ahead Log, journal de transactions               | Le journal de bord du capitaine                     |
-| **MVCC**               | Multi-Version Concurrency Control                      | Chaque lecteur a sa propre copie du livre           |
-| **Schema**             | Espace de noms logique dans une base                   | Un etage de la bibliotheque                         |
-| **Query Planner**      | Optimiseur qui choisit le meilleur plan d'exécution    | Le GPS qui calcule le meilleur itineraire           |
-| **Shared Buffers**     | Cache mémoire partage pour les pages de donnees        | Le plan de travail en cuisine                       |
-| **VACUUM**             | Nettoyage des lignes mortes (MVCC)                     | L'équipe de menage qui recycle les livres retires   |
-
----
-
-## 9. Roadmap du cours
-
-Voici la vue d'ensemble de tous les modules du cours, avec leur niveau de difficulte :
-
-| Module | Titre                             | Difficulte | Themes principaux                              |
-| ------ | --------------------------------- | ---------- | ---------------------------------------------- |
-| **00** | Prérequis & Vue d'ensemble        | ⭐         | SGBDR, architecture, setup, premier contact    |
-| **01** | Le modèle relationnel             | ⭐         | Tables, types, contraintes, modelisation       |
-| **02** | CRUD & Requetes SQL               | ⭐         | INSERT, SELECT, UPDATE, DELETE, agregations    |
-| **03** | Relations & Jointures             | ⭐⭐       | FK, JOIN, 1:N, N:M, self-join                  |
-| **04** | Transactions & ACID               | ⭐⭐       | BEGIN/COMMIT, WAL, isolation, crash recovery   |
-| **05** | Index : les fondamentaux          | ⭐⭐       | B-tree, composite, partial, hash               |
-| **06** | Le Query Planner                  | ⭐⭐⭐     | EXPLAIN ANALYZE, scans, join stratégies, stats |
-| **07** | Index avances (GIN, GiST, BRIN)   | ⭐⭐⭐     | JSONB, full-text, ranges, covering indexes     |
-| **08** | Niveaux d'isolation               | ⭐⭐⭐     | Read Committed, Repeatable Read, Serializable  |
-| **09** | MVCC en profondeur                | ⭐⭐⭐     | xmin/xmax, snapshots, VACUUM, bloat            |
-| **10** | Full-text search                  | ⭐⭐       | tsvector, tsquery, ranking, GIN                |
-| **11** | JSONB & donnees semi-structurees  | ⭐⭐       | Operateurs JSONB, indexation, patterns         |
-| **12** | Fonctions & procedures (PL/pgSQL) | ⭐⭐⭐     | Fonctions, triggers, procedures stockees       |
-| **13** | Roles, permissions & sécurité     | ⭐⭐       | GRANT, REVOKE, Row-Level Security              |
-| **14** | Partitionnement                   | ⭐⭐⭐     | Range, List, Hash partitioning                 |
-| **15** | Backup, replication & haute dispo | ⭐⭐⭐     | pg_dump, streaming replication, failover       |
-
-### Progression recommandee
-
-```
- Semaine 1          Semaine 2          Semaine 3          Semaine 4
- ┌─────────┐       ┌─────────┐       ┌─────────┐       ┌─────────┐
- │ Mod. 00 │──────▶│ Mod. 03 │──────▶│ Mod. 06 │──────▶│ Mod. 09 │
- │ Mod. 01 │       │ Mod. 04 │       │ Mod. 07 │       │ Mod. 10 │
- │ Mod. 02 │       │ Mod. 05 │       │ Mod. 08 │       │ Mod. 11 │
- └─────────┘       └─────────┘       └─────────┘       └─────────┘
-       │                 │                 │                 │
-       ▼                 ▼                 ▼                 ▼
-   Fondations       Relations &       Optimisation     Avance &
-   SQL de base      Transactions      & Performance    Specialise
-```
-
-> **Ce qu'il faut retenir** : Ne saute pas les modules fondamentaux (00-02). Même si tu connais déjà SQL, les sections sur l'architecture PostgreSQL et les bonnes pratiques Node.js te seront utiles. Les modules avances (06+) s'appuient fortement sur les concepts des modules précédents.
-
----
-
-## 10. Exercice mental
-
-Avant de passer au module suivant, reflechis a ces questions :
-
-1. **Pourquoi PostgreSQL utilise-t-il un processus par connexion plutot que des threads ?** (Indice : stabilite, isolation mémoire, crash d'un processus n'affecte pas les autres)
-
-2. **Pourquoi le WAL (Write-Ahead Log) écrit-il sur disque AVANT les donnees ?** (Indice : si le serveur crash après l'écriture WAL mais avant l'écriture des donnees, PostgreSQL peut rejouer le WAL au redemarrage)
-
-3. **Pourquoi utiliser un pool de connexions en Node.js plutot qu'un seul Client ?** (Indice : les connexions PostgreSQL sont couteuses a créer — fork d'un processus — et une application web géré des dizaines/centaines de requêtes simultanees)
-
----
-
-## Navigation
-
-|                | Lien                                                            |
-| -------------- | --------------------------------------------------------------- |
-| Module suivant | [Module 01 — Le modèle relationnel](./01-modele-relationnel.md) |
-| Lab associe    | Pas de lab pour ce module d'introduction                        |
-
----
-
-> **Ce qu'il faut retenir** : PostgreSQL est un SGBDR open-source mature, puissant et extensible. Son architecture multi-processus avec WAL garantit la fiabilité. Docker + psql + Node.js pg forment un trio de développement efficace. Ce cours te guidera du débutant a l'expert, un module à la fois.
-
----
-
-<!-- parcours-recommande -->
-
-::: tip Parcours recommandé
-
-1. **Screencast** : [screencast 00 prérequis](../screencasts/screencast-00-prerequis.md)
-2. **Quiz** : [quiz 00 prérequis](../quizzes/quiz-00-prerequis.html)
-   :::
+> Lab associé : `10-postgresql/labs/lab-01-premiers-pas-psql/`. Tu démarres PostgreSQL 17 en Docker, crées les premières tables de TribuZen (`family`, `member_user`) depuis psql, insères des données, testes les contraintes et utilises les méta-commandes d'exploration. Corrigé SQL complet commenté + variante J+30 dans le README du lab.

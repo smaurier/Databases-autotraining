@@ -1,1539 +1,422 @@
-# Module 15 — Projet final : Système de reservation
-
-> **Objectif** : Mettre en pratique TOUS les concepts des modules précédents en construisant un système de reservation de salles complet — modelisation, contraintes, concurrence, sécurité, performance et monitoring.
->
-> **Difficulte** : ⭐⭐⭐⭐⭐
-
+---
+titre: Projet final
+cours: 10-postgresql
+notions: [concevoir un schéma complet, contraintes index et RLS combinés, requêtes optimisées, transactions et concurrence, du besoin au schéma production-ready, synthèse du cours]
+outcomes: [concevoir une base complète (schéma, contraintes, index, RLS), écrire des requêtes optimisées et transactionnelles, livrer un schéma prêt pour la production]
+prerequis: [14-securite-et-administration]
+next: 16-replication
+libs: [{ name: postgresql, version: "17" }]
+tribuzen: concevoir la base complète d'un système de réservation TribuZen (places limitées, concurrence, RLS) — capstone
+last-reviewed: 2026-07
 ---
 
-## 1. Cahier des charges
+# Projet final
 
-### 1.1 Description du système
+> **Outcomes — tu sauras FAIRE :** concevoir une base de données complète de zéro (schéma, contraintes, index, RLS), écrire une transaction Serializable de réservation avec gestion de concurrence et retry, et livrer un schéma production-ready documenté et testé.
+> **Difficulté :** :star::star::star::star::star:
 
-Vous construisez un système de reservation de salles pour une entreprise multi-sites. Les utilisateurs peuvent reserver des salles pour des événements (reunions, conferences, formations).
+## 1. Cas concret d'abord
 
-### 1.2 Exigences fonctionnelles
-
-| Exigence | Description | Modules mobilises |
-|----------|-------------|-------------------|
-| Reservation | Créer, modifier, annuler des reservations | Transactions, MVCC |
-| Anti-double-booking | Impossible de reserver un creneau déjà pris | Range types, EXCLUDE |
-| Multi-tenant | Chaque entreprise voit ses propres donnees | RLS, schemas |
-| Recherche | Trouver des événements par mots-clés | Full-Text Search |
-| Statistiques | Tableaux de bord d'utilisation | Window Functions, CTEs |
-| Audit | Historique de toutes les modifications | Triggers, JSONB |
-| Performance | < 100ms pour les requêtes principales | Index, pooling |
-
-### 1.3 Contraintes techniques
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  CONTRAINTES NON-FONCTIONNELLES                               │
-│                                                               │
-│  - Concurrence : 100+ utilisateurs simultanees               │
-│  - Double booking : strictement IMPOSSIBLE                   │
-│  - Latence : < 100ms pour les requetes critiques             │
-│  - Donnees : 10 000+ reservations/mois                       │
-│  - Retention : 2 ans d'historique                            │
-│  - Securite : isolation complete entre tenants               │
-│  - Disponibilite : PITR pour la restauration                 │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### 1.4 Architecture cible
-
-```
-┌──────────┐     ┌──────────────┐     ┌──────────────────┐
-│ Frontend │────►│  Node.js API │────►│   PostgreSQL 17   │
-│ (React)  │     │  (Express)   │     │                    │
-│          │     │  pg.Pool     │     │  RLS (multi-tenant)│
-│          │     │  max: 20     │     │  EXCLUDE (overlap) │
-│          │     │              │     │  GiST (ranges)     │
-└──────────┘     └──────────────┘     │  GIN (FTS, JSONB)  │
-                                       │  Serializable txn  │
-                                       └──────────────────┘
-```
-
----
-
-## 2. Modelisation du schema
-
-### 2.1 Diagramme des tables
-
-```
-┌────────────────┐       ┌────────────────┐
-│    tenants     │       │     users      │
-├────────────────┤       ├────────────────┤
-│ id (PK)        │◄──────│ tenant_id (FK) │
-│ name           │       │ id (PK)        │
-│ plan           │       │ email          │
-│ settings JSONB │       │ password_hash  │
-│ created_at     │       │ role           │
-└────────────────┘       │ full_name      │
-                          │ created_at     │
-                          └───────┬────────┘
-                                  │
-┌────────────────┐       ┌────────┴───────┐
-│     rooms      │       │  reservations  │
-├────────────────┤       ├────────────────┤
-│ tenant_id (FK) │       │ id (PK)        │
-│ id (PK)        │◄──────│ room_id (FK)   │
-│ name           │       │ user_id (FK)   │
-│ capacity       │       │ tenant_id (FK) │
-│ floor          │       │ time_slot      │
-│ equipment JSONB│       │ status         │
-│ is_active      │       │ metadata JSONB │
-│ created_at     │       │ created_at     │
-└────────────────┘       │ updated_at     │
-                          └───────┬────────┘
-┌────────────────┐                │
-│    events      │       ┌────────┴───────┐
-├────────────────┤       │   audit_log    │
-│ id (PK)        │       ├────────────────┤
-│ tenant_id (FK) │       │ id (PK)        │
-│ reservation_id │       │ tenant_id      │
-│ title          │       │ table_name     │
-│ description    │       │ record_id      │
-│ event_type     │       │ action         │
-│ search_vector  │       │ old_data JSONB │
-│ created_at     │       │ new_data JSONB │
-└────────────────┘       │ changed_by     │
-                          │ changed_at     │
-                          └────────────────┘
-```
-
-### 2.2 Script de création complet
+La famille « Les Martin » (family_id = 3) veut s'inscrire à l'atelier poterie du samedi — 5 places, 3 déjà réservées, 2 disponibles. Deux membres de la famille ouvrent l'app simultanément et cliquent « Réserver » en même temps depuis leurs téléphones respectifs.
 
 ```sql
--- ============================================================
--- EXTENSIONS NECESSAIRES
--- ============================================================
-CREATE EXTENSION IF NOT EXISTS btree_gist;   -- Pour EXCLUDE constraint
-CREATE EXTENSION IF NOT EXISTS pgcrypto;     -- Pour le hashage
-CREATE EXTENSION IF NOT EXISTS pg_trgm;      -- Pour la recherche floue
+-- Ce que les deux sessions lisent (Read Committed, défaut) :
+SELECT s.places_max - COALESCE(SUM(b.nb_places), 0) AS places_dispo
+FROM slots s
+LEFT JOIN bookings b ON b.slot_id = s.id AND b.status = 'confirmed'
+WHERE s.id = 42
+GROUP BY s.places_max;
+-- → 2 (dans les deux sessions simultanément)
+```
+
+Sans protection, les deux insèrent chacune 2 places → 7 réservations pour 5 places : overbooking. La seule façon d'interdire ça **au niveau de la base** est de combiner :
+
+1. Un schéma propre — types exacts (`TSTZRANGE`), contraintes CHECK et EXCLUDE au niveau DDL
+2. Des index adaptés — GiST pour les ranges, GIN pour la recherche plein-texte, B-tree sur toutes les FK
+3. Des politiques RLS qui isolent chaque famille via `current_setting('app.family_id')`
+4. Une transaction Serializable qui relit les places dans son propre snapshot ; si une concurrente a écrit entre la lecture et l'INSERT, PostgreSQL lève `40001` → retry côté applicatif
+
+C'est le fil conducteur de ce module : **du besoin au schéma production-ready**, en mobilisant tout ce que tu as vu depuis le module 01.
+
+## 2. Théorie complète, concise
+
+### Du besoin au schéma : démarche ingénieur
+
+Ne jamais ouvrir `psql` avant d'avoir une liste de besoins. La démarche :
+
+1. **Stories utilisateur** — « En tant que membre, je veux réserver un créneau pour l'activité de ma famille. »
+2. **Entités + relations** — Identifier les nœuds (activité, créneau, réservation, famille, utilisateur) et leurs cardinalités (1–N, N–N).
+3. **Normalisation 3NF** — Chaque attribut dépend de la clé entière et de rien d'autre. Dénormaliser uniquement si `EXPLAIN ANALYZE` prouve que la jointure est le goulot.
+4. **Contraintes au plus tôt** — `CHECK`, `UNIQUE`, `EXCLUDE`, `NOT NULL` au niveau DDL ; la cohérence ne se délègue pas à l'application.
+5. **Index après schéma** — Un index par FK d'abord, puis les index spécialisés (GiST, GIN) une fois le schéma stabilisé et les données de test insérées.
+6. **RLS en dernier** — Les politiques s'appuient sur le schéma finalisé et un rôle applicatif dédié.
+
+### Schéma du système de réservation TribuZen
+
+`families` et `users` existent déjà dans TribuZen. Quatre nouvelles tables :
+
+| Table | Rôle |
+|---|---|
+| `activities` | Activités organisées par une famille (atelier, sortie, cours…) |
+| `slots` | Créneaux horaires d'une activité — durée + nombre de places |
+| `bookings` | Réservation d'un créneau par un utilisateur |
+| `audit_log` | Journal immuable de toutes les modifications (INSERT / UPDATE / DELETE) |
+
+### Contraintes combinées
+
+Trois types de contraintes se complètent :
+
+- **CHECK** : valeurs métier (`places_max > 0`, durée ≥ 15 min et ≤ 12 h, `nb_places > 0`).
+- **EXCLUDE USING GIST** : interdit le chevauchement de créneaux pour la **même** activité. Requiert l'extension `btree_gist` pour rendre le type `INT` indexable dans GiST.
+- **Index partiel UNIQUE** : pas de double-booking pour un utilisateur sur un créneau actif. Un index partiel (`WHERE status = 'confirmed'`) autorise la re-réservation après annulation, contrairement à une contrainte table-level `UNIQUE (slot_id, user_id)` simple.
+
+```sql
+-- Interdit le chevauchement pour une même activité (requiert btree_gist)
+CONSTRAINT no_slot_overlap
+    EXCLUDE USING GIST (activity_id WITH =, time_range WITH &&)
+
+-- Index partiel : pas de double-booking actif, re-réservation possible après annulation
+CREATE UNIQUE INDEX idx_bookings_no_double
+    ON bookings(slot_id, user_id) WHERE status = 'confirmed';
+```
+
+### Stratégie d'index
+
+| Type | Colonnes cibles | Pourquoi |
+|---|---|---|
+| B-tree | FK de toutes les tables | Accélère les JOIN et les lookups par id |
+| GiST | `slots(time_range)` | Contrainte EXCLUDE + opérateurs de disponibilité (`&&`, `@>`) |
+| GIN | `activities(search_vector)` | Full-text search sur titre + description |
+| Partial B-tree | `bookings(slot_id, nb_places) WHERE status = 'confirmed'` | Comptage rapide des places prises sans lire les annulations |
+
+Règle : créer l'index après les données de test, mesurer avec `EXPLAIN (ANALYZE, BUFFERS)`, supprimer ceux que le planner ignore.
+
+### RLS par famille
+
+Le rôle `reservation_app` se connecte pour toutes les familles. Le middleware applicatif pose `app.family_id` avant chaque requête :
+
+```sql
+-- Middleware : avant chaque requête de l'API
+SELECT set_config('app.family_id', $1::text, true);  -- local à la transaction
+
+-- Policy unifiée (même pattern sur activities, slots, bookings)
+ALTER TABLE bookings ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY family_isolation ON bookings
+    FOR ALL TO reservation_app
+    USING      (family_id = current_setting('app.family_id')::int)
+    WITH CHECK (family_id = current_setting('app.family_id')::int);
+```
+
+Piège : un superuser et les rôles `BYPASSRLS` contournent silencieusement RLS. Tester uniquement en se connectant avec `SET ROLE reservation_app` pour voir les vraies restrictions.
+
+### Transaction de réservation : Serializable + retry
+
+```sql
+-- Schéma de la transaction (appel depuis Node.js via pg.Pool)
+BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+SELECT set_config('app.family_id', '3', true);
+
+-- 1. Lire les places disponibles dans le snapshot Serializable
+SELECT s.places_max - COALESCE(SUM(b.nb_places), 0) AS places_dispo
+FROM   slots s
+LEFT   JOIN bookings b ON b.slot_id = s.id AND b.status = 'confirmed'
+WHERE  s.id = 42
+GROUP  BY s.places_max;
+-- → 2 dans ce snapshot
+
+-- 2. Si places_dispo >= demandes : insérer
+INSERT INTO bookings (slot_id, user_id, family_id, nb_places)
+VALUES (42, 17, 3, 2);
+
+COMMIT;
+-- Si une transaction concurrente a inséré avant ce COMMIT :
+-- ERROR 40001 : could not serialize access due to concurrent update
+-- → retry côté applicatif (max 5, backoff exponentiel 50ms × 2^n + jitter)
+```
+
+Serializable garantit que le résultat concurrent équivaut à une exécution séquentielle : deux transactions qui lisent « 2 places dispo » et tentent toutes les deux d'insérer → la première commite, la seconde reçoit `40001` et **doit** réessayer après avoir relu.
+
+## 3. Worked examples
+
+### Exemple A — Schéma complet
+
+```sql
+-- Extension obligatoire : rend INT indexable dans GiST (nécessaire pour EXCLUDE)
+CREATE EXTENSION IF NOT EXISTS btree_gist;
 
 -- ============================================================
--- TYPES PERSONNALISES
+-- TABLE : activities
 -- ============================================================
-CREATE TYPE user_role AS ENUM ('admin', 'manager', 'user');
-CREATE TYPE reservation_status AS ENUM ('confirmed', 'tentative', 'cancelled');
-CREATE TYPE event_type AS ENUM ('meeting', 'conference', 'training', 'workshop', 'other');
-CREATE TYPE audit_action AS ENUM ('INSERT', 'UPDATE', 'DELETE');
-
--- ============================================================
--- TABLE : tenants
--- ============================================================
-CREATE TABLE tenants (
-    id         SERIAL PRIMARY KEY,
-    name       TEXT NOT NULL UNIQUE,
-    plan       TEXT NOT NULL DEFAULT 'standard'
-                   CHECK (plan IN ('free', 'standard', 'premium')),
-    settings   JSONB NOT NULL DEFAULT '{
-        "max_rooms": 10,
-        "max_users": 50,
-        "max_reservation_hours": 8,
-        "allow_recurring": false
-    }'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- ============================================================
--- TABLE : users
--- ============================================================
-CREATE TABLE users (
+CREATE TABLE activities (
     id            SERIAL PRIMARY KEY,
-    tenant_id     INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    email         TEXT NOT NULL,
-    password_hash TEXT NOT NULL,
-    full_name     TEXT NOT NULL,
-    role          user_role NOT NULL DEFAULT 'user',
-    is_active     BOOLEAN NOT NULL DEFAULT true,
-    last_login    TIMESTAMPTZ,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-
-    UNIQUE (tenant_id, email)  -- Email unique par tenant
-);
-
--- ============================================================
--- TABLE : rooms
--- ============================================================
-CREATE TABLE rooms (
-    id          SERIAL PRIMARY KEY,
-    tenant_id   INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    name        TEXT NOT NULL,
-    capacity    INT NOT NULL CHECK (capacity > 0 AND capacity <= 500),
-    floor       INT NOT NULL DEFAULT 0,
-    equipment   JSONB NOT NULL DEFAULT '{}'::jsonb,
-    -- Exemple : {"projecteur": true, "visio": true, "tableau_blanc": true}
-    is_active   BOOLEAN NOT NULL DEFAULT true,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-
-    UNIQUE (tenant_id, name)
-);
-
--- ============================================================
--- TABLE : reservations
--- ============================================================
-CREATE TABLE reservations (
-    id          SERIAL PRIMARY KEY,
-    tenant_id   INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    room_id     INT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-    user_id     INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    time_slot   TSTZRANGE NOT NULL,
-    status      reservation_status NOT NULL DEFAULT 'confirmed',
-    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-    -- Exemple : {"recurrence": "weekly", "guests": ["bob@corp.com"]}
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-
-    -- CONTRAINTE CLE : pas de chevauchement pour la meme salle
-    -- (uniquement pour les reservations non-annulees)
-    CONSTRAINT no_overlap_active_reservations
-    EXCLUDE USING GIST (
-        room_id WITH =,
-        time_slot WITH &&
-    ) WHERE (status != 'cancelled'),
-
-    -- Verification : le creneau ne peut pas etre dans le passe
-    CONSTRAINT future_reservation
-    CHECK (lower(time_slot) >= now() - interval '1 hour'),
-
-    -- Verification : duree minimum 15 minutes
-    CONSTRAINT min_duration
-    CHECK (upper(time_slot) - lower(time_slot) >= interval '15 minutes'),
-
-    -- Verification : duree maximum 24 heures
-    CONSTRAINT max_duration
-    CHECK (upper(time_slot) - lower(time_slot) <= interval '24 hours')
-);
-
--- ============================================================
--- TABLE : events
--- ============================================================
-CREATE TABLE events (
-    id              SERIAL PRIMARY KEY,
-    tenant_id       INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    reservation_id  INT NOT NULL REFERENCES reservations(id) ON DELETE CASCADE,
-    title           TEXT NOT NULL CHECK (length(title) >= 3),
-    description     TEXT,
-    event_type      event_type NOT NULL DEFAULT 'meeting',
-    attendees_count INT CHECK (attendees_count > 0),
-
-    -- Full-Text Search : colonne generee
-    search_vector   TSVECTOR GENERATED ALWAYS AS (
+    family_id     INT  NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+    title         TEXT NOT NULL CHECK (length(trim(title)) >= 3),
+    description   TEXT,
+    search_vector TSVECTOR GENERATED ALWAYS AS (
         setweight(to_tsvector('french', coalesce(title, '')), 'A') ||
         setweight(to_tsvector('french', coalesce(description, '')), 'B')
     ) STORED,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
+-- ============================================================
+-- TABLE : slots
+-- ============================================================
+CREATE TABLE slots (
+    id           SERIAL PRIMARY KEY,
+    activity_id  INT  NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
+    family_id    INT  NOT NULL REFERENCES families(id),   -- dénormalisé pour RLS
+    time_range   TSTZRANGE NOT NULL,
+    places_max   INT  NOT NULL CHECK (places_max > 0 AND places_max <= 200),
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    -- Pas de chevauchement de créneaux pour la même activité
+    CONSTRAINT no_slot_overlap
+        EXCLUDE USING GIST (activity_id WITH =, time_range WITH &&),
+
+    -- Durée 15 min minimum
+    CONSTRAINT min_slot_duration
+        CHECK (upper(time_range) - lower(time_range) >= interval '15 minutes'),
+
+    -- Durée 12 h maximum
+    CONSTRAINT max_slot_duration
+        CHECK (upper(time_range) - lower(time_range) <= interval '12 hours')
+);
+
+-- ============================================================
+-- TABLE : bookings
+-- ============================================================
+CREATE TABLE bookings (
+    id          SERIAL PRIMARY KEY,
+    slot_id     INT  NOT NULL REFERENCES slots(id)   ON DELETE CASCADE,
+    user_id     INT  NOT NULL REFERENCES users(id)   ON DELETE CASCADE,
+    family_id   INT  NOT NULL REFERENCES families(id),  -- dénormalisé pour RLS
+    nb_places   INT  NOT NULL DEFAULT 1 CHECK (nb_places > 0),
+    status      TEXT NOT NULL DEFAULT 'confirmed'
+                    CHECK (status IN ('confirmed', 'cancelled')),
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Index partiel : pas de double-booking actif ; la re-réservation reste possible après annulation
+CREATE UNIQUE INDEX idx_bookings_no_double
+    ON bookings(slot_id, user_id) WHERE status = 'confirmed';
 
 -- ============================================================
 -- TABLE : audit_log
 -- ============================================================
 CREATE TABLE audit_log (
     id          BIGSERIAL PRIMARY KEY,
-    tenant_id   INT,
-    table_name  TEXT NOT NULL,
-    record_id   INT NOT NULL,
-    action      audit_action NOT NULL,
+    table_name  TEXT        NOT NULL,
+    record_id   INT         NOT NULL,
+    action      TEXT        NOT NULL CHECK (action IN ('INSERT', 'UPDATE', 'DELETE')),
     old_data    JSONB,
     new_data    JSONB,
-    changed_by  TEXT NOT NULL DEFAULT current_user,
     changed_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-) PARTITION BY RANGE (changed_at);
-
--- Partitions mensuelles pour l'audit
-CREATE TABLE audit_log_2025_01 PARTITION OF audit_log
-    FOR VALUES FROM ('2025-01-01') TO ('2025-02-01');
-CREATE TABLE audit_log_2025_02 PARTITION OF audit_log
-    FOR VALUES FROM ('2025-02-01') TO ('2025-03-01');
-CREATE TABLE audit_log_2025_03 PARTITION OF audit_log
-    FOR VALUES FROM ('2025-03-01') TO ('2025-04-01');
-CREATE TABLE audit_log_2025_04 PARTITION OF audit_log
-    FOR VALUES FROM ('2025-04-01') TO ('2025-05-01');
-CREATE TABLE audit_log_2025_05 PARTITION OF audit_log
-    FOR VALUES FROM ('2025-05-01') TO ('2025-06-01');
-CREATE TABLE audit_log_2025_06 PARTITION OF audit_log
-    FOR VALUES FROM ('2025-06-01') TO ('2025-07-01');
--- ... continuer pour chaque mois
--- Partition par defaut pour les mois non-couverts
-CREATE TABLE audit_log_default PARTITION OF audit_log DEFAULT;
+);
 ```
 
----
+### Exemple B — Index, RLS, transaction et audit
 
-## 3. Index strategy
-
-### 3.1 Index B-tree sur FK et filtres frequents
+**Index :**
 
 ```sql
--- FK : essentiels pour les JOINs
-CREATE INDEX idx_users_tenant ON users (tenant_id);
-CREATE INDEX idx_rooms_tenant ON rooms (tenant_id);
-CREATE INDEX idx_reservations_tenant ON reservations (tenant_id);
-CREATE INDEX idx_reservations_room ON reservations (room_id);
-CREATE INDEX idx_reservations_user ON reservations (user_id);
-CREATE INDEX idx_events_tenant ON events (tenant_id);
-CREATE INDEX idx_events_reservation ON events (reservation_id);
-CREATE INDEX idx_audit_tenant ON audit_log (tenant_id);
+-- B-tree sur toutes les FK
+CREATE INDEX idx_activities_family ON activities(family_id);
+CREATE INDEX idx_slots_activity    ON slots(activity_id);
+CREATE INDEX idx_slots_family      ON slots(family_id);
+CREATE INDEX idx_bookings_slot     ON bookings(slot_id);
+CREATE INDEX idx_bookings_user     ON bookings(user_id);
+CREATE INDEX idx_bookings_family   ON bookings(family_id);
 
--- Filtres frequents
-CREATE INDEX idx_users_email ON users (tenant_id, email);
-CREATE INDEX idx_rooms_active ON rooms (tenant_id) WHERE is_active = true;
-CREATE INDEX idx_reservations_status ON reservations (status)
-    WHERE status != 'cancelled';
+-- GiST : disponibilité et contrainte EXCLUDE (btree_gist déjà actif)
+CREATE INDEX idx_slots_range ON slots USING GIST (time_range);
+
+-- GIN : full-text search sur titre + description en français
+CREATE INDEX idx_activities_fts ON activities USING GIN (search_vector);
+
+-- Partial B-tree : compter uniquement les places prises actives
+CREATE INDEX idx_bookings_active ON bookings(slot_id, nb_places)
+    WHERE status = 'confirmed';
+
+ANALYZE activities, slots, bookings;
 ```
 
-### 3.2 Index GiST sur ranges (creneaux)
+**RLS par famille :**
 
 ```sql
--- Index GiST pour les requetes de chevauchement et de disponibilite
-CREATE INDEX idx_reservations_timeslot
-    ON reservations USING GIST (time_slot);
+CREATE ROLE reservation_app LOGIN PASSWORD 'tribuzen_secret';
+GRANT SELECT, INSERT, UPDATE ON activities, slots, bookings TO reservation_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO reservation_app;
 
--- Index composite GiST (salle + creneau)
-CREATE INDEX idx_reservations_room_timeslot
-    ON reservations USING GIST (room_id, time_slot)
-    WHERE status != 'cancelled';
+ALTER TABLE activities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE slots      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE bookings   ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY family_isolation ON activities FOR ALL TO reservation_app
+    USING      (family_id = current_setting('app.family_id')::int)
+    WITH CHECK (family_id = current_setting('app.family_id')::int);
+
+CREATE POLICY family_isolation ON slots FOR ALL TO reservation_app
+    USING      (family_id = current_setting('app.family_id')::int)
+    WITH CHECK (family_id = current_setting('app.family_id')::int);
+
+CREATE POLICY family_isolation ON bookings FOR ALL TO reservation_app
+    USING      (family_id = current_setting('app.family_id')::int)
+    WITH CHECK (family_id = current_setting('app.family_id')::int);
+
+-- Vérification : se connecter en tant que rôle applicatif
+-- SET ROLE reservation_app;
+-- SELECT set_config('app.family_id', '3', true);
+-- SELECT * FROM activities;  -- doit retourner uniquement family_id = 3
 ```
 
-### 3.3 Index GIN sur JSONB
+**Fonction de réservation atomique :**
 
 ```sql
--- JSONB metadata (recherche par contenance)
-CREATE INDEX idx_reservations_metadata
-    ON reservations USING GIN (metadata jsonb_path_ops);
-
-CREATE INDEX idx_rooms_equipment
-    ON rooms USING GIN (equipment jsonb_path_ops);
-```
-
-### 3.4 Index GIN pour Full-Text Search
-
-```sql
--- Full-Text Search sur les evenements
-CREATE INDEX idx_events_search
-    ON events USING GIN (search_vector);
-```
-
-### 3.5 Partial indexes
-
-```sql
--- Index uniquement sur les reservations actives (pas les annulees)
-CREATE INDEX idx_reservations_active_timeslot
-    ON reservations USING GIST (room_id, time_slot)
-    WHERE status IN ('confirmed', 'tentative');
-
--- Index sur les utilisateurs actifs
-CREATE INDEX idx_users_active
-    ON users (tenant_id, email)
-    WHERE is_active = true;
-```
-
-### 3.6 Stratégie resumee
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  TYPE D'INDEX          UTILISATION                           │
-│                                                               │
-│  B-tree (defaut)       FK, egalite, range sur scalaires      │
-│  GiST                  Ranges (tstzrange), geometrie         │
-│  GIN                   JSONB, Full-Text, arrays              │
-│  Partial               Reduire la taille, cibler les actifs  │
-│                                                               │
-│  TOTAL : ~15 index pour 6 tables                             │
-│  Taille estimee : < 5% de la taille des donnees             │
-└──────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 4. Transaction design
-
-### 4.1 La reservation : operation critique
-
-La création d'une reservation est l'operation la plus critique du système. Elle doit :
-1. Vérifier que la salle existe et est active
-2. Vérifier que l'utilisateur a le droit de reserver
-3. Vérifier qu'il n'y a pas de chevauchement
-4. Créer la reservation ET l'événement atomiquement
-
-### 4.2 Isolation Serializable pour les reservations
-
-```sql
--- Fonction de reservation avec isolation Serializable
-CREATE OR REPLACE FUNCTION create_reservation(
-    p_tenant_id INT,
-    p_room_id INT,
-    p_user_id INT,
-    p_start TIMESTAMPTZ,
-    p_end TIMESTAMPTZ,
-    p_title TEXT,
-    p_description TEXT DEFAULT NULL,
-    p_event_type event_type DEFAULT 'meeting',
-    p_metadata JSONB DEFAULT '{}'
+CREATE OR REPLACE FUNCTION book_slot(
+    p_slot_id   INT,
+    p_user_id   INT,
+    p_family_id INT,
+    p_nb_places INT DEFAULT 1
 )
-RETURNS TABLE (reservation_id INT, event_id INT)
-LANGUAGE plpgsql
-AS $$
+RETURNS INT   -- id de la réservation créée
+LANGUAGE plpgsql AS $$
 DECLARE
-    v_reservation_id INT;
-    v_event_id INT;
-    v_room_capacity INT;
+    v_places_dispo INT;
+    v_booking_id   INT;
 BEGIN
-    -- Verifier que la salle existe et est active
-    SELECT capacity INTO v_room_capacity
-    FROM rooms
-    WHERE id = p_room_id
-      AND tenant_id = p_tenant_id
-      AND is_active = true;
+    -- Lire les places disponibles dans le snapshot de la transaction courante
+    SELECT s.places_max - COALESCE(SUM(b.nb_places), 0)
+    INTO   v_places_dispo
+    FROM   slots s
+    LEFT   JOIN bookings b ON b.slot_id = s.id AND b.status = 'confirmed'
+    WHERE  s.id = p_slot_id
+    GROUP  BY s.places_max;
 
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'Salle % introuvable ou inactive', p_room_id;
+    IF v_places_dispo IS NULL THEN
+        RAISE EXCEPTION 'SLOT_NOT_FOUND : créneau % inexistant', p_slot_id;
     END IF;
 
-    -- Creer la reservation
-    -- La contrainte EXCLUDE verifie automatiquement les chevauchements
-    INSERT INTO reservations (tenant_id, room_id, user_id, time_slot, metadata)
-    VALUES (
-        p_tenant_id,
-        p_room_id,
-        p_user_id,
-        tstzrange(p_start, p_end, '[)'),
-        p_metadata
-    )
-    RETURNING id INTO v_reservation_id;
+    IF v_places_dispo < p_nb_places THEN
+        RAISE EXCEPTION 'SLOT_FULL : % place(s) disponible(s), % demandée(s)',
+            v_places_dispo, p_nb_places;
+    END IF;
 
-    -- Creer l'evenement associe
-    INSERT INTO events (tenant_id, reservation_id, title, description, event_type)
-    VALUES (
-        p_tenant_id,
-        v_reservation_id,
-        p_title,
-        p_description,
-        p_event_type
-    )
-    RETURNING id INTO v_event_id;
+    INSERT INTO bookings (slot_id, user_id, family_id, nb_places)
+    VALUES (p_slot_id, p_user_id, p_family_id, p_nb_places)
+    RETURNING id INTO v_booking_id;
 
-    RETURN QUERY SELECT v_reservation_id, v_event_id;
+    RETURN v_booking_id;
 END;
 $$;
+
+-- Appel depuis l'API (dans une transaction Serializable) :
+-- BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+-- SELECT set_config('app.family_id', '3', true);
+-- SELECT book_slot(42, 17, 3, 2);
+-- COMMIT;
+-- → 40001 si concurrent : retry avec backoff exponentiel (max 5 tentatives)
 ```
 
-### 4.3 Node.js : reservation avec retry
-
-```typescript
-import pg from 'pg';
-import type { PoolClient } from 'pg';
-const { Pool } = pg;
-
-const pool = new Pool({
-    host: process.env.PGHOST,
-    database: 'reservation_db',
-    user: 'reservation_app',
-    password: process.env.PGPASSWORD,
-    max: 20,
-    idleTimeoutMillis: 30_000,
-});
-
-interface ReservationInput {
-    tenantId: number;
-    roomId: number;
-    userId: number;
-    start: string;
-    end: string;
-    title: string;
-    description?: string | null;
-    eventType?: string;
-    metadata?: Record<string, unknown>;
-}
-
-interface ReservationResult {
-    success: boolean;
-    reservationId?: number;
-    eventId?: number;
-    error?: string;
-    message?: string;
-}
-
-interface DatabaseError extends Error {
-    code?: string;
-}
-
-/**
- * Creer une reservation avec retry automatique
- * en cas de conflit de serialisation.
- */
-async function createReservation({
-    tenantId,
-    roomId,
-    userId,
-    start,
-    end,
-    title,
-    description = null,
-    eventType = 'meeting',
-    metadata = {},
-}: ReservationInput): Promise<ReservationResult> {
-    const maxRetries = 5;
-
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        const client: PoolClient = await pool.connect();
-
-        try {
-            await client.query(
-                'BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE'
-            );
-
-            // Definir le tenant pour RLS
-            await client.query(
-                "SELECT set_config('app.tenant_id', $1::text, true)",
-                [tenantId.toString()]
-            );
-
-            // Appeler la fonction de reservation
-            const { rows } = await client.query(
-                `SELECT * FROM create_reservation(
-                    $1, $2, $3, $4, $5, $6, $7, $8::event_type, $9::jsonb
-                )`,
-                [
-                    tenantId, roomId, userId,
-                    start, end,
-                    title, description, eventType,
-                    JSON.stringify(metadata),
-                ]
-            );
-
-            await client.query('COMMIT');
-
-            return {
-                success: true,
-                reservationId: rows[0].reservation_id,
-                eventId: rows[0].event_id,
-            };
-        } catch (error) {
-            await client.query('ROLLBACK');
-            const dbError = error as DatabaseError;
-
-            // Serialization failure (40001) ou deadlock (40P01) → retry
-            if (
-                (dbError.code === '40001' || dbError.code === '40P01') &&
-                attempt < maxRetries
-            ) {
-                const delay: number = Math.min(
-                    50 * Math.pow(2, attempt) + Math.random() * 50,
-                    3000
-                );
-                console.warn(
-                    `Reservation retry ${attempt}/${maxRetries} ` +
-                    `(${dbError.code}), waiting ${Math.round(delay)}ms`
-                );
-                await new Promise((r) => setTimeout(r, delay));
-                continue;
-            }
-
-            // Exclusion constraint violation (23P01) → double booking
-            if (dbError.code === '23P01') {
-                return {
-                    success: false,
-                    error: 'DOUBLE_BOOKING',
-                    message: 'Ce creneau est deja reserve pour cette salle.',
-                };
-            }
-
-            // Check constraint violation (23514)
-            if (dbError.code === '23514') {
-                return {
-                    success: false,
-                    error: 'CONSTRAINT_VIOLATION',
-                    message: dbError.message,
-                };
-            }
-
-            throw error;
-        } finally {
-            client.release();
-        }
-    }
-
-    return {
-        success: false,
-        error: 'MAX_RETRIES',
-        message: 'Impossible de creer la reservation apres plusieurs tentatives.',
-    };
-}
-```
-
-### 4.4 FOR UPDATE NOWAIT pour le lock optimiste
-
-```typescript
-interface CancelResult {
-    success: boolean;
-    error?: string;
-    message?: string;
-}
-
-interface ReservationRow {
-    id: number;
-    user_id: number;
-    status: string;
-}
-
-interface UserRow {
-    role: string;
-}
-
-/**
- * Annuler une reservation.
- * Utilise FOR UPDATE NOWAIT pour echouer vite
- * si la reservation est deja en cours de modification.
- */
-async function cancelReservation(
-    tenantId: number,
-    reservationId: number,
-    userId: number
-): Promise<CancelResult> {
-    const client: PoolClient = await pool.connect();
-
-    try {
-        await client.query('BEGIN');
-        await client.query(
-            "SELECT set_config('app.tenant_id', $1::text, true)",
-            [tenantId.toString()]
-        );
-
-        // Verrouiller la reservation immediatement ou echouer
-        const { rows } = await client.query<ReservationRow>(
-            `SELECT id, user_id, status
-             FROM reservations
-             WHERE id = $1
-               AND tenant_id = $2
-             FOR UPDATE NOWAIT`,
-            [reservationId, tenantId]
-        );
-
-        if (rows.length === 0) {
-            await client.query('ROLLBACK');
-            return { success: false, error: 'NOT_FOUND' };
-        }
-
-        if (rows[0].status === 'cancelled') {
-            await client.query('ROLLBACK');
-            return { success: false, error: 'ALREADY_CANCELLED' };
-        }
-
-        // Verifier les droits (admin ou proprietaire)
-        const { rows: userRows } = await client.query<UserRow>(
-            'SELECT role FROM users WHERE id = $1 AND tenant_id = $2',
-            [userId, tenantId]
-        );
-
-        if (
-            userRows[0].role !== 'admin' &&
-            rows[0].user_id !== userId
-        ) {
-            await client.query('ROLLBACK');
-            return { success: false, error: 'FORBIDDEN' };
-        }
-
-        // Annuler (soft delete)
-        await client.query(
-            `UPDATE reservations
-             SET status = 'cancelled', updated_at = now()
-             WHERE id = $1`,
-            [reservationId]
-        );
-
-        await client.query('COMMIT');
-        return { success: true };
-    } catch (error) {
-        await client.query('ROLLBACK');
-        const dbError = error as DatabaseError;
-
-        if (dbError.code === '55P03') {
-            return {
-                success: false,
-                error: 'LOCKED',
-                message: 'La reservation est en cours de modification.',
-            };
-        }
-
-        throw error;
-    } finally {
-        client.release();
-    }
-}
-```
-
----
-
-## 5. Requetes complexes
-
-### 5.1 Disponibilité avec LATERAL joins
+**Trigger d'audit :**
 
 ```sql
--- Trouver les creneaux disponibles pour une salle donnee
--- sur une journee donnee
-WITH time_slots AS (
-    -- Generer des creneaux de 30 minutes
-    SELECT
-        slot_start,
-        slot_start + interval '30 minutes' AS slot_end
-    FROM generate_series(
-        '2025-03-10 08:00'::timestamptz,
-        '2025-03-10 19:30'::timestamptz,
-        interval '30 minutes'
-    ) AS slot_start
-)
-SELECT
-    ts.slot_start,
-    ts.slot_end,
-    CASE
-        WHEN r.id IS NOT NULL THEN 'RESERVE'
-        ELSE 'DISPONIBLE'
-    END AS statut,
-    e.title AS evenement
-FROM time_slots ts
-LEFT JOIN LATERAL (
-    SELECT r.id
-    FROM reservations r
-    WHERE r.room_id = 1  -- Salle 1
-      AND r.status != 'cancelled'
-      AND r.time_slot && tstzrange(ts.slot_start, ts.slot_end, '[)')
-    LIMIT 1
-) r ON true
-LEFT JOIN events e ON e.reservation_id = r.id
-ORDER BY ts.slot_start;
-```
-
-### 5.2 Statistiques avec Window Functions
-
-```sql
--- Taux d'occupation des salles par semaine
-WITH weekly_stats AS (
-    SELECT
-        ro.name AS salle,
-        date_trunc('week', lower(r.time_slot))::date AS semaine,
-        SUM(
-            EXTRACT(EPOCH FROM (upper(r.time_slot) - lower(r.time_slot))) / 3600
-        ) AS heures_reservees,
-        -- Heures ouvrables par semaine : 5 jours * 11h = 55h
-        55.0 AS heures_disponibles
-    FROM reservations r
-    JOIN rooms ro ON r.room_id = ro.id
-    WHERE r.status = 'confirmed'
-      AND r.tenant_id = 1
-    GROUP BY ro.name, date_trunc('week', lower(r.time_slot))
-)
-SELECT
-    salle,
-    semaine,
-    ROUND(heures_reservees, 1) AS heures_reservees,
-    ROUND(100.0 * heures_reservees / heures_disponibles, 1) AS taux_occupation,
-    ROUND(AVG(heures_reservees) OVER (
-        PARTITION BY salle
-        ORDER BY semaine
-        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
-    ), 1) AS moyenne_mobile_4sem,
-    RANK() OVER (
-        PARTITION BY semaine
-        ORDER BY heures_reservees DESC
-    ) AS classement_semaine
-FROM weekly_stats
-ORDER BY semaine DESC, classement_semaine;
-```
-
-### 5.3 Recherche Full-Text sur événements
-
-```sql
--- Recherche d'evenements avec scoring et highlighting
-SELECT
-    e.title,
-    ts_headline('french', e.description,
-        websearch_to_tsquery('french', $1),
-        'StartSel=<b>, StopSel=</b>, MaxFragments=2, MaxWords=30'
-    ) AS extrait,
-    r.time_slot,
-    ro.name AS salle,
-    ts_rank(e.search_vector, websearch_to_tsquery('french', $1)) AS score
-FROM events e
-JOIN reservations r ON e.reservation_id = r.id
-JOIN rooms ro ON r.room_id = ro.id
-WHERE e.search_vector @@ websearch_to_tsquery('french', $1)
-  AND e.tenant_id = $2
-ORDER BY score DESC
-LIMIT 20;
-```
-
-### 5.4 Rapport avec CTE
-
-```sql
--- Rapport mensuel complet
-WITH
-monthly_reservations AS (
-    SELECT
-        date_trunc('month', lower(time_slot))::date AS mois,
-        COUNT(*) AS nb_reservations,
-        COUNT(DISTINCT user_id) AS nb_utilisateurs,
-        COUNT(DISTINCT room_id) AS nb_salles_utilisees,
-        SUM(EXTRACT(EPOCH FROM (upper(time_slot) - lower(time_slot))) / 3600)
-            AS heures_totales
-    FROM reservations
-    WHERE tenant_id = 1
-      AND status = 'confirmed'
-    GROUP BY date_trunc('month', lower(time_slot))
-),
-monthly_cancellations AS (
-    SELECT
-        date_trunc('month', updated_at)::date AS mois,
-        COUNT(*) AS nb_annulations
-    FROM reservations
-    WHERE tenant_id = 1
-      AND status = 'cancelled'
-    GROUP BY date_trunc('month', updated_at)
-),
-top_users AS (
-    SELECT
-        date_trunc('month', lower(r.time_slot))::date AS mois,
-        u.full_name,
-        COUNT(*) AS nb_reservations,
-        ROW_NUMBER() OVER (
-            PARTITION BY date_trunc('month', lower(r.time_slot))
-            ORDER BY COUNT(*) DESC
-        ) AS rang
-    FROM reservations r
-    JOIN users u ON r.user_id = u.id
-    WHERE r.tenant_id = 1
-      AND r.status = 'confirmed'
-    GROUP BY date_trunc('month', lower(r.time_slot)), u.full_name
-)
-SELECT
-    mr.mois,
-    mr.nb_reservations,
-    mr.nb_utilisateurs,
-    mr.nb_salles_utilisees,
-    ROUND(mr.heures_totales::numeric, 1) AS heures_totales,
-    COALESCE(mc.nb_annulations, 0) AS nb_annulations,
-    ROUND(
-        100.0 * COALESCE(mc.nb_annulations, 0) /
-        NULLIF(mr.nb_reservations + COALESCE(mc.nb_annulations, 0), 0),
-        1
-    ) AS taux_annulation_pct,
-    tu.full_name AS top_utilisateur,
-    tu.nb_reservations AS reservations_top_user
-FROM monthly_reservations mr
-LEFT JOIN monthly_cancellations mc ON mr.mois = mc.mois
-LEFT JOIN top_users tu ON mr.mois = tu.mois AND tu.rang = 1
-ORDER BY mr.mois DESC;
-```
-
----
-
-## 6. Sécurité
-
-### 6.1 Roles
-
-```sql
--- Role pour l'application
-CREATE ROLE reservation_app WITH LOGIN PASSWORD 'strong_password_here';
-GRANT CONNECT ON DATABASE reservation_db TO reservation_app;
-GRANT USAGE ON SCHEMA public TO reservation_app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO reservation_app;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO reservation_app;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO reservation_app;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public
-    GRANT USAGE, SELECT ON SEQUENCES TO reservation_app;
-
--- Role pour les rapports (lecture seule)
-CREATE ROLE reservation_reports WITH LOGIN PASSWORD 'another_strong_password';
-GRANT CONNECT ON DATABASE reservation_db TO reservation_reports;
-GRANT USAGE ON SCHEMA public TO reservation_reports;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO reservation_reports;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public
-    GRANT SELECT ON TABLES TO reservation_reports;
-
--- Role pour le monitoring
-CREATE ROLE reservation_monitor WITH LOGIN PASSWORD 'monitor_password';
-GRANT pg_monitor TO reservation_monitor;
-GRANT CONNECT ON DATABASE reservation_db TO reservation_monitor;
-```
-
-### 6.2 RLS policies par tenant
-
-```sql
--- Activer RLS sur toutes les tables multi-tenant
-ALTER TABLE users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE rooms ENABLE ROW LEVEL SECURITY;
-ALTER TABLE reservations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE events ENABLE ROW LEVEL SECURITY;
-ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
-
--- Policy generique pour chaque table
-CREATE POLICY tenant_isolation ON users
-    FOR ALL TO reservation_app
-    USING (tenant_id = current_setting('app.tenant_id')::int)
-    WITH CHECK (tenant_id = current_setting('app.tenant_id')::int);
-
-CREATE POLICY tenant_isolation ON rooms
-    FOR ALL TO reservation_app
-    USING (tenant_id = current_setting('app.tenant_id')::int)
-    WITH CHECK (tenant_id = current_setting('app.tenant_id')::int);
-
-CREATE POLICY tenant_isolation ON reservations
-    FOR ALL TO reservation_app
-    USING (tenant_id = current_setting('app.tenant_id')::int)
-    WITH CHECK (tenant_id = current_setting('app.tenant_id')::int);
-
-CREATE POLICY tenant_isolation ON events
-    FOR ALL TO reservation_app
-    USING (tenant_id = current_setting('app.tenant_id')::int)
-    WITH CHECK (tenant_id = current_setting('app.tenant_id')::int);
-
-CREATE POLICY tenant_isolation ON audit_log
-    FOR ALL TO reservation_app
-    USING (tenant_id = current_setting('app.tenant_id')::int)
-    WITH CHECK (tenant_id = current_setting('app.tenant_id')::int);
-```
-
-### 6.3 Audit trail avec trigger
-
-```sql
--- Trigger generique d'audit
-CREATE OR REPLACE FUNCTION audit_trigger_fn()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-AS $$
-DECLARE
-    v_tenant_id INT;
+CREATE OR REPLACE FUNCTION audit_fn()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-    -- Extraire le tenant_id selon l'operation
-    IF TG_OP = 'DELETE' THEN
-        v_tenant_id := OLD.tenant_id;
-    ELSE
-        v_tenant_id := NEW.tenant_id;
-    END IF;
-
-    INSERT INTO audit_log (tenant_id, table_name, record_id, action, old_data, new_data)
+    INSERT INTO audit_log (table_name, record_id, action, old_data, new_data)
     VALUES (
-        v_tenant_id,
         TG_TABLE_NAME,
-        CASE TG_OP
-            WHEN 'DELETE' THEN OLD.id
-            ELSE NEW.id
-        END,
-        TG_OP::audit_action,
-        CASE WHEN TG_OP IN ('UPDATE', 'DELETE')
-            THEN to_jsonb(OLD) ELSE NULL END,
-        CASE WHEN TG_OP IN ('INSERT', 'UPDATE')
-            THEN to_jsonb(NEW) ELSE NULL END
+        COALESCE(NEW.id, OLD.id),
+        TG_OP,
+        CASE WHEN TG_OP IN ('UPDATE', 'DELETE') THEN to_jsonb(OLD) END,
+        CASE WHEN TG_OP IN ('INSERT', 'UPDATE')  THEN to_jsonb(NEW) END
     );
-
     RETURN COALESCE(NEW, OLD);
 END;
 $$;
 
--- Appliquer le trigger sur les tables sensibles
-CREATE TRIGGER audit_reservations
-    AFTER INSERT OR UPDATE OR DELETE ON reservations
-    FOR EACH ROW EXECUTE FUNCTION audit_trigger_fn();
-
-CREATE TRIGGER audit_events
-    AFTER INSERT OR UPDATE OR DELETE ON events
-    FOR EACH ROW EXECUTE FUNCTION audit_trigger_fn();
-
-CREATE TRIGGER audit_rooms
-    AFTER INSERT OR UPDATE OR DELETE ON rooms
-    FOR EACH ROW EXECUTE FUNCTION audit_trigger_fn();
+CREATE TRIGGER trg_audit_bookings
+    AFTER INSERT OR UPDATE OR DELETE ON bookings
+    FOR EACH ROW EXECUTE FUNCTION audit_fn();
 ```
 
----
-
-## 7. Monitoring
-
-### 7.1 Dashboard pg_stat_statements
+**Requête de disponibilité avec Full-Text Search :**
 
 ```sql
--- Top 10 requetes les plus couteuses
+-- Créneaux disponibles pour les activités TribuZen correspondant à « poterie »
 SELECT
-    LEFT(query, 80) AS query,
-    calls,
-    ROUND(total_exec_time::numeric, 2) AS total_ms,
-    ROUND(mean_exec_time::numeric, 2) AS avg_ms,
-    ROUND(max_exec_time::numeric, 2) AS max_ms,
-    rows,
-    ROUND(100.0 * shared_blks_hit /
-        NULLIF(shared_blks_hit + shared_blks_read, 0), 1) AS cache_hit_pct
-FROM pg_stat_statements
-ORDER BY total_exec_time DESC
-LIMIT 10;
+    a.title,
+    s.id                                              AS slot_id,
+    lower(s.time_range)                               AS debut,
+    upper(s.time_range)                               AS fin,
+    s.places_max - COALESCE(SUM(b.nb_places), 0)     AS places_dispo,
+    ts_rank(a.search_vector,
+            websearch_to_tsquery('french', 'poterie')) AS score
+FROM activities a
+JOIN slots s ON s.activity_id = a.id
+LEFT JOIN bookings b ON b.slot_id = s.id AND b.status = 'confirmed'
+WHERE a.search_vector @@ websearch_to_tsquery('french', 'poterie')
+  AND upper(s.time_range) > now()
+GROUP BY a.title, s.id, a.search_vector
+HAVING s.places_max - COALESCE(SUM(b.nb_places), 0) > 0
+ORDER BY score DESC, debut;
 ```
 
-### 7.2 Detection des requêtes lentes
+Pas-à-pas : (1) `search_vector @@` exploite l'index GIN `idx_activities_fts` → pas de Seq Scan sur `activities` ; (2) la jointure LEFT avec `b.status = 'confirmed'` utilise `idx_bookings_active` (index partiel) → seules les lignes actives participent au `SUM` ; (3) le filtre `HAVING` exclut les créneaux complets sans sous-requête supplémentaire ; (4) `ts_rank` trie par pertinence sans coût additionnel car `search_vector` est une colonne `STORED`.
 
-```sql
--- Requetes actives depuis plus de 5 secondes
-CREATE OR REPLACE VIEW slow_queries AS
-SELECT
-    pid,
-    usename,
-    datname,
-    state,
-    LEFT(query, 200) AS query,
-    age(now(), query_start) AS duration,
-    wait_event_type,
-    wait_event,
-    pg_blocking_pids(pid) AS blocked_by
-FROM pg_stat_activity
-WHERE state = 'active'
-  AND age(now(), query_start) > interval '5 seconds'
-  AND pid != pg_backend_pid()
-ORDER BY query_start;
-```
+## 4. Pièges & misconceptions
 
-### 7.3 Monitoring des locks
+- **Oublier `btree_gist` avant une contrainte EXCLUDE sur un scalaire + TSTZRANGE.** `EXCLUDE USING GIST (activity_id WITH =, time_range WITH &&)` nécessite que `INT` soit indexable dans GiST, ce que `btree_gist` active. Sans l'extension, PostgreSQL lève `operator class "=" is not supported for access method "gist"` au moment du `CREATE TABLE`. *Correct* : `CREATE EXTENSION IF NOT EXISTS btree_gist` en première ligne du script DDL.
 
-```sql
--- Vue des locks en attente
-CREATE OR REPLACE VIEW lock_monitor AS
-SELECT
-    blocked.pid AS blocked_pid,
-    blocked.usename AS blocked_user,
-    LEFT(blocked.query, 100) AS blocked_query,
-    age(now(), blocked.query_start) AS blocked_since,
-    blocking.pid AS blocking_pid,
-    blocking.usename AS blocking_user,
-    LEFT(blocking.query, 100) AS blocking_query,
-    blocking.state AS blocking_state
-FROM pg_stat_activity blocked
-JOIN pg_locks bl ON bl.pid = blocked.pid AND NOT bl.granted
-JOIN pg_locks gl ON gl.relation = bl.relation
-    AND gl.locktype = bl.locktype
-    AND gl.pid != bl.pid
-    AND gl.granted
-JOIN pg_stat_activity blocking ON blocking.pid = gl.pid
-WHERE blocked.state != 'idle';
-```
+- **Compter les places disponibles hors transaction.** Lire `COUNT(bookings)` dans une requête séparée puis insérer dans une autre laisse une fenêtre de race condition — deux sessions lisent « 2 dispo », insèrent toutes les deux. *Correct* : lire et insérer dans **une seule** transaction Serializable via `book_slot()` ; le moteur lève `40001` si un concurrent a écrit entre les deux, et l'appelant réessaie.
 
-### 7.4 Script Node.js de monitoring complet
+- **Tester RLS avec le superuser.** Par défaut, le superuser et les rôles `BYPASSRLS` court-circuitent silencieusement toutes les policies — les tests passent, la sécurité est fictive. *Correct* : tester systématiquement avec `SET ROLE reservation_app` et `select_config('app.family_id', ...)` pour voir les vraies restrictions.
 
-```typescript
-import pg from 'pg';
-const { Pool } = pg;
+- **UNIQUE (slot_id, user_id) sans exclure les annulations.** Avec une contrainte table-level simple, un utilisateur qui annule sa réservation ne peut jamais re-réserver le même créneau — la ligne annulée occupe toujours la contrainte unique. *Correct* : un index partiel `WHERE status = 'confirmed'` n'interdit que les doublons actifs et autorise la re-réservation après annulation.
 
-const monitorPool = new Pool({
-    user: 'reservation_monitor',
-    database: 'reservation_db',
-    max: 2,
-});
+- **Dénormaliser `family_id` sans garantir la cohérence.** `slots.family_id` est copié depuis `activities.family_id` pour simplifier les policies RLS. Si `activities.family_id` change sans mettre à jour `slots.family_id`, les données deviennent incohérentes et la RLS filtre mal. *Correct* : un trigger `BEFORE INSERT OR UPDATE` sur `slots` qui copie `family_id` depuis `activities`, ou une FK check déclenchée à chaque écriture.
 
-interface ConnRow {
-    state: string | null;
-    count: string;
-}
+- **Négliger le retry sur `40001`.** Choisir Serializable sans gérer le retry produit des erreurs visibles par l'utilisateur sur des opérations parfaitement légitimes — pas un bug applicatif, une collision normale de concurrence. *Correct* : encapsuler la transaction dans une boucle (max 5 tentatives, backoff 50 ms × 2^n + jitter aléatoire) ; loguer chaque retry pour détecter un taux anormalement élevé de collisions (hot spot sur un créneau très demandé).
 
-interface CacheRatioRow {
-    ratio: string | null;
-}
+## 5. Ancrage TribuZen
 
-interface DeadlockRow {
-    deadlocks: string;
-}
+Couche fil-rouge : **concevoir la base complète** dans `smaurier/tribuzen` — ce capstone ajoute les quatre tables (`activities`, `slots`, `bookings`, `audit_log`) au schéma existant (`families`, `users`, `family_member`).
 
-interface TableSizeRow {
-    relname: string;
-    size: string;
-    dead_tuples: string;
-}
+- Le schéma est **production-ready** dès le départ : extension `btree_gist`, contrainte EXCLUDE sur `slots`, index partiel unique sur `bookings`, GIN pour la recherche d'activités en français.
+- La fonction `book_slot()` est le **point d'entrée unique** pour toute réservation TribuZen : zéro logique de concurrence côté Node.js, tout est encapsulé dans la transaction Serializable.
+- RLS isole chaque famille : « Les Martin » ne voient que leurs activités et réservations, même si le pool de connexions `pg.Pool` est partagé entre toutes les familles de la plateforme.
+- Le trigger d'audit sur `bookings` constitue le journal légal du système : chaque annulation conserve l'état `old_data` en JSONB, immuable et requêtable.
+- La requête de disponibilité avec FTS (Exemple B) alimente directement la vue « Trouver une activité » de l'app React Native — score de pertinence + filtre places restantes en un seul aller-retour, sous 2 ms avec les index GIN et GiST.
+- Ce schéma sera repris au module 16 (réplication logique) : `activities` et `slots` (lecture intensive) seront routés vers un replica dédié, `bookings` (écriture critique) resteront sur le primaire.
 
-interface TodayRow {
-    confirmed: string;
-    tentative: string;
-    cancelled: string;
-}
+## 6. Points clés
 
-interface Metrics {
-    connections: Record<string, number>;
-    cacheHitRatio: number;
-    deadlocks: number;
-    topTables: TableSizeRow[];
-    todayReservations: TodayRow;
-}
+1. Commencer par les besoins et les entités ; normaliser en 3NF avant tout ; dénormaliser uniquement après que `EXPLAIN ANALYZE` prouve un goulot sur une jointure.
+2. Activer `btree_gist` avant toute contrainte `EXCLUDE USING GIST` qui mélange un type scalaire (INT) et un type range (TSTZRANGE) — sans l'extension, le DDL échoue.
+3. Le comptage des places disponibles et l'INSERT **doivent** être dans la même transaction Serializable ; séparer la lecture et l'écriture ouvre une race condition incontrôlable.
+4. RLS s'appuie sur un rôle dédié (`reservation_app`) et une variable de session (`app.family_id`) ; ne jamais tester en superuser — les policies sont invisibles en BYPASSRLS.
+5. La contrainte `UNIQUE (slot_id, user_id)` simple bloque la re-réservation après annulation ; un index partiel `WHERE status = 'confirmed'` n'interdit que les doublons actifs.
+6. Tout audit de donnée sensible passe par un trigger AFTER qui écrit `old_data` / `new_data` en JSONB — la base garantit la traçabilité, l'application n'a pas à s'en charger.
+7. Chaque transaction Serializable susceptible d'entrer en conflit doit avoir une boucle de retry sur `40001` avec backoff exponentiel et jitter ; loguer le taux de retry pour détecter les hot spots.
+8. La conception suit un ordre strict : besoins → entités → normalisation → contraintes → index → données de test → `EXPLAIN ANALYZE` → RLS → tests de sécurité.
 
-async function collectMetrics(): Promise<Metrics> {
-    // 1. Connexions
-    const { rows: connRows } = await monitorPool.query<ConnRow>(`
-        SELECT state, COUNT(*) AS count
-        FROM pg_stat_activity
-        WHERE datname = current_database()
-        GROUP BY state
-    `);
-    const connections: Record<string, number> = Object.fromEntries(
-        connRows.map((r) => [r.state || 'null', parseInt(r.count)])
-    );
-
-    // 2. Cache hit ratio
-    const { rows: cacheRows } = await monitorPool.query<CacheRatioRow>(`
-        SELECT ROUND(100.0 * SUM(blks_hit) /
-            NULLIF(SUM(blks_hit) + SUM(blks_read), 0), 2) AS ratio
-        FROM pg_stat_database
-        WHERE datname = current_database()
-    `);
-    const cacheHitRatio: number = parseFloat(cacheRows[0].ratio || '0');
-
-    // 3. Deadlocks
-    const { rows: dlRows } = await monitorPool.query<DeadlockRow>(`
-        SELECT deadlocks FROM pg_stat_database
-        WHERE datname = current_database()
-    `);
-    const deadlocks: number = parseInt(dlRows[0].deadlocks);
-
-    // 4. Table sizes
-    const { rows: sizeRows } = await monitorPool.query<TableSizeRow>(`
-        SELECT relname,
-               pg_size_pretty(pg_total_relation_size(relid)) AS size,
-               n_dead_tup AS dead_tuples
-        FROM pg_stat_user_tables
-        ORDER BY pg_total_relation_size(relid) DESC
-        LIMIT 5
-    `);
-
-    // 5. Reservations du jour
-    const { rows: todayRows } = await monitorPool.query<TodayRow>(`
-        SELECT
-            COUNT(*) FILTER (WHERE status = 'confirmed') AS confirmed,
-            COUNT(*) FILTER (WHERE status = 'tentative') AS tentative,
-            COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled
-        FROM reservations
-        WHERE time_slot && tstzrange(
-            date_trunc('day', now()),
-            date_trunc('day', now()) + interval '1 day'
-        )
-    `);
-
-    return {
-        connections,
-        cacheHitRatio,
-        deadlocks,
-        topTables: sizeRows,
-        todayReservations: todayRows[0],
-    };
-}
-
-// Boucle de collecte
-async function monitorLoop(): Promise<void> {
-    while (true) {
-        try {
-            const metrics: Metrics = await collectMetrics();
-            console.log(
-                `[${new Date().toISOString()}] Metrics:`,
-                JSON.stringify(metrics, null, 2)
-            );
-
-            // Alertes
-            if (metrics.cacheHitRatio < 95) {
-                console.warn('ALERTE : Cache hit ratio bas !', metrics.cacheHitRatio);
-            }
-            if (metrics.connections['idle in transaction'] > 5) {
-                console.warn('ALERTE : Trop de transactions idle !');
-            }
-        } catch (error) {
-            console.error('Erreur monitoring :', (error as Error).message);
-        }
-
-        await new Promise((r) => setTimeout(r, 30_000)); // 30s
-    }
-}
-```
-
----
-
-## 8. Optimisation
-
-### 8.1 EXPLAIN ANALYZE sur les requêtes critiques
-
-```sql
--- Verifier le plan de la requete de disponibilite
-EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
-SELECT r.id, r.time_slot, e.title
-FROM reservations r
-JOIN events e ON e.reservation_id = r.id
-WHERE r.room_id = 1
-  AND r.status = 'confirmed'
-  AND r.time_slot && '[2025-03-10 08:00, 2025-03-10 20:00)'::tstzrange;
-
--- Resultat attendu (avec index GiST) :
--- Nested Loop (actual time=0.05..0.12 rows=3)
---   -> Index Scan using idx_reservations_room_timeslot
---      on reservations r (actual time=0.03..0.05 rows=3)
---        Index Cond: (room_id = 1) AND (time_slot && ...)
---        Filter: (status = 'confirmed')
---   -> Index Scan using idx_events_reservation
---      on events e (actual time=0.01..0.01 rows=1)
---        Index Cond: (reservation_id = r.id)
--- Planning Time: 0.2ms
--- Execution Time: 0.15ms   ← < 1ms, excellent !
-```
-
-### 8.2 Connection pooling
-
-```typescript
-// Configuration optimale pour le systeme de reservation
-const pool = new Pool({
-    max: 20,                       // 20 connexions max
-    min: 5,                        // 5 connexions minimum
-    idleTimeoutMillis: 30_000,     // Fermer les idle apres 30s
-    connectionTimeoutMillis: 5_000, // Timeout connexion 5s
-    maxUses: 7500,                 // Recycler apres 7500 requetes
-    statement_timeout: 30_000,     // Timeout requete 30s
-});
-```
-
-### 8.3 Partitionnement de l'audit_log par date
-
-```sql
--- Deja fait dans la creation du schema (section 2)
--- Purge des vieilles partitions (automatisable avec pg_cron)
-
--- Supprimer les audits de plus de 2 ans
--- DROP TABLE audit_log_2023_01;  -- INSTANTANE !
--- (beaucoup plus rapide que DELETE FROM audit_log WHERE ...)
-
--- Script de creation automatique de partitions
-CREATE OR REPLACE FUNCTION create_audit_partition(p_date DATE)
-RETURNS VOID
-LANGUAGE plpgsql
-AS $$
-DECLARE
-    v_partition_name TEXT;
-    v_start_date DATE;
-    v_end_date DATE;
-BEGIN
-    v_start_date := date_trunc('month', p_date)::date;
-    v_end_date := (v_start_date + interval '1 month')::date;
-    v_partition_name := 'audit_log_' || to_char(v_start_date, 'YYYY_MM');
-
-    EXECUTE format(
-        'CREATE TABLE IF NOT EXISTS %I PARTITION OF audit_log
-         FOR VALUES FROM (%L) TO (%L)',
-        v_partition_name, v_start_date, v_end_date
-    );
-END;
-$$;
-
--- Creer les partitions pour les 6 prochains mois
-SELECT create_audit_partition(
-    (now() + (n || ' months')::interval)::date
-)
-FROM generate_series(0, 5) AS n;
-```
-
----
-
-## 9. Script de test de charge
-
-```typescript
-import pg from 'pg';
-import type { PoolClient } from 'pg';
-const { Pool } = pg;
-
-const pool = new Pool({
-    database: 'reservation_db',
-    user: 'reservation_app',
-    max: 50,
-});
-
-const TENANTS: number[] = [1, 2, 3];
-const ROOMS_PER_TENANT = 5;
-const CONCURRENT_USERS = 20;
-const OPERATIONS = 200;
-
-let successCount = 0;
-let failureCount = 0;
-let doubleBookingCount = 0;
-let retryCount = 0;
-
-interface LoadTestParams {
-    tenantId: number;
-    roomId: number;
-    userId: number;
-    start: string;
-    end: string;
-    title: string;
-}
-
-interface LoadTestResult {
-    success: boolean;
-    error?: string;
-}
-
-interface DatabaseError extends Error {
-    code?: string;
-}
-
-async function simulateUser(userId: number): Promise<void> {
-    for (let i = 0; i < OPERATIONS / CONCURRENT_USERS; i++) {
-        const tenantId: number = TENANTS[Math.floor(Math.random() * TENANTS.length)];
-        const roomId: number = Math.floor(Math.random() * ROOMS_PER_TENANT) + 1;
-
-        // Generer un creneau aleatoire dans les 7 prochains jours
-        const dayOffset: number = Math.floor(Math.random() * 7);
-        const hourOffset: number = 8 + Math.floor(Math.random() * 10); // 8h-18h
-        const start = new Date();
-        start.setDate(start.getDate() + dayOffset + 1);
-        start.setHours(hourOffset, 0, 0, 0);
-
-        const end = new Date(start);
-        end.setHours(start.getHours() + 1); // 1 heure
-
-        try {
-            const result: LoadTestResult = await createReservationWithRetry({
-                tenantId,
-                roomId,
-                userId,
-                start: start.toISOString(),
-                end: end.toISOString(),
-                title: `Test ${userId}-${i}`,
-            });
-
-            if (result.success) {
-                successCount++;
-            } else if (result.error === 'DOUBLE_BOOKING') {
-                doubleBookingCount++;
-            } else {
-                failureCount++;
-            }
-        } catch (error) {
-            failureCount++;
-            console.error(`User ${userId}, op ${i}: ${(error as Error).message}`);
-        }
-    }
-}
-
-async function createReservationWithRetry(params: LoadTestParams): Promise<LoadTestResult> {
-    const maxRetries = 5;
-
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        const client: PoolClient = await pool.connect();
-        try {
-            await client.query('BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE');
-            await client.query(
-                "SELECT set_config('app.tenant_id', $1::text, true)",
-                [params.tenantId.toString()]
-            );
-
-            await client.query(
-                `INSERT INTO reservations (tenant_id, room_id, user_id, time_slot)
-                 VALUES ($1, $2, $3, tstzrange($4::timestamptz, $5::timestamptz, '[)'))`,
-                [params.tenantId, params.roomId, params.userId, params.start, params.end]
-            );
-
-            await client.query(
-                `INSERT INTO events (tenant_id, reservation_id, title)
-                 VALUES ($1, currval('reservations_id_seq'), $2)`,
-                [params.tenantId, params.title]
-            );
-
-            await client.query('COMMIT');
-            return { success: true };
-        } catch (error) {
-            await client.query('ROLLBACK');
-            const dbError = error as DatabaseError;
-
-            if ((dbError.code === '40001' || dbError.code === '40P01') && attempt < maxRetries) {
-                retryCount++;
-                await new Promise((r) => setTimeout(r, Math.random() * 100 * attempt));
-                continue;
-            }
-
-            if (dbError.code === '23P01') {
-                return { success: false, error: 'DOUBLE_BOOKING' };
-            }
-
-            throw error;
-        } finally {
-            client.release();
-        }
-    }
-
-    return { success: false, error: 'MAX_RETRIES' };
-}
-
-async function runLoadTest(): Promise<void> {
-    console.log(`Demarrage du test de charge...`);
-    console.log(`${CONCURRENT_USERS} utilisateurs, ${OPERATIONS} operations`);
-    console.log(`---`);
-
-    const startTime: number = Date.now();
-
-    // Lancer les utilisateurs en parallele
-    const promises: Promise<void>[] = Array.from({ length: CONCURRENT_USERS }, (_, i) =>
-        simulateUser(i + 1)
-    );
-
-    await Promise.all(promises);
-
-    const duration: number = (Date.now() - startTime) / 1000;
-
-    console.log(`\n=== RESULTATS ===`);
-    console.log(`Duree : ${duration.toFixed(1)}s`);
-    console.log(`Operations/s : ${(OPERATIONS / duration).toFixed(1)}`);
-    console.log(`Succes : ${successCount}`);
-    console.log(`Double bookings bloques : ${doubleBookingCount}`);
-    console.log(`Echecs : ${failureCount}`);
-    console.log(`Retries (serialization) : ${retryCount}`);
-    console.log(`Taux de succes : ${(100 * successCount / OPERATIONS).toFixed(1)}%`);
-}
-
-runLoadTest()
-    .catch(console.error)
-    .finally(() => pool.end());
-```
-
----
-
-## 10. Checklist de validation du projet
-
-### 10.1 Modelisation
-
-- [ ] Tables normalisees (3NF minimum)
-- [ ] Types adequats (TIMESTAMPTZ, ENUM, JSONB, TSTZRANGE)
-- [ ] Contraintes CHECK sur les valeurs metier
-- [ ] Foreign keys avec ON DELETE CASCADE/RESTRICT
-- [ ] Contrainte EXCLUDE pour le no-overlap
-
-### 10.2 Index
-
-- [ ] B-tree sur toutes les FK
-- [ ] GiST sur les ranges (tstzrange)
-- [ ] GIN sur JSONB (metadata, equipment)
-- [ ] GIN sur tsvector (Full-Text Search)
-- [ ] Partial indexes sur les statuts actifs
-- [ ] EXPLAIN ANALYZE sur les requêtes critiques (< 10ms)
-
-### 10.3 Concurrence
-
-- [ ] Isolation SERIALIZABLE pour les reservations
-- [ ] Retry pattern pour serialization_failure (40001)
-- [ ] Retry pattern pour deadlock_detected (40P01)
-- [ ] FOR UPDATE NOWAIT pour les modifications
-- [ ] SKIP LOCKED si pattern de queue
-
-### 10.4 Sécurité
-
-- [ ] Roles avec principe du moindre privilege
-- [ ] pg_hba.conf avec scram-sha-256
-- [ ] RLS actif sur toutes les tables multi-tenant
-- [ ] Policies testees (SET ROLE, set_config)
-- [ ] Audit trail fonctionnel
-
-### 10.5 Performance
-
-- [ ] Connection pooling (pg.Pool max: 20)
-- [ ] Prepared statements pour les requêtes frequentes
-- [ ] Autovacuum tune pour les tables actives
-- [ ] Cache hit ratio > 99%
-- [ ] Requetes critiques < 100ms
-
-### 10.6 Monitoring
-
-- [ ] pg_stat_statements installe et consulte
-- [ ] Alertes sur deadlocks, slow queries, idle-in-transaction
-- [ ] Backup quotidien (pg_dump -Fc)
-- [ ] Test de restauration effectue
-- [ ] Partitionnement de l'audit_log
-
-### 10.7 Tests
-
-- [ ] Test unitaire de la fonction create_reservation
-- [ ] Test de double booking (doit echouer)
-- [ ] Test de charge avec concurrence
-- [ ] Test RLS (un tenant ne voit pas les donnees d'un autre)
-- [ ] Test de restauration depuis un backup
-
----
-
-## Exercice mental final
-
-> **Exercice mental** : Votre système de reservation est en production depuis 6 mois. Un matin, les utilisateurs signalent que les reservations prennent 5 secondes au lieu de 100ms. Quelles étapes suivriez-vous pour diagnostiquer et résoudre le problème ?
-
-<details>
-<summary>Reponse</summary>
-
-**Étape 1 : Observation**
-- `SELECT * FROM pg_stat_activity WHERE state = 'active'` → requêtes en cours
-- `SELECT * FROM lock_monitor` → locks en attente ?
-- `SELECT * FROM slow_queries` → requêtes lentes
-
-**Étape 2 : Diagnostic**
-- `pg_stat_statements` → requêtes les plus lentes (avg_ms)
-- `pg_stat_user_tables` → `n_dead_tup` sur la table reservations (bloat ?)
-- `last_autovacuum` → l'autovacuum tourne-t-il ?
-- Cache hit ratio → est-il tombe sous 99% ?
-
-**Étape 3 : Actions**
-- Si bloat : `VACUUM ANALYZE reservations;`
-- Si statistiques obsoletes : `ANALYZE reservations;`
-- Si lock contention : vérifier les transactions idle-in-transaction
-- Si index manquant : `EXPLAIN ANALYZE` sur la requête lente
-- Si connexions saturees : vérifier `max_connections` vs pool size
-
-**Étape 4 : Prevention**
-- Tuner l'autovacuum : `autovacuum_vacuum_scale_factor = 0.01`
-- Alerter si `n_dead_tup` dépasse un seuil
-- Mettre un `statement_timeout` et `idle_in_transaction_session_timeout`
-</details>
-
----
-
-## Ce qu'il faut retenir
+## 7. Seeds Anki
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│              RECAPITULATIF DU COURS COMPLET                   │
-│                                                               │
-│  MODELISATION    : Types, contraintes, EXCLUDE, ranges       │
-│  INDEX           : B-tree, GiST, GIN, partial               │
-│  TRANSACTIONS    : MVCC, isolation, Serializable             │
-│  CONCURRENCE     : Locks, NOWAIT, SKIP LOCKED, retry        │
-│  DEADLOCKS       : Detection, prevention, lock ordering      │
-│  PERFORMANCE     : Pooling, COPY, VACUUM, partitioning      │
-│  SQL AVANCE      : Window Functions, CTEs, LATERAL           │
-│  TYPES AVANCES   : JSONB, arrays, ranges, Full-Text         │
-│  SECURITE        : Roles, GRANT, RLS, audit                 │
-│  ADMINISTRATION  : pg_dump, monitoring, extensions           │
-│                                                               │
-│  Vous avez maintenant les outils pour construire             │
-│  des applications robustes, performantes et securisees       │
-│  avec PostgreSQL.                                            │
-└──────────────────────────────────────────────────────────────┘
+Pourquoi activer btree_gist avant EXCLUDE USING GIST avec un INT et un TSTZRANGE ?|L'extension rend les types scalaires (INT) indexables dans GiST ; sans elle PostgreSQL lève "operator class = is not supported for access method gist" au CREATE TABLE
+Comment interdire le chevauchement de créneaux pour une même activité ?|CONSTRAINT no_slot_overlap EXCLUDE USING GIST (activity_id WITH =, time_range WITH &&) — nécessite btree_gist activé
+Pourquoi le comptage des places disponibles doit-il être dans la même transaction que l'INSERT ?|Lire puis insérer séparément ouvre une race condition ; deux sessions lisent "2 dispo" et insèrent toutes les deux → overbooking. Serializable dans la même transaction → la deuxième reçoit 40001 et réessaie
+Comment tester une policy RLS sans être superuser ?|SET ROLE reservation_app; SELECT set_config('app.family_id', '3', true); — le superuser et les rôles BYPASSRLS court-circuitent silencieusement toutes les policies
+Quelle différence entre UNIQUE (slot_id, user_id) et un index partiel WHERE status = confirmed ?|La contrainte table-level bloque toute re-réservation même après annulation ; l'index partiel n'interdit que les doublons actifs, permettant de re-réserver un créneau annulé
+Comment gérer l'erreur 40001 côté applicatif ?|Boucle de retry (max 5 tentatives), backoff exponentiel 50ms × 2^n + jitter aléatoire, log du taux de collisions pour détecter les hot spots
+Quel rôle joue le trigger AFTER INSERT OR UPDATE OR DELETE sur bookings ?|Écrire chaque modification dans audit_log avec old_data et new_data en JSONB — la traçabilité est garantie par la base, pas par l'application
+Quel type PostgreSQL modélise un créneau avec ses deux bornes inclusif/exclusif ?|TSTZRANGE — stocke debut et fin, supporte les opérateurs de chevauchement (&&) et containment (@>), et s'indexe avec GiST
+Quel ordre suivre pour un schéma production-ready ?|besoins → entités → normalisation 3NF → contraintes (CHECK, EXCLUDE, UNIQUE) → index → données de test → EXPLAIN ANALYZE → RLS → tests de sécurité
 ```
 
----
+## Pont vers le lab
 
-## Navigation
-
-| Précédent | Suivant |
-|---|---|
-| [Module 14 — Sécurité & Administration](./14-securite-et-administration.md) | Fin du cours |
-
-**Travaux pratiques** : [Lab 15 — Construire le système de reservation complet](../labs/lab-15-projet-final.md)
-
----
-
-> *"La théorie sans la pratique est sterile. La pratique sans la théorie est aveugle. Ce projet final est le pont entre les deux."*
-
----
-
-<!-- parcours-recommande -->
-
-::: tip Parcours recommandé
-1. **Screencast** : [screencast 15 projet final](../screencasts/screencast-15-projet-final.md)
-2. **Lab** : [lab-15-système-reservation](../labs/lab-15-systeme-reservation/README)
-3. **Quiz** : [quiz 15 projet final](../quizzes/quiz-15-projet-final.html)
-:::
+> Lab associé : `10-postgresql/labs/lab-15-systeme-reservation/`. Tu construis de zéro le schéma complet du système de réservation TribuZen — activités, créneaux, réservations, audit — avec toutes les contraintes, index et policies RLS. Tu écris la fonction `book_slot()`, tu observes la gestion de concurrence en deux sessions psql, et tu vérifies que RLS isole correctement les familles. Corrigé SQL inline dans le README, aucun fichier séparé.

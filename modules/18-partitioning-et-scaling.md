@@ -1,1352 +1,356 @@
-# Module 18 — Partitioning avance & Scaling
-
-> **Objectif** : Maîtriser le partitionnement natif de PostgreSQL (RANGE, LIST, HASH, sous-partitions), la maintenance des partitions, et les stratégies de scaling horizontal (Citus, FDW, sharding) pour gérer des tables de centaines de millions de lignes.
->
-> **Difficulte** : ⭐⭐⭐⭐⭐
-
+---
+titre: Partitioning et scaling
+cours: 10-postgresql
+notions: [partitionnement de table range list hash, partitionnement déclaratif, élagage des partitions partition pruning, maintenance des partitions, concepts de sharding, scaling vertical vs horizontal, pooling de connexions pgbouncer]
+outcomes: [partitionner une grande table par plage, bénéficier du partition pruning, gérer le cycle de vie des partitions, situer sharding et pooling dans une stratégie de scaling]
+prerequis: [17-monitoring-et-observabilite]
+next: 19-pgvector-embeddings
+libs: [{ name: postgresql, version: "17" }]
+tribuzen: partitionner la table posts de TribuZen par mois pour garder le feed rapide à grande échelle
+last-reviewed: 2026-07
 ---
 
-## 1. Pourquoi partitionner
+# Partitioning et scaling
 
-Imaginez une armoire avec un seul tiroir geant contenant 10 millions de feuilles. Pour trouver une feuille, vous devez potentiellement fouiller dans tout le tiroir. Maintenant, imaginez cette même armoire avec 12 tiroirs etiquetes "Janvier", "Fevrier", ..., "Decembre". Pour trouver une feuille de Mars, vous n'ouvrez qu'un seul tiroir.
+> **Outcomes — tu sauras FAIRE :** partitionner une grande table par plage de dates, vérifier et exploiter le partition pruning avec `EXPLAIN ANALYZE`, gérer le cycle de vie des partitions (création, DETACH, DROP), et situer sharding et pooling dans une stratégie de scaling.
+> **Difficulté :** :star::star::star::star:
 
-> **Analogie** : Le partitionnement PostgreSQL, c'est cette armoire a tiroirs. Au lieu d'une seule table gigantesque, vous la decoupez en **sous-tables** (partitions) selon un critere logique. PostgreSQL sait automatiquement dans quel "tiroir" chercher grace au **partition pruning**.
+## 1. Cas concret d'abord
 
-```
-Sans partitionnement :                Avec partitionnement (par mois) :
-
-  ┌─────────────────────┐            ┌─────────────────────┐
-  │                     │            │ events_2024_01      │ ← 850K lignes
-  │                     │            ├─────────────────────┤
-  │    events           │            │ events_2024_02      │ ← 920K lignes
-  │    10M lignes       │            ├─────────────────────┤
-  │                     │            │ events_2024_03      │ ← 780K lignes
-  │  Seq Scan : 10M     │            ├─────────────────────┤
-  │  lignes a parcourir │            │ ...                 │
-  │                     │            ├─────────────────────┤
-  │                     │            │ events_2024_12      │ ← 910K lignes
-  └─────────────────────┘            └─────────────────────┘
-
-  SELECT * FROM events               SELECT * FROM events
-  WHERE created_at                    WHERE created_at
-    BETWEEN '2024-03-01'                BETWEEN '2024-03-01'
-    AND '2024-03-31';                   AND '2024-03-31';
-
-  → Scan 10M lignes                  → Scan 780K lignes seulement
-                                       (partition pruning)
-```
-
-### Quand partitionner ?
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│          DECISION : FAUT-IL PARTITIONNER ?                    │
-│                                                               │
-│  OUI si :                                                    │
-│  ✓ Table > 100M de lignes (ou > 10 GB)                      │
-│  ✓ Requetes filtrent TOUJOURS sur le meme critere            │
-│    (date, tenant_id, region...)                              │
-│  ✓ Besoin de purger rapidement les anciennes donnees         │
-│    (DROP PARTITION vs DELETE massif)                          │
-│  ✓ Performances de VACUUM degradees sur grosse table         │
-│                                                               │
-│  NON si :                                                    │
-│  ✗ Table < 10M de lignes (le surcoat ne vaut pas le coup)   │
-│  ✗ Pas de critere de partition evident                       │
-│  ✗ Les requetes ne filtrent pas sur la cle de partition      │
-│  ✗ Besoin de FK vers cette table (limitees avec partitions)  │
-└──────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 2. Partition BY RANGE en profondeur
-
-### 2.1 Cas d'usage
-
-Le partitionnement par RANGE est le plus courant. Il est ideal pour :
-- **Time-series** : logs, événements, metriques (par jour, semaine, mois)
-- **Donnees historiques** : commandes, transactions (par mois, trimestre)
-- **Donnees avec cycle de vie** : garder N mois, archiver/supprimer le reste
-
-### 2.2 Création complete
+La table `posts` de TribuZen a démarré à quelques milliers de lignes — le feed famille chargeait en 0,8 ms. Six mois plus tard, avec 8 millions de posts sur 200 familles, la même requête prend **3,4 secondes**. L'index `(family_id, created_at DESC)` du module 11 aide sur les petits volumes, mais avec 8 M de lignes le Bitmap Heap Scan explose :
 
 ```sql
--- ============================================================
--- Table partitionnee par RANGE sur la date
--- ============================================================
-CREATE TABLE events (
-    id          BIGINT GENERATED ALWAYS AS IDENTITY,
-    tenant_id   INTEGER NOT NULL,
-    event_type  TEXT NOT NULL,
-    payload     JSONB DEFAULT '{}',
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    -- La PRIMARY KEY doit inclure la cle de partition !
-    PRIMARY KEY (id, created_at)
+-- Plan observé sur la table monolithique actuelle
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, content, created_at
+FROM posts
+WHERE family_id = 12
+ORDER BY created_at DESC
+LIMIT 20;
+```
+
+```
+Bitmap Heap Scan on posts  (actual time=1820.310..3397.540 rows=20 loops=1)
+  Buffers: shared hit=1240 read=62820
+  ->  Bitmap Index Scan on idx_posts_family_date
+        (actual time=1810.040..1810.050 rows=41000 loops=1)
+        Buffers: shared read=62820
+Execution Time: 3397.8 ms
+```
+
+PostgreSQL lit 62 820 pages parce qu'il traverse **tous** les posts de la famille 12 sur 8 mois avant d'en extraire 20. En plus, l'équipe redoute de purger les vieux posts : `DELETE FROM posts WHERE created_at < '2026-01-01'` sur 5 millions de lignes serait une opération de plusieurs heures avec des millions de dead tuples à nettoyer.
+
+La solution : partitionner `posts` par mois. La même requête ne lira plus qu'**une** partition (le mois courant) et la purge des données anciennes deviendra instantanée avec `DROP TABLE partition`.
+
+## 2. Théorie complète, concise
+
+### Partitionnement déclaratif
+
+Depuis PostgreSQL 10, le partitionnement est **déclaratif** : on déclare `PARTITION BY RANGE | LIST | HASH` sur la table parent, puis on crée des sous-tables (partitions) qui héritent du schéma. Le moteur route automatiquement `INSERT`, `UPDATE` et `SELECT` vers la bonne partition.
+
+Trois stratégies :
+
+- **RANGE** — plages continues sur une colonne ordonnée (date, ID numérique). Cas le plus courant pour les données temporelles. Borne inférieure incluse, borne supérieure exclue : `[FROM, TO)`.
+- **LIST** — ensemble fini de valeurs discrètes (région, statut, tenant_id). Idéal pour le multi-tenant ou la répartition géographique.
+- **HASH** — distribution uniforme par hachage (`MODULUS`, `REMAINDER`). Utile quand il n'y a pas de critère naturel de découpage.
+
+```sql
+-- RANGE : table posts partitionnée par mois de création
+CREATE TABLE posts (
+  id         BIGINT GENERATED ALWAYS AS IDENTITY,
+  family_id  INT NOT NULL,
+  author_id  INT NOT NULL,
+  content    TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (id, created_at)      -- ⚠ la colonne de partition doit être dans la PK
 ) PARTITION BY RANGE (created_at);
 
--- ============================================================
--- Creer les partitions pour 2024
--- ============================================================
-CREATE TABLE events_2024_01 PARTITION OF events
-    FOR VALUES FROM ('2024-01-01') TO ('2024-02-01');
+-- Partitions concrètes (bornes [FROM, TO))
+CREATE TABLE posts_2026_06 PARTITION OF posts
+  FOR VALUES FROM ('2026-06-01') TO ('2026-07-01');
 
-CREATE TABLE events_2024_02 PARTITION OF events
-    FOR VALUES FROM ('2024-02-01') TO ('2024-03-01');
+CREATE TABLE posts_2026_07 PARTITION OF posts
+  FOR VALUES FROM ('2026-07-01') TO ('2026-08-01');
 
-CREATE TABLE events_2024_03 PARTITION OF events
-    FOR VALUES FROM ('2024-03-01') TO ('2024-04-01');
-
-CREATE TABLE events_2024_04 PARTITION OF events
-    FOR VALUES FROM ('2024-04-01') TO ('2024-05-01');
-
-CREATE TABLE events_2024_05 PARTITION OF events
-    FOR VALUES FROM ('2024-05-01') TO ('2024-06-01');
-
-CREATE TABLE events_2024_06 PARTITION OF events
-    FOR VALUES FROM ('2024-06-01') TO ('2024-07-01');
-
-CREATE TABLE events_2024_07 PARTITION OF events
-    FOR VALUES FROM ('2024-07-01') TO ('2024-08-01');
-
-CREATE TABLE events_2024_08 PARTITION OF events
-    FOR VALUES FROM ('2024-08-01') TO ('2024-09-01');
-
-CREATE TABLE events_2024_09 PARTITION OF events
-    FOR VALUES FROM ('2024-09-01') TO ('2024-10-01');
-
-CREATE TABLE events_2024_10 PARTITION OF events
-    FOR VALUES FROM ('2024-10-01') TO ('2024-11-01');
-
-CREATE TABLE events_2024_11 PARTITION OF events
-    FOR VALUES FROM ('2024-11-01') TO ('2024-12-01');
-
-CREATE TABLE events_2024_12 PARTITION OF events
-    FOR VALUES FROM ('2024-12-01') TO ('2025-01-01');
-
--- ============================================================
--- Partition par defaut (attrape tout ce qui n'a pas de partition)
--- ============================================================
-CREATE TABLE events_default PARTITION OF events DEFAULT;
+-- Partition par défaut : capte les lignes hors plage définie
+CREATE TABLE posts_default PARTITION OF posts DEFAULT;
 ```
 
-> **Piege classique** : Les bornes de RANGE sont **[FROM, TO)** — borne inferieure incluse, borne superieure **exclue**. `FROM ('2024-01-01') TO ('2024-02-01')` couvre du 1er janvier 00:00:00 au 31 janvier 23:59:59.999..., **sans** inclure le 1er fevrier.
+### Élagage des partitions (partition pruning)
 
-### 2.3 Partition pruning
+Le planificateur élimine statiquement ou dynamiquement les partitions dont la plage ne peut pas contenir de lignes satisfaisant la clause `WHERE`. C'est le gain principal du partitionnement. Le champ `Subplans Removed: N` dans le plan `EXPLAIN` indique combien de partitions ont été élaguées.
+
+**Condition nécessaire** : la clause `WHERE` doit filtrer sur la **colonne de partition**. Un filtre uniquement sur `family_id` sans condition sur `created_at` scanne **toutes** les partitions — aucun pruning.
 
 ```sql
--- Le partition pruning est la magie du partitionnement
-EXPLAIN (ANALYZE) SELECT *
-FROM events
-WHERE created_at BETWEEN '2024-03-01' AND '2024-03-31';
+-- Le pruning s'active car WHERE porte sur la colonne de partition (created_at)
+EXPLAIN (ANALYZE)
+SELECT id, content, created_at
+FROM posts
+WHERE family_id = 12
+  AND created_at >= '2026-07-01'
+  AND created_at <  '2026-08-01'
+ORDER BY created_at DESC
+LIMIT 20;
+-- → Index Scan on posts_2026_07 seulement ; Subplans Removed: 2
+-- Execution Time: 0.5 ms
 
--- Resultat :
--- Append (actual time=0.012..45.678 rows=78000)
---   Subplans Removed: 11          ← 11 partitions ignorees !
---   -> Seq Scan on events_2024_03 (actual time=0.010..45.670 rows=78000)
---        Filter: (created_at >= '2024-03-01' AND created_at <= '2024-03-31')
+-- Pas de pruning : filtre uniquement sur family_id
+EXPLAIN SELECT * FROM posts WHERE family_id = 12;
+-- → Seq Scan on posts_2026_06, posts_2026_07, posts_default (toutes)
 ```
 
-```
-Partition pruning — ce que PostgreSQL fait :
+### Règle PK/UNIQUE et propagation des index
 
-  Requete : WHERE created_at BETWEEN '2024-03-01' AND '2024-03-31'
+Contrainte fondamentale : toute `PRIMARY KEY` ou contrainte `UNIQUE` sur une table partitionnée **doit inclure la colonne de partition**. Sans ça, PostgreSQL ne peut pas garantir l'unicité globale sans scanner toutes les partitions et refuse la définition.
 
-  events_2024_01  ──► IGNORE (hors plage)
-  events_2024_02  ──► IGNORE (hors plage)
-  events_2024_03  ──► SCAN (dans la plage !)    ← seule partition scannee
-  events_2024_04  ──► IGNORE (hors plage)
-  ...
-  events_2024_12  ──► IGNORE (hors plage)
-  events_default  ──► IGNORE (hors plage)
-
-  "Subplans Removed: 11" = 11 partitions eliminees
-```
-
-### 2.4 Default partition
+Un index créé sur la table parent est automatiquement propagé à toutes les partitions **existantes** et à celles créées ultérieurement via `CREATE TABLE ... PARTITION OF`.
 
 ```sql
--- La partition DEFAULT attrape les lignes sans partition correspondante
-INSERT INTO events (tenant_id, event_type, created_at)
-VALUES (1, 'test', '2025-06-15');
--- → va dans events_default (pas de partition 2025)
+-- INCORRECT — erreur à l'exécution :
+-- "unique constraint on partitioned table must include all partitioning columns"
+CREATE TABLE posts (
+  id         BIGINT PRIMARY KEY,
+  created_at TIMESTAMPTZ NOT NULL
+) PARTITION BY RANGE (created_at);
 
--- ATTENTION : si events_default contient des donnees,
--- la creation d'une nouvelle partition qui couvre ces donnees
--- necessite de les deplacer !
+-- CORRECT
+CREATE TABLE posts (
+  id         BIGINT GENERATED ALWAYS AS IDENTITY,
+  created_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
 
--- Bonne pratique : creer les partitions futures a l'avance
--- et garder la default partition VIDE (ou presque)
+-- Index parent propagé à toutes les partitions existantes et futures
+CREATE INDEX ON posts (family_id, created_at DESC);
 ```
 
----
+### Maintenance du cycle de vie des partitions
 
-## 3. Partition BY LIST
+**Créer les partitions à l'avance.** Si une ligne arrive sans partition correspondante et qu'il n'y a pas de partition DEFAULT, PostgreSQL lève une erreur. Planifier la création 1 à 3 mois en avance — via un cron, `pg_cron`, ou une fonction PL/pgSQL planifiée.
 
-### 3.1 Cas d'usage
-
-Le partitionnement par LIST est ideal quand on partitionne sur un ensemble **fini** de valeurs discretes :
-- **Multi-tenant** : par tenant_id (chaque client dans sa partition)
-- **Par statut** : active, archived, deleted
-- **Par region** : EU, US, ASIA
-
-### 3.2 Exemple complet
+**DROP partition vs DELETE.** Supprimer une partition entière est quasi-instantané et ne génère aucun dead tuple ni WAL excessif :
 
 ```sql
--- ============================================================
--- Table multi-tenant partitionnee par region
--- ============================================================
-CREATE TABLE orders (
-    id          BIGINT GENERATED ALWAYS AS IDENTITY,
-    customer_id INTEGER NOT NULL,
-    total       NUMERIC(12,2) NOT NULL,
-    region      TEXT NOT NULL,
-    status      TEXT NOT NULL DEFAULT 'pending',
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (id, region)
-) PARTITION BY LIST (region);
+-- Supprimer un mois entier de posts : instantané, sans dead tuples
+DROP TABLE posts_2025_12;
 
--- Partitions par region
-CREATE TABLE orders_europe PARTITION OF orders
-    FOR VALUES IN ('FR', 'DE', 'ES', 'IT', 'NL', 'BE', 'PT', 'AT', 'CH');
+-- Équivalent DELETE massif — NE PAS faire en production :
+-- DELETE FROM posts WHERE created_at < '2026-01-01';
+-- → Seq Scan sur des millions de lignes, génère des dead tuples,
+--   nécessite un VACUUM long, peut prendre des heures
 
-CREATE TABLE orders_north_america PARTITION OF orders
-    FOR VALUES IN ('US', 'CA', 'MX');
+-- Détacher sans supprimer (archivage) : non bloquant depuis PG 14
+ALTER TABLE posts DETACH PARTITION posts_2026_05 CONCURRENTLY;
+-- posts_2026_05 existe toujours comme table autonome consultable
+-- Les requêtes sur posts ne la voient plus
 
-CREATE TABLE orders_asia PARTITION OF orders
-    FOR VALUES IN ('JP', 'CN', 'KR', 'IN', 'SG', 'AU');
-
-CREATE TABLE orders_rest PARTITION OF orders DEFAULT;
-
--- Insertion — PostgreSQL route automatiquement
-INSERT INTO orders (customer_id, total, region) VALUES
-    (1, 99.99, 'FR'),      -- → orders_europe
-    (2, 149.99, 'US'),     -- → orders_north_america
-    (3, 79.99, 'JP'),      -- → orders_asia
-    (4, 59.99, 'BR');      -- → orders_rest (default)
-
--- Requete avec pruning
-EXPLAIN SELECT * FROM orders WHERE region = 'FR';
--- → ne scanne QUE orders_europe
-
-EXPLAIN SELECT * FROM orders WHERE region IN ('US', 'CA');
--- → ne scanne QUE orders_north_america
+-- ATTACH : ajouter une table existante comme partition
+-- (créer + valider hors partition, puis attacher rapidement)
+CREATE TABLE posts_2026_08 (LIKE posts INCLUDING ALL);
+ALTER TABLE posts_2026_08 ADD CONSTRAINT chk_2026_08
+  CHECK (created_at >= '2026-08-01' AND created_at < '2026-09-01');
+ALTER TABLE posts ATTACH PARTITION posts_2026_08
+  FOR VALUES FROM ('2026-08-01') TO ('2026-09-01');
 ```
 
-### 3.3 Multi-tenant avec LIST
+### Scaling vertical vs horizontal
+
+| Axe | Mécanisme | Quand l'utiliser |
+|-----|-----------|-----------------|
+| Vertical | Plus de CPU/RAM/SSD sur le même serveur | Premier réflexe — sans changement d'architecture |
+| Horizontal lecture | Read replicas (streaming replication) | Trafic de lecture dominant, déjà optimisé en écriture |
+| Horizontal écriture | Sharding (Citus, FDW + partitions) | Écriture dépasse la capacité d'un seul nœud — rare avant plusieurs TB |
+
+Le partitionnement local (un seul serveur) couvre la majorité des besoins jusqu'à quelques centaines de Go. Le sharding distribué apporte une complexité opérationnelle élevée ; ne l'envisager qu'après épuisement des optimisations locales (index, partitionnement, read replicas).
+
+### Pooling de connexions — PgBouncer
+
+Chaque connexion PostgreSQL crée un processus OS (~5-10 MB RAM). Une app Node.js multi-instances peut ouvrir des centaines de connexions et dépasser `max_connections`. PgBouncer agit comme proxy entre l'app et PostgreSQL en mode **transaction pooling** : une connexion PG sert plusieurs clients applicatifs, chacun la recevant seulement le temps d'une transaction.
 
 ```sql
--- Pour un systeme SaaS avec quelques gros tenants
-CREATE TABLE tenant_data (
-    id          BIGINT GENERATED ALWAYS AS IDENTITY,
-    tenant_id   INTEGER NOT NULL,
-    data        JSONB NOT NULL,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (id, tenant_id)
-) PARTITION BY LIST (tenant_id);
-
--- Les plus gros tenants ont leur propre partition
-CREATE TABLE tenant_data_1 PARTITION OF tenant_data
-    FOR VALUES IN (1);      -- Client Premium A
-
-CREATE TABLE tenant_data_2 PARTITION OF tenant_data
-    FOR VALUES IN (2);      -- Client Premium B
-
-CREATE TABLE tenant_data_3 PARTITION OF tenant_data
-    FOR VALUES IN (3);      -- Client Premium C
-
--- Les petits tenants partagent une partition
-CREATE TABLE tenant_data_others PARTITION OF tenant_data DEFAULT;
+-- Diagnostiquer la pression sur les connexions
+SELECT state, count(*)
+FROM pg_stat_activity
+WHERE datname = current_database()
+GROUP BY state
+ORDER BY count(*) DESC;
+-- Si "idle in transaction" est élevé → transactions trop longues ou PgBouncer utile
 ```
 
----
+Règle empirique : `max_connections` PG ≤ `(CPUs × 2) + nb_disques`. PgBouncer multiplie la capacité applicative sans toucher à cette limite.
 
-## 4. Partition BY HASH
+## 3. Worked examples
 
-### 4.1 Cas d'usage
+### Exemple A — Partitionner posts par mois et vérifier le pruning
 
-Le partitionnement par HASH distribue les lignes **uniformement** entre les partitions. Il est utile quand :
-- Il n'y a **pas de critere naturel** de partition (pas de date, pas de region)
-- On veut une **distribution uniforme** pour paralleliser les requêtes
-- La clé est un UUID ou un ID numérique sans ordre significatif
-
-### 4.2 Exemple
+Contexte : créer le schéma partitionné TribuZen sur une base de dev, injecter des données et mesurer le gain réel.
 
 ```sql
--- ============================================================
--- Partitionnement par HASH sur user_id (4 partitions)
--- ============================================================
-CREATE TABLE user_sessions (
-    id          BIGINT GENERATED ALWAYS AS IDENTITY,
-    user_id     INTEGER NOT NULL,
-    session_data JSONB NOT NULL,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (id, user_id)
-) PARTITION BY HASH (user_id);
+-- Schéma de base TribuZen (version dev)
+CREATE TABLE users    (id SERIAL PRIMARY KEY, display_name TEXT NOT NULL);
+CREATE TABLE families (id SERIAL PRIMARY KEY, name TEXT NOT NULL);
 
--- 4 partitions (MODULUS = nombre total, REMAINDER = index)
-CREATE TABLE user_sessions_0 PARTITION OF user_sessions
-    FOR VALUES WITH (MODULUS 4, REMAINDER 0);
+-- Table partitionnée — PK inclut la colonne de partition
+CREATE TABLE posts (
+  id         BIGINT GENERATED ALWAYS AS IDENTITY,
+  family_id  INT NOT NULL REFERENCES families(id),
+  author_id  INT NOT NULL REFERENCES users(id),
+  content    TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
 
-CREATE TABLE user_sessions_1 PARTITION OF user_sessions
-    FOR VALUES WITH (MODULUS 4, REMAINDER 1);
+-- Trois mois de partitions (couvrent les données de test)
+CREATE TABLE posts_2026_05 PARTITION OF posts
+  FOR VALUES FROM ('2026-05-01') TO ('2026-06-01');
+CREATE TABLE posts_2026_06 PARTITION OF posts
+  FOR VALUES FROM ('2026-06-01') TO ('2026-07-01');
+CREATE TABLE posts_2026_07 PARTITION OF posts
+  FOR VALUES FROM ('2026-07-01') TO ('2026-08-01');
+CREATE TABLE posts_default PARTITION OF posts DEFAULT;
 
-CREATE TABLE user_sessions_2 PARTITION OF user_sessions
-    FOR VALUES WITH (MODULUS 4, REMAINDER 2);
+-- Index composite propagé à toutes les partitions
+CREATE INDEX ON posts (family_id, created_at DESC);
 
-CREATE TABLE user_sessions_3 PARTITION OF user_sessions
-    FOR VALUES WITH (MODULUS 4, REMAINDER 3);
-
--- PostgreSQL utilise un hash interne pour distribuer :
--- hash(user_id) % 4 = 0 → user_sessions_0
--- hash(user_id) % 4 = 1 → user_sessions_1
--- etc.
-
--- Avec une clause WHERE sur user_id, le pruning fonctionne
-EXPLAIN SELECT * FROM user_sessions WHERE user_id = 42;
--- → ne scanne qu'UNE partition
+-- Données de test (500 000 posts répartis sur 3 mois)
+INSERT INTO users    SELECT i, 'User '||i FROM generate_series(1, 200) i;
+INSERT INTO families SELECT i, 'Famille '||i FROM generate_series(1, 20) i;
+INSERT INTO posts (family_id, author_id, content, created_at)
+  SELECT
+    (random()*19 + 1)::int,
+    (random()*199 + 1)::int,
+    repeat('contenu tribuzen ', 8),
+    now() - (random()*89 || ' days')::interval
+  FROM generate_series(1, 500000);
+ANALYZE;
 ```
 
-| Type de partition | Pruning avec = | Pruning avec RANGE | Pruning avec IN | Default partition |
-|-------------------|----------------|---------------------|-----------------|-------------------|
-| RANGE | Oui | **Oui** | Oui | Oui |
-| LIST | **Oui** | Non | **Oui** | Oui |
-| HASH | **Oui** | Non | Oui | **Non** |
-
----
-
-## 5. Sous-partitions (multi-level)
-
-### 5.1 RANGE puis LIST
-
-On peut combiner les stratégies de partitionnement sur plusieurs niveaux.
+Vérification du pruning et mesure du gain :
 
 ```sql
--- ============================================================
--- Sous-partitions : RANGE (par mois) → LIST (par region)
--- ============================================================
-CREATE TABLE sales (
-    id          BIGINT GENERATED ALWAYS AS IDENTITY,
-    region      TEXT NOT NULL,
-    amount      NUMERIC(12,2) NOT NULL,
-    sold_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (id, sold_at, region)
-) PARTITION BY RANGE (sold_at);
-
--- Partition de premier niveau : par mois
-CREATE TABLE sales_2024_01 PARTITION OF sales
-    FOR VALUES FROM ('2024-01-01') TO ('2024-02-01')
-    PARTITION BY LIST (region);    -- sous-partitionne !
-
-CREATE TABLE sales_2024_02 PARTITION OF sales
-    FOR VALUES FROM ('2024-02-01') TO ('2024-03-01')
-    PARTITION BY LIST (region);
-
--- Sous-partitions de second niveau : par region
-CREATE TABLE sales_2024_01_eu PARTITION OF sales_2024_01
-    FOR VALUES IN ('EU');
-
-CREATE TABLE sales_2024_01_us PARTITION OF sales_2024_01
-    FOR VALUES IN ('US');
-
-CREATE TABLE sales_2024_01_asia PARTITION OF sales_2024_01
-    FOR VALUES IN ('ASIA');
-
-CREATE TABLE sales_2024_01_default PARTITION OF sales_2024_01 DEFAULT;
-
-CREATE TABLE sales_2024_02_eu PARTITION OF sales_2024_02
-    FOR VALUES IN ('EU');
-
-CREATE TABLE sales_2024_02_us PARTITION OF sales_2024_02
-    FOR VALUES IN ('US');
-
-CREATE TABLE sales_2024_02_asia PARTITION OF sales_2024_02
-    FOR VALUES IN ('ASIA');
-
-CREATE TABLE sales_2024_02_default PARTITION OF sales_2024_02 DEFAULT;
+-- Requête avec filtre sur la colonne de partition : pruning actif
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, content, created_at
+FROM posts
+WHERE family_id = 5
+  AND created_at >= '2026-07-01'
+  AND created_at <  '2026-08-01'
+ORDER BY created_at DESC
+LIMIT 20;
 ```
 
 ```
-Arbre des partitions :
-
-  sales
-  ├── sales_2024_01  (Jan 2024)     ← RANGE
-  │   ├── sales_2024_01_eu           ← LIST
-  │   ├── sales_2024_01_us
-  │   ├── sales_2024_01_asia
-  │   └── sales_2024_01_default
-  ├── sales_2024_02  (Fev 2024)     ← RANGE
-  │   ├── sales_2024_02_eu           ← LIST
-  │   ├── sales_2024_02_us
-  │   ├── sales_2024_02_asia
-  │   └── sales_2024_02_default
-  └── ...
-
-  Requete : WHERE sold_at = '2024-01-15' AND region = 'EU'
-  → Ne scanne QUE sales_2024_01_eu (double pruning !)
+Limit  (actual time=0.140..0.370 rows=20 loops=1)
+  ->  Index Scan using posts_2026_07_family_id_created_at_idx on posts_2026_07
+        (actual time=0.135..0.360 rows=20 loops=1)
+        Index Cond: ((family_id = 5) AND (created_at >= '2026-07-01') AND ...)
+        Buffers: shared hit=6
+Execution Time: 0.4 ms
 ```
 
-> **Piege classique** : Avec 12 mois x 4 regions = 48 sous-partitions par an. Sur 5 ans, c'est 240 partitions. Au-dela de quelques centaines, le planificateur de requêtes ralentit. Gardez le nombre total de partitions sous controle (< 1000 idealement).
-
----
-
-## 6. Maintenance des partitions
-
-### 6.1 Créer automatiquement les nouvelles partitions
+Inspecter les partitions et leurs tailles :
 
 ```sql
--- ============================================================
--- Fonction pour creer les partitions du mois suivant
--- ============================================================
-CREATE OR REPLACE FUNCTION create_next_month_partition()
-RETURNS void LANGUAGE plpgsql AS $$
-DECLARE
-    next_month_start DATE;
-    next_month_end DATE;
-    partition_name TEXT;
-BEGIN
-    -- Calculer le premier jour du mois suivant
-    next_month_start := date_trunc('month', now() + interval '1 month')::date;
-    next_month_end := (next_month_start + interval '1 month')::date;
-    partition_name := 'events_' || to_char(next_month_start, 'YYYY_MM');
-
-    -- Verifier si la partition existe deja
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_class
-        WHERE relname = partition_name
-          AND relkind = 'r'
-    ) THEN
-        EXECUTE format(
-            'CREATE TABLE %I PARTITION OF events
-             FOR VALUES FROM (%L) TO (%L)',
-            partition_name,
-            next_month_start,
-            next_month_end
-        );
-        RAISE NOTICE 'Partition creee : %', partition_name;
-    ELSE
-        RAISE NOTICE 'Partition deja existante : %', partition_name;
-    END IF;
-END;
-$$;
-
--- Executer manuellement
-SELECT create_next_month_partition();
-
--- Ou planifier avec pg_cron
-CREATE EXTENSION IF NOT EXISTS pg_cron;
-
-SELECT cron.schedule(
-    'create-monthly-partition',
-    '0 0 25 * *',              -- Le 25 de chaque mois
-    'SELECT create_next_month_partition()'
-);
-```
-
-### 6.2 DETACH PARTITION pour archiver
-
-```sql
--- DETACH retire une partition de la table parent
--- sans supprimer les donnees
-ALTER TABLE events DETACH PARTITION events_2023_01;
-
--- La table events_2023_01 existe toujours comme table independante
--- On peut la consulter directement
-SELECT count(*) FROM events_2023_01;
-
--- Ou l'exporter pour archivage
--- pg_dump -t events_2023_01 mydb > events_2023_01_backup.sql
-
--- PostgreSQL 14+ : DETACH CONCURRENTLY (sans bloquer les requetes)
-ALTER TABLE events DETACH PARTITION events_2023_02 CONCURRENTLY;
-```
-
-### 6.3 DROP partition (plus rapide que DELETE)
-
-```sql
--- Supprimer une partition entiere est INSTANTANE
--- (pas de VACUUM necessaire, pas de dead tuples)
-DROP TABLE events_2023_01;
-
--- Comparaison :
--- DELETE FROM events WHERE created_at < '2023-02-01';
--- → Scan de toute la table, genere des dead tuples, VACUUM necessaire
--- → Peut prendre des heures sur une grosse table
-
--- DROP TABLE events_2023_01;
--- → Instantane (supprime le fichier sur disque)
--- → Pas de dead tuples, pas de VACUUM
-```
-
-```
-Comparaison DELETE vs DROP PARTITION :
-
-  DELETE 50M lignes :            DROP PARTITION :
-  ┌──────────────────┐           ┌──────────────────┐
-  │ Duree : 45 min   │           │ Duree : 0.05s    │
-  │ WAL generes : 8GB│           │ WAL generes : 0  │
-  │ Dead tuples : 50M│           │ Dead tuples : 0  │
-  │ VACUUM : 20 min  │           │ VACUUM : inutile │
-  │ Lock : aucun     │           │ Lock : ACCESS    │
-  │ mais I/O massif  │           │ EXCLUSIVE (bref) │
-  └──────────────────┘           └──────────────────┘
-```
-
-### 6.4 pg_partman extension
-
-`pg_partman` automatise entièrement la gestion des partitions.
-
-```sql
--- Installation
-CREATE EXTENSION pg_partman;
-
--- Configurer la gestion automatique d'une table
-SELECT partman.create_parent(
-    p_parent_table := 'public.events',
-    p_control := 'created_at',
-    p_type := 'range',
-    p_interval := '1 month',
-    p_premake := 3              -- creer 3 mois a l'avance
-);
-
--- pg_partman va :
--- 1. Creer les partitions pour les 3 prochains mois
--- 2. Via un job cron (ou pg_cron), creer les futures partitions
--- 3. Optionnellement, retenir ou supprimer les anciennes
-
--- Configuration de la retention
-UPDATE partman.part_config
-SET retention = '12 months',            -- garder 12 mois
-    retention_keep_table = false         -- DROP les anciennes
-WHERE parent_table = 'public.events';
-
--- Execution de la maintenance (a planifier)
-SELECT partman.run_maintenance();
-```
-
----
-
-## 7. Index sur tables partitionnees
-
-### 7.1 Index globaux vs index par partition
-
-```sql
--- Un index cree sur la table parent est automatiquement
--- cree sur CHAQUE partition existante et future
-CREATE INDEX idx_events_tenant ON events (tenant_id);
-
--- Cela cree :
--- idx_events_tenant       (sur la table parent — virtuel)
--- events_2024_01_tenant_id_idx   (sur events_2024_01)
--- events_2024_02_tenant_id_idx   (sur events_2024_02)
--- ... etc.
-
--- Verifier les index
 SELECT
-    tablename,
-    indexname,
-    pg_size_pretty(pg_relation_size(indexrelid)) AS size
-FROM pg_indexes
-JOIN pg_stat_user_indexes USING (indexrelname)
-WHERE tablename LIKE 'events_%'
-ORDER BY tablename, indexname;
+  inhrelid::regclass                            AS partition,
+  pg_size_pretty(pg_total_relation_size(inhrelid)) AS taille,
+  pg_stat_get_live_tuples(inhrelid)             AS lignes_vivantes
+FROM pg_inherits
+WHERE inhparent = 'posts'::regclass
+ORDER BY partition;
 ```
 
-### 7.2 Contraintes UNIQUE sur partitions
+Pas-à-pas : (1) La table parent `posts` est une enveloppe de routage vide — toutes les lignes sont dans les partitions concrètes. (2) L'index créé sur `posts` se propage à `posts_2026_05`, `posts_2026_06`, `posts_2026_07` et `posts_default` — aucune création manuelle par partition. (3) Le plan `Index Scan ... on posts_2026_07` confirme que seule la partition de juillet a été scannée — les deux autres sont élaguées (`Subplans Removed: 2`). (4) 6 pages lues au lieu de 62 820 : gain de ×10 000 sur la latence. (5) `pg_inherits` est la vue canonique pour lister les partitions ; `pg_total_relation_size` inclut les index de la partition.
+
+### Exemple B — Cycle de vie : DETACH + DROP d'une vieille partition
+
+Objectif : archiver `posts_2026_05` sans bloquer les requêtes en cours, puis la supprimer.
 
 ```sql
--- REGLE CRITIQUE : une contrainte UNIQUE (ou PK) sur une table
--- partitionnee DOIT inclure la cle de partition
+-- Étape 1 : DETACH CONCURRENTLY (PG 14+) — non bloquant pour les lecteurs
+-- La partition est retirée de l'arbre de routage ; les requêtes sur posts ne la voient plus
+-- Les sessions déjà en cours sur posts_2026_05 ne sont pas interrompues
+ALTER TABLE posts DETACH PARTITION posts_2026_05 CONCURRENTLY;
 
--- ERREUR :
-CREATE TABLE events (
-    id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    created_at TIMESTAMPTZ NOT NULL
-) PARTITION BY RANGE (created_at);
--- ERROR: unique constraint on partitioned table must include
---        all partitioning columns
+-- Étape 2 : posts_2026_05 existe toujours comme table autonome
+SELECT count(*) FROM posts_2026_05;   -- consultable directement
 
--- CORRECT :
-CREATE TABLE events (
-    id         BIGINT GENERATED ALWAYS AS IDENTITY,
-    created_at TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (id, created_at)   -- inclut la cle de partition
-) PARTITION BY RANGE (created_at);
+-- Étape 3 (optionnel) : export avant suppression
+-- COPY posts_2026_05 TO '/backups/posts_2026_05.csv' CSV HEADER;
+
+-- Étape 4 : DROP instantané — supprime le fichier sur disque en ~50 ms
+-- Aucun dead tuple, aucun VACUUM nécessaire
+DROP TABLE posts_2026_05;
+
+-- Comparer avec le DELETE équivalent (ne pas faire en production) :
+-- DELETE FROM posts WHERE created_at < '2026-06-01';
+-- → Seq Scan + dead tuples sur des millions de lignes → VACUUM obligatoire,
+--   blocage partiel d'autovacuum, durée estimée : plusieurs heures
 ```
 
-> **Piege classique** : Cette contrainte signifie qu'un `id` n'est unique que **dans une partition**. Le même `id` peut theoriquement exister dans deux partitions différentes (avec des `created_at` différents). En pratique, avec un IDENTITY ou une SEQUENCE, c'est peu probable mais pas impossible. Utilisez un UUID si l'unicite globale est requise.
-
-### 7.3 Problème des FK vers une table partitionnee
+Inspection de l'état après le cycle :
 
 ```sql
--- PostgreSQL 12+ : les FK VERS une table partitionnee sont supportees
--- mais avec des limitations
-
-CREATE TABLE order_items (
-    id       BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    order_id BIGINT NOT NULL,
-    region   TEXT NOT NULL,
-    product  TEXT NOT NULL,
-    -- FK vers la table partitionnee : doit inclure la cle de partition
-    FOREIGN KEY (order_id, region) REFERENCES orders (id, region)
-);
-
--- La FK doit referencer la PK complete (incluant la cle de partition)
--- Cela signifie que order_items doit aussi stocker la region
+-- Vérifier que posts_2026_05 n'apparaît plus dans l'arbre des partitions
+SELECT inhrelid::regclass AS partition
+FROM pg_inherits
+WHERE inhparent = 'posts'::regclass;
+-- → seulement posts_2026_06, posts_2026_07, posts_default
 ```
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  PROBLEMES DES FK AVEC LES PARTITIONS :                       │
-│                                                               │
-│  1. La FK doit inclure la cle de partition                   │
-│     → Denormalisation (stocker la cle dans la table fille)   │
-│                                                               │
-│  2. Performance : chaque INSERT dans order_items doit        │
-│     verifier la FK sur TOUTES les partitions de orders       │
-│                                                               │
-│  3. Alternative : gerer l'integrite cote application         │
-│     (pas de FK, verification programmatique)                 │
-└──────────────────────────────────────────────────────────────┘
-```
+Pas-à-pas : (1) `DETACH CONCURRENTLY` est disponible depuis PG 14 ; l'ancienne forme `DETACH` (sans `CONCURRENTLY`) prend un lock `ACCESS SHARE` sur la table parent qui bloque les écrivains le temps du détachement. (2) Après `DETACH`, `posts_2026_05` est une table normale — l'inspecter, l'exporter ou la compresser via `pg_dump -t posts_2026_05`. (3) `DROP TABLE` supprime le fichier de données du système de fichiers en quelques dizaines de millisecondes, sans générer de dead tuples ni déclencher VACUUM. (4) Ce cycle mensuel (DETACH + vérification + DROP) est infiniment plus sûr qu'un DELETE massif et peut être planifié via `pg_cron`.
 
----
+## 4. Pièges & misconceptions
 
-## 8. Performance
+- **« Un index sur la table parent couvre toutes les partitions. »** Vrai pour les partitions créées avec `CREATE TABLE ... PARTITION OF` après la création de l'index. Mais une table **attachée** via `ATTACH PARTITION` (table existante) n'hérite pas automatiquement des index — il faut les créer sur la table avant l'ATTACH. *Correct* : créer les index sur la nouvelle partition avant de l'attacher, ou vérifier avec `\d partition_name` après l'ATTACH.
 
-### 8.1 Partition pruning dynamique
+- **« Le pruning s'active automatiquement dès qu'on partitionne. »** Seulement si la clause `WHERE` filtre sur la **colonne de partition**. `SELECT ... FROM posts WHERE family_id = 5` sans filtre `created_at` scanne toutes les partitions — zéro gain. *Correct* : s'assurer que les requêtes critiques filtrent sur la clé de partition ; vérifier avec `EXPLAIN` et lire le champ `Subplans Removed`.
 
-```sql
--- Le pruning dynamique fonctionne meme avec des parametres
--- (pas seulement des constantes)
+- **« La partition DEFAULT est une sécurité anodine. »** Elle devient un blocage quand on veut créer une nouvelle partition couvrant des dates déjà présentes dans DEFAULT. PostgreSQL refuse avec `ERROR: updated partition constraint for default partition would be violated by some row`. *Correct* : créer les partitions **à l'avance** (1-3 mois) et maintenir DEFAULT vide ; si elle contient des données, les déplacer manuellement avant de créer la nouvelle partition.
 
--- Activer le pruning (actif par defaut)
-SET enable_partition_pruning = on;
+- **« DROP TABLE d'une partition est comme DROP d'une table normale — irréversible. »** Oui, et c'est exactement l'intention. Mais contrairement à `DETACH`, il n'y a pas d'étape intermédiaire. *Correct* : toujours `DETACH CONCURRENTLY` d'abord, inspecter le contenu, exporter si nécessaire, puis `DROP` — jamais `DROP` directement sur une partition active sans audit.
 
--- Pruning statique (a la planification)
-EXPLAIN SELECT * FROM events WHERE created_at = '2024-03-15';
--- Les partitions sont eliminees au moment de EXPLAIN
+- **« Partitionner améliore toujours les performances. »** Sur une table de moins d'un million de lignes, le surcoût de planification (évaluer le pruning sur N partitions) peut dépasser le gain. De plus, les insertions unitaires à très haut débit subissent le coût du routage vers la bonne partition. *Correct* : partitionner quand la table dépasse ~10 Go ou ~100 millions de lignes, ou quand la purge par `DROP` est l'objectif principal.
 
--- Pruning dynamique (a l'execution)
-PREPARE q AS SELECT * FROM events WHERE created_at = $1;
-EXPLAIN ANALYZE EXECUTE q('2024-03-15');
--- Les partitions sont eliminees au moment de l'execution
--- grace au parametre fourni
-```
+- **« Une FK vers une table partitionnée se déclare normalement. »** La FK doit inclure la colonne de partition. `FOREIGN KEY (post_id) REFERENCES posts(id)` échoue ; il faut `FOREIGN KEY (post_id, created_at) REFERENCES posts(id, created_at)`, ce qui oblige à stocker `created_at` dans la table enfant. *Correct* : concevoir les FK en incluant la clé de partition dès le départ, ou gérer l'intégrité référentielle côté application pour les tables partitionnées.
 
-### 8.2 Join pruning
+## 5. Ancrage TribuZen
 
-```sql
--- PostgreSQL peut aussi eliminer des partitions lors des jointures
-EXPLAIN (ANALYZE)
-SELECT e.*, u.name
-FROM events e
-JOIN users u ON u.id = e.tenant_id
-WHERE e.created_at BETWEEN '2024-03-01' AND '2024-03-31';
+Couche fil-rouge : **partitionner `posts` par mois** dans `smaurier/tribuzen` pour que le feed famille reste rapide à grande échelle, et purger les vieilles données sans opération lourde.
 
--- Le join ne sera execute QUE sur events_2024_03
--- Les autres partitions sont prunees avant la jointure
-```
+- La table `posts` partitionnée `PARTITION BY RANGE (created_at)` avec des partitions mensuelles est la cible directe. L'API `/feed` filtre toujours sur `family_id` **et** sur `created_at` (pagination keyset du module 11) — les deux conditions activent le pruning : une seule partition du mois courant est lue, quelle que soit la taille totale de la table.
+- L'index `(family_id, created_at DESC)` créé sur la table parent se propage à chaque nouvelle partition — aucune maintenance manuelle par partition n'est nécessaire après la mise en place initiale.
+- Le cycle de rétention mensuel (DETACH CONCURRENTLY le 1ᵉʳ du mois + export optionnel + DROP) est planifié via `pg_cron`. Il remplace un `DELETE` massif qui aurait généré des millions de dead tuples et bloqué VACUUM pendant des heures (cf. module 11, autovacuum section).
+- `pg_inherits` et `pg_stat_user_tables` (filtrés sur les partitions `posts_*`) alimentent le dashboard de monitoring du module 17 : une partition dont la taille croît anormalement par rapport aux autres signale un bug de timestamp côté app.
+- PgBouncer en mode transaction pooling est positionné devant PostgreSQL dès que TribuZen est déployé en multi-instances sur staging : `max_connections` reste à 100, PgBouncer absorbe jusqu'à 1 000 connexions applicatives simultanées.
 
-### 8.3 Aggregate pushdown (PostgreSQL 14+)
+## 6. Points clés
 
-```sql
--- Avant PG14 : PostgreSQL scanne toutes les partitions,
--- puis calcule l'aggregat sur le resultat combine
+1. Le partitionnement déclaratif (`PARTITION BY RANGE | LIST | HASH`) découpe une table en sous-tables physiques ; PostgreSQL route INSERT/SELECT automatiquement vers la bonne partition.
+2. Le pruning élimine les partitions hors plage lors de la planification — il nécessite un filtre `WHERE` sur la colonne de partition pour s'activer ; vérifier avec `EXPLAIN` et `Subplans Removed`.
+3. Toute `PRIMARY KEY` ou contrainte `UNIQUE` doit inclure la colonne de partition — contrainte incontournable à intégrer dès la conception du schéma.
+4. Les index créés sur la table parent se propagent aux partitions existantes et à celles créées ultérieurement via `CREATE TABLE ... PARTITION OF`.
+5. `DROP TABLE partition` est instantané et sans dead tuples ; un `DELETE` massif sur la même plage génère du bloat et force un VACUUM long — préférer toujours `DETACH CONCURRENTLY` puis `DROP`.
+6. `DETACH PARTITION CONCURRENTLY` (PG 14+) est non bloquant pour les lecteurs ; toujours préférer cette forme à `DETACH` seul avant toute suppression.
+7. Partitionner n'a de sens qu'au-delà de ~10 Go / ~100 M lignes, ou quand la purge par `DROP` est l'objectif ; sous ce seuil, le surcoût de planification annule le gain.
+8. Scaling : vertical d'abord, read replicas pour la lecture, sharding distribué uniquement quand un seul serveur est saturé en écriture. PgBouncer en mode transaction pooling pour le pooling de connexions en multi-instances.
 
--- PG14+ : l'aggregat est calcule DANS chaque partition,
--- puis les resultats partiels sont combines
-EXPLAIN (ANALYZE)
-SELECT date_trunc('month', created_at) AS mois,
-       count(*) AS nb_events
-FROM events
-WHERE created_at >= '2024-01-01'
-  AND created_at < '2025-01-01'
-GROUP BY 1;
-
--- Avec aggregate pushdown :
--- Append
---   -> Partial Aggregate (on events_2024_01)
---   -> Partial Aggregate (on events_2024_02)
---   -> ...
--- Finalize Aggregate
-```
-
-### 8.4 Quand partitionner nuit à la performance
+## 7. Seeds Anki
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  ATTENTION : LE PARTITIONNEMENT PEUT DEGRADER LES PERFS !    │
-│                                                               │
-│  1. TROP DE PARTITIONS                                       │
-│     > 1000 partitions → le planificateur ralentit            │
-│     Chaque requete doit evaluer le pruning sur toutes        │
-│                                                               │
-│  2. TABLE TROP PETITE                                        │
-│     < 1M de lignes → l'overhead de gestion des partitions    │
-│     est superieur au gain du pruning                         │
-│                                                               │
-│  3. REQUETES SANS FILTRE SUR LA CLE DE PARTITION             │
-│     SELECT * FROM events WHERE tenant_id = 42;               │
-│     → TOUTES les partitions sont scannees (pas de pruning)   │
-│                                                               │
-│  4. INSERT UNITAIRE LENT                                     │
-│     Le routage vers la bonne partition a un petit cout       │
-│     Negligeable pour les batches, mesurable pour les         │
-│     insertions individuelles a haut debit                    │
-│                                                               │
-│  5. JOINTURES ENTRE TABLES PARTITIONNEES                     │
-│     Le planificateur peut generer des plans tres complexes   │
-│     (partition-wise join aide, mais pas toujours)            │
-└──────────────────────────────────────────────────────────────┘
+Quel mot-clé déclare qu'une table PostgreSQL est partitionnée ?|PARTITION BY suivi de RANGE, LIST ou HASH dans la définition CREATE TABLE
+Pourquoi la PRIMARY KEY d'une table partitionnée doit-elle inclure la colonne de partition ?|PostgreSQL ne peut garantir l'unicité qu'au sein d'une partition ; inclure la clé de partition dans la PK est obligatoire sous peine d'erreur à la création
+Qu'est-ce que le partition pruning ?|L'élimination statique ou dynamique des partitions dont la plage ne peut pas satisfaire la clause WHERE — seules les partitions candidates sont scannées
+Quelle condition est nécessaire pour que le partition pruning s'active ?|La clause WHERE doit filtrer sur la colonne de partition ; un filtre uniquement sur une autre colonne scanne toutes les partitions sans pruning
+Pourquoi DROP TABLE d'une partition est-il préférable à DELETE pour purger les anciennes données ?|DROP est instantané, ne génère aucun dead tuple et ne nécessite pas de VACUUM ; DELETE sur des millions de lignes génère du bloat et peut prendre des heures
+Qu'apporte DETACH PARTITION CONCURRENTLY par rapport à DETACH seul ?|DETACH CONCURRENTLY (PG 14+) est non bloquant pour les lecteurs et les écrivains ; DETACH seul prend un lock qui peut bloquer les écrivains pendant l'opération
+Quel type de partition utiliser pour distribuer uniformément des lignes sans critère naturel d'ordre ?|PARTITION BY HASH — PostgreSQL calcule hash(colonne) % MODULUS et route vers la partition dont le REMAINDER correspond
+Dans quel cas le partitionnement peut-il nuire aux performances ?|Table trop petite (< 1M lignes / < 10 Go) : le surcoût de planification dépasse le gain ; ou requêtes sans filtre sur la clé de partition (pas de pruning)
+Quel rôle joue PgBouncer en mode transaction pooling ?|Proxy entre l'app et PostgreSQL : une connexion PG sert plusieurs clients applicatifs, chacun la recevant le temps d'une transaction — réduit le nombre de connexions PG ouvertes sans changer max_connections
+Quelle vue PostgreSQL liste les partitions d'une table parent ?|pg_inherits — WHERE inhparent = 'table_parent'::regclass ; inhrelid::regclass donne le nom de chaque partition
 ```
 
-```sql
--- Activer le partition-wise join (PG11+, desactive par defaut)
-SET enable_partitionwise_join = on;
+## Pont vers le lab
 
--- Et le partition-wise aggregate (PG11+)
-SET enable_partitionwise_aggregate = on;
-```
-
----
-
-## 9. Scaling horizontal
-
-### 9.1 Citus extension (distributed PostgreSQL)
-
-Citus transforme PostgreSQL en base de donnees **distribuee**. Les tables sont shardees sur plusieurs noeuds PostgreSQL.
-
-```
-Architecture Citus :
-
-  ┌────────────┐
-  │  Coordinator │ ← point d'entree unique
-  │  (noeud)    │    routage des requetes
-  └──────┬─────┘
-         │
-    ┌────┴────────────────┐
-    │         │           │
-  ┌─▼──┐   ┌─▼──┐   ┌───▼─┐
-  │ W1 │   │ W2 │   │ W3  │  ← Workers (noeuds de donnees)
-  │    │   │    │   │     │
-  │shard│   │shard│   │shard│  ← Chaque noeud stocke un sous-ensemble
-  │1,4 │   │2,5 │   │3,6 │     des donnees
-  └────┘   └────┘   └─────┘
-```
-
-```sql
--- Installer Citus
-CREATE EXTENSION citus;
-
--- Ajouter les workers
-SELECT citus_add_node('worker1.example.com', 5432);
-SELECT citus_add_node('worker2.example.com', 5432);
-SELECT citus_add_node('worker3.example.com', 5432);
-
--- Distribuer une table (sharding sur tenant_id)
-SELECT create_distributed_table('events', 'tenant_id');
-
--- Les requetes sont automatiquement routees
-SELECT * FROM events WHERE tenant_id = 42;
--- → execute sur le worker qui contient le shard du tenant 42
-
--- Requetes cross-shard (plus lentes, mais fonctionnelles)
-SELECT count(*) FROM events;
--- → execute sur TOUS les workers, resultats agreges
-```
-
-### 9.2 Foreign Data Wrappers (postgres_fdw)
-
-`postgres_fdw` permet de requeter des tables sur des serveurs PostgreSQL distants comme si elles etaient locales.
-
-```sql
--- ============================================================
--- Serveur principal : acceder aux donnees d'un serveur distant
--- ============================================================
-CREATE EXTENSION postgres_fdw;
-
--- Declarer le serveur distant
-CREATE SERVER remote_server
-    FOREIGN DATA WRAPPER postgres_fdw
-    OPTIONS (host 'remote.example.com', port '5432', dbname 'analytics');
-
--- Mapper l'utilisateur local vers l'utilisateur distant
-CREATE USER MAPPING FOR app
-    SERVER remote_server
-    OPTIONS (user 'remote_user', password 'secret');
-
--- Importer les tables distantes
-IMPORT FOREIGN SCHEMA public
-    LIMIT TO (analytics_events, analytics_users)
-    FROM SERVER remote_server
-    INTO remote_analytics;
-
--- Ou creer une table foreign manuellement
-CREATE FOREIGN TABLE remote_events (
-    id          BIGINT,
-    event_type  TEXT,
-    created_at  TIMESTAMPTZ
-) SERVER remote_server
-OPTIONS (schema_name 'public', table_name 'events');
-
--- Requeter comme une table locale
-SELECT * FROM remote_analytics.analytics_events
-WHERE created_at > now() - interval '1 day';
-
--- Jointure locale/distante
-SELECT u.name, count(e.id)
-FROM users u
-JOIN remote_analytics.analytics_events e ON e.user_id = u.id
-GROUP BY u.name;
-```
-
-> **Piege classique** : `postgres_fdw` envoie les filtres (WHERE) au serveur distant quand c'est possible (pushdown). Mais les jointures complexes et les agregats sont souvent executes localement après avoir ramene toutes les donnees. Verifiez avec `EXPLAIN VERBOSE` que le pushdown fonctionne.
-
-### 9.3 Sharding patterns
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│         PATTERNS DE SHARDING                                  │
-│                                                               │
-│  1. Application-level sharding                               │
-│     L'application decide sur quel shard envoyer la requete   │
-│     shard = hash(tenant_id) % nb_shards                      │
-│     + Simple, controle total                                  │
-│     - Logique dans le code, cross-shard queries difficiles   │
-│                                                               │
-│  2. Proxy-level sharding                                     │
-│     Un proxy (ex: ProxySQL, custom) route les requetes       │
-│     + Transparent pour l'application                          │
-│     - Complexite du proxy, point de failure supplementaire   │
-│                                                               │
-│  3. Extension-level sharding (Citus)                         │
-│     PostgreSQL lui-meme gere le sharding                     │
-│     + SQL standard, transactions distribuees                  │
-│     - Extension a maintenir, overhead de coordination         │
-│                                                               │
-│  4. Partitioning + FDW                                       │
-│     Tables partitionnees dont certaines partitions sont      │
-│     des foreign tables vers d'autres serveurs                │
-│     + Natif PostgreSQL, pas d'extension                       │
-│     - Performance limitee pour les cross-partition queries   │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### 9.4 Comparaison : partitioning local vs sharding distribue
-
-| Critere | Partitioning local | Sharding distribue (Citus) |
-|---------|-------------------|---------------------------|
-| Complexite | Faible | Elevee |
-| Scalabilite écriture | Non (1 seul serveur) | **Oui** (N serveurs) |
-| Scalabilite lecture | Avec replicas | **Native** |
-| Transactions | Locales (rapides) | Distribuees (plus lentes) |
-| Jointures | Normales | Limitees (colocation requise) |
-| Maintenance | Simple | Complexe (N serveurs) |
-| Cas d'usage | 1 serveur suffit mais table enorme | 1 serveur ne suffit plus |
-| Seuil typique | < 1 TB | > 1 TB |
-
----
-
-## 10. Read replicas + partitioning = architecture complete
-
-```
-Architecture production complete :
-
-                          ┌──────────────┐
-                          │  Application │
-                          │  (Node.js)   │
-                          └──────┬───────┘
-                                 │
-                    ┌────────────┴────────────┐
-                    │                         │
-              Write (INSERT/                Read (SELECT)
-              UPDATE/DELETE)
-                    │                         │
-              ┌─────▼──────┐           ┌──────▼──────┐
-              │  PRIMARY   │           │  HAProxy /  │
-              │            │           │  pgpool     │
-              │ events     │           └──┬───────┬──┘
-              │ ├─2024_01  │              │       │
-              │ ├─2024_02  │         ┌────▼──┐ ┌──▼────┐
-              │ ├─...      │         │Replica│ │Replica│
-              │ └─2024_12  │         │  1    │ │  2    │
-              │            │         │       │ │       │
-              │ orders     │         │(memes │ │(memes │
-              │ ├─europe   │         │tables │ │tables │
-              │ ├─na       │         │parti- │ │parti- │
-              │ └─asia     │         │tionnee│ │tionnee│
-              └──────┬─────┘         │s)     │ │s)     │
-                     │               └───────┘ └───────┘
-               WAL stream
-                     │
-              ┌──────▼──────┐
-              │ WAL Archive │
-              │ (pour PITR) │
-              └─────────────┘
-```
-
-Les avantages combines :
-1. **Partitioning** : requêtes rapides grace au pruning, maintenance simple (DROP/DETACH)
-2. **Read replicas** : scalabilité en lecture, les replicas ont les memes partitions
-3. **WAL archiving** : PITR pour la protection contre les erreurs humaines
-
----
-
-## 11. Migration vers un schema partitionne
-
-### 11.1 La méthode classique (avec downtime)
-
-```sql
--- Etape 1 : Creer la nouvelle table partitionnee
-CREATE TABLE events_new (
-    id          BIGINT GENERATED ALWAYS AS IDENTITY,
-    tenant_id   INTEGER NOT NULL,
-    event_type  TEXT NOT NULL,
-    payload     JSONB DEFAULT '{}',
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (id, created_at)
-) PARTITION BY RANGE (created_at);
-
--- Creer les partitions
-CREATE TABLE events_new_2024_01 PARTITION OF events_new
-    FOR VALUES FROM ('2024-01-01') TO ('2024-02-01');
--- ... (toutes les partitions necessaires)
-CREATE TABLE events_new_default PARTITION OF events_new DEFAULT;
-
--- Etape 2 : Copier les donnees (peut etre TRES long)
-INSERT INTO events_new (id, tenant_id, event_type, payload, created_at)
-    OVERRIDING SYSTEM VALUE
-    SELECT id, tenant_id, event_type, payload, created_at
-    FROM events_old;
-
--- Etape 3 : Recreer les index
-CREATE INDEX ON events_new (tenant_id);
-
--- Etape 4 : Swap (necessite un court downtime)
-BEGIN;
-ALTER TABLE events_old RENAME TO events_archive;
-ALTER TABLE events_new RENAME TO events;
-COMMIT;
-
--- Etape 5 : Resynchroniser la sequence
-SELECT setval(
-    pg_get_serial_sequence('events', 'id'),
-    (SELECT max(id) FROM events)
-);
-```
-
-### 11.2 La méthode zero-downtime (avec replication logique)
-
-```sql
--- Etape 1 : Sur le MEME serveur, creer la nouvelle table partitionnee
--- (comme ci-dessus)
-
--- Etape 2 : Publier l'ancienne table
-CREATE PUBLICATION migration_pub FOR TABLE events_old;
-
--- Etape 3 : S'abonner avec la nouvelle table
--- (necessite des astuces car on est sur le meme serveur)
--- Alternative : utiliser pg_rewrite ou un trigger
-
--- Methode avec trigger :
--- Creer un trigger AFTER INSERT/UPDATE/DELETE sur events_old
--- qui insere/modifie dans events_new
-
-CREATE OR REPLACE FUNCTION sync_to_partitioned()
-RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-    IF TG_OP = 'INSERT' THEN
-        INSERT INTO events_new VALUES (NEW.*);
-        RETURN NEW;
-    ELSIF TG_OP = 'UPDATE' THEN
-        DELETE FROM events_new
-        WHERE id = OLD.id AND created_at = OLD.created_at;
-        INSERT INTO events_new VALUES (NEW.*);
-        RETURN NEW;
-    ELSIF TG_OP = 'DELETE' THEN
-        DELETE FROM events_new
-        WHERE id = OLD.id AND created_at = OLD.created_at;
-        RETURN OLD;
-    END IF;
-END;
-$$;
-
-CREATE TRIGGER sync_partition_trigger
-AFTER INSERT OR UPDATE OR DELETE ON events_old
-FOR EACH ROW EXECUTE FUNCTION sync_to_partitioned();
-
--- Etape 4 : Copier les donnees historiques (en background)
-INSERT INTO events_new
-    SELECT * FROM events_old
-    WHERE id NOT IN (SELECT id FROM events_new);
-
--- Etape 5 : Swap atomique
-BEGIN;
-DROP TRIGGER sync_partition_trigger ON events_old;
-ALTER TABLE events_old RENAME TO events_deprecated;
-ALTER TABLE events_new RENAME TO events;
-COMMIT;
-
--- Etape 6 : Supprimer l'ancienne table quand tout est OK
--- DROP TABLE events_deprecated;
-```
-
----
-
-## 12. Node.js : requêtes sur tables partitionnees, routing multi-shard
-
-```typescript
-// ============================================================
-// Module Node.js pour tables partitionnees et sharding
-// ============================================================
-
-import pg from 'pg';
-import type { PoolClient, PoolConfig, QueryResult } from 'pg';
-const { Pool } = pg;
-
-// ────────────────────────────────────────────────────────────
-// 1. Requetes sur tables partitionnees (transparent !)
-// ────────────────────────────────────────────────────────────
-const pool = new Pool({
-    host: 'localhost',
-    port: 5432,
-    database: 'mydb',
-    user: 'app',
-    password: 'secret',
-});
-
-interface EventRow {
-    id: number;
-    event_type: string;
-    payload: Record<string, unknown>;
-    created_at: string;
-}
-
-// Les requetes sur une table partitionnee sont identiques
-// a celles sur une table normale — PostgreSQL gere le pruning
-async function getRecentEvents(tenantId: number, days: number = 7): Promise<EventRow[]> {
-    const { rows } = await pool.query<EventRow>(`
-        SELECT id, event_type, payload, created_at
-        FROM events
-        WHERE tenant_id = $1
-          AND created_at > now() - $2::interval
-        ORDER BY created_at DESC
-        LIMIT 100
-    `, [tenantId, `${days} days`]);
-    // → PostgreSQL ne scanne que les partitions du dernier mois
-    return rows;
-}
-
-// L'insertion est aussi transparente
-interface InsertedEvent {
-    id: number;
-    created_at: string;
-}
-
-async function insertEvent(
-    tenantId: number,
-    eventType: string,
-    payload: Record<string, unknown>
-): Promise<InsertedEvent> {
-    const { rows } = await pool.query<InsertedEvent>(`
-        INSERT INTO events (tenant_id, event_type, payload)
-        VALUES ($1, $2, $3)
-        RETURNING id, created_at
-    `, [tenantId, eventType, JSON.stringify(payload)]);
-    // → PostgreSQL route automatiquement vers la bonne partition
-    return rows[0];
-}
-
-// ────────────────────────────────────────────────────────────
-// 2. Maintenance : creer les partitions futures
-// ────────────────────────────────────────────────────────────
-async function ensureFuturePartitions(monthsAhead: number = 3): Promise<void> {
-    const client: PoolClient = await pool.connect();
-    try {
-        for (let i = 1; i <= monthsAhead; i++) {
-            const startDate = new Date();
-            startDate.setMonth(startDate.getMonth() + i, 1);
-            startDate.setHours(0, 0, 0, 0);
-
-            const endDate = new Date(startDate);
-            endDate.setMonth(endDate.getMonth() + 1);
-
-            const partName: string = `events_${startDate.getFullYear()}_${
-                String(startDate.getMonth() + 1).padStart(2, '0')
-            }`;
-
-            const startStr: string = startDate.toISOString().split('T')[0];
-            const endStr: string = endDate.toISOString().split('T')[0];
-
-            try {
-                await client.query(`
-                    CREATE TABLE IF NOT EXISTS ${partName}
-                    PARTITION OF events
-                    FOR VALUES FROM ('${startStr}') TO ('${endStr}')
-                `);
-                console.log(`Partition ${partName} creee ou existante`);
-            } catch (err) {
-                if ((err as { code?: string }).code === '42P07') {
-                    // relation already exists — OK
-                    console.log(`Partition ${partName} existe deja`);
-                } else {
-                    throw err;
-                }
-            }
-        }
-    } finally {
-        client.release();
-    }
-}
-
-// ────────────────────────────────────────────────────────────
-// 3. Sharding applicatif (multi-database)
-// ────────────────────────────────────────────────────────────
-class ShardRouter {
-    shards: InstanceType<typeof Pool>[];
-    numShards: number;
-
-    constructor(shardConfigs: PoolConfig[]) {
-        // shardConfigs = [{ host, port, database, ... }, ...]
-        this.shards = shardConfigs.map(config => new Pool({
-            ...config,
-            max: 10,
-        }));
-        this.numShards = shardConfigs.length;
-    }
-
-    // Determiner le shard pour un tenant
-    private _getShardIndex(tenantId: number): number {
-        // Hash simple pour distribuer uniformement
-        return tenantId % this.numShards;
-    }
-
-    private _getPool(tenantId: number): InstanceType<typeof Pool> {
-        return this.shards[this._getShardIndex(tenantId)];
-    }
-
-    // Requete sur UN shard (tenant-scoped)
-    async queryTenant(tenantId: number, sql: string, params: unknown[]): Promise<QueryResult> {
-        const shardPool = this._getPool(tenantId);
-        return shardPool.query(sql, params);
-    }
-
-    // Requete sur TOUS les shards (scatter-gather)
-    async queryAll(sql: string, params: unknown[]): Promise<Record<string, unknown>[]> {
-        const results: QueryResult[] = await Promise.all(
-            this.shards.map(shardPool => shardPool.query(sql, params))
-        );
-        // Combiner les resultats
-        return results.flatMap(r => r.rows);
-    }
-
-    // Aggregation sur tous les shards
-    async countAll(table: string, where: string = '', params: unknown[] = []): Promise<number> {
-        const sql: string = `SELECT count(*) AS cnt FROM ${table} ${
-            where ? 'WHERE ' + where : ''
-        }`;
-        const results: QueryResult[] = await Promise.all(
-            this.shards.map(shardPool => shardPool.query(sql, params))
-        );
-        return results.reduce(
-            (sum: number, r: QueryResult) => sum + parseInt(r.rows[0].cnt),
-            0
-        );
-    }
-
-    async close(): Promise<void> {
-        await Promise.all(this.shards.map(s => s.end()));
-    }
-}
-
-// Utilisation
-const router = new ShardRouter([
-    { host: 'shard1.example.com', port: 5432, database: 'app',
-      user: 'app', password: 'secret' },
-    { host: 'shard2.example.com', port: 5432, database: 'app',
-      user: 'app', password: 'secret' },
-    { host: 'shard3.example.com', port: 5432, database: 'app',
-      user: 'app', password: 'secret' },
-]);
-
-// Requete pour un tenant specifique → 1 seul shard
-const orders: QueryResult = await router.queryTenant(42,
-    'SELECT * FROM orders WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 10',
-    [42]
-);
-
-// Comptage global → tous les shards en parallele
-const totalOrders: number = await router.countAll('orders');
-console.log(`Total commandes sur tous les shards : ${totalOrders}`);
-
-// ────────────────────────────────────────────────────────────
-// 4. Monitoring des partitions
-// ────────────────────────────────────────────────────────────
-interface PartitionRow {
-    partition_name: string;
-    total_size: string;
-    live_rows: number;
-    dead_rows: number;
-}
-
-async function getPartitionStats(): Promise<PartitionRow[]> {
-    const { rows } = await pool.query<PartitionRow>(`
-        SELECT
-            inhrelid::regclass AS partition_name,
-            pg_size_pretty(
-                pg_total_relation_size(inhrelid)
-            ) AS total_size,
-            pg_stat_get_live_tuples(inhrelid) AS live_rows,
-            pg_stat_get_dead_tuples(inhrelid) AS dead_rows
-        FROM pg_inherits
-        WHERE inhparent = 'events'::regclass
-        ORDER BY inhrelid::regclass::text
-    `);
-
-    console.log('\n=== Partition Stats ===');
-    for (const row of rows) {
-        const deadPct: string = row.live_rows > 0
-            ? (100 * row.dead_rows / (row.live_rows + row.dead_rows)).toFixed(1)
-            : '0.0';
-        console.log(
-            `  ${row.partition_name.padEnd(25)} ` +
-            `${row.total_size.padStart(10)} ` +
-            `${row.live_rows.toString().padStart(12)} rows ` +
-            `(${deadPct}% dead)`
-        );
-    }
-
-    return rows;
-}
-
-// Exemple de sortie :
-// === Partition Stats ===
-//   events_2024_01             1.2 GB      8500000 rows (2.3% dead)
-//   events_2024_02             1.1 GB      7800000 rows (1.8% dead)
-//   events_2024_03             1.3 GB      9200000 rows (0.5% dead)
-```
-
----
-
-## 13. Exercice mental
-
-> **Exercice mental 1** : Vous avez une table `logs` de 500 millions de lignes partitionnee par mois (24 partitions sur 2 ans). Un développeur exécuté `SELECT count(*) FROM logs WHERE user_id = 42`. Pourquoi cette requête est-elle lente malgre le partitionnement ?
-
-<details>
-<summary>Reponse</summary>
-
-La requête filtre sur `user_id`, mais la table est partitionnee par **date** (`created_at`). Il n'y a **aucun filtre sur la clé de partition**, donc PostgreSQL doit scanner les **24 partitions**. Le partition pruning ne s'applique pas.
-
-Solutions :
-1. Ajouter un index sur `user_id` (sera créé sur chaque partition)
-2. Si les requêtes par user_id sont très frequentes, envisager de re-partitionner par user_id (HASH) ou d'ajouter un sous-partitionnement
-3. Ajouter un filtre sur la date : `WHERE user_id = 42 AND created_at > now() - interval '30 days'` pour limiter a 1 partition
-</details>
-
-> **Exercice mental 2** : Vous voulez une contrainte `UNIQUE (email)` sur une table partitionnee par `tenant_id` (LIST). Comment faire ?
-
-<details>
-<summary>Reponse</summary>
-
-Impossible directement. Une contrainte UNIQUE sur une table partitionnee doit inclure la clé de partition. Il faudrait `UNIQUE (email, tenant_id)`, ce qui n'empeche **pas** deux tenants d'avoir le même email (c'est peut-etre acceptable).
-
-Si l'unicite globale de l'email est requise, les alternatives sont :
-1. **UNIQUE (email, tenant_id)** + vérification applicative cross-tenant
-2. **Table de référence separee** (non partitionnee) avec `UNIQUE (email)` et une FK
-3. **Trigger BEFORE INSERT** qui vérifié l'unicite manuellement sur toutes les partitions
-
-La solution 2 est généralement la meilleure.
-</details>
-
-> **Exercice mental 3** : Votre table partitionnee par mois à une partition `events_default` qui contient 5 millions de lignes avec des dates de 2025. Vous voulez créer `events_2025_01`. Que se passe-t-il ?
-
-<details>
-<summary>Reponse</summary>
-
-PostgreSQL refuse de créer la partition car la partition DEFAULT contient des lignes dont le `created_at` tombe dans la plage `[2025-01-01, 2025-02-01)`. L'erreur sera :
-
-```
-ERROR: updated partition constraint for default partition "events_default"
-would be violated by some row
-```
-
-Pour résoudre :
-1. Créer une table temporaire : `CREATE TABLE temp AS SELECT * FROM events_default WHERE created_at >= '2025-01-01' AND created_at < '2025-02-01'`
-2. Supprimer ces lignes de la default : `DELETE FROM events_default WHERE created_at >= '2025-01-01' AND created_at < '2025-02-01'`
-3. Créer la partition : `CREATE TABLE events_2025_01 PARTITION OF events FOR VALUES FROM ('2025-01-01') TO ('2025-02-01')`
-4. Reinserer : `INSERT INTO events SELECT * FROM temp`
-5. Drop temp : `DROP TABLE temp`
-
-C'est pourquoi il faut créer les partitions **a l'avance** et garder la default vide.
-</details>
-
----
-
-## Ce qu'il faut retenir
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                    A RETENIR                                  │
-│                                                               │
-│  1. RANGE : ideal pour les time-series et donnees            │
-│     historiques. Le cas d'usage le plus frequent.            │
-│                                                               │
-│  2. LIST : parfait pour le multi-tenant ou les categorisations│
-│     finies (region, statut).                                 │
-│                                                               │
-│  3. HASH : distribution uniforme quand pas de critere        │
-│     naturel.                                                 │
-│                                                               │
-│  4. Partition pruning = la cle de la performance.            │
-│     TOUJOURS filtrer sur la cle de partition !               │
-│                                                               │
-│  5. DROP PARTITION >> DELETE pour la purge de donnees.        │
-│     Instantane, sans dead tuples.                            │
-│                                                               │
-│  6. PK et UNIQUE doivent inclure la cle de partition.        │
-│     C'est la contrainte la plus genante du partitionnement.  │
-│                                                               │
-│  7. pg_partman simplifie la gestion automatique des          │
-│     partitions (creation, retention, maintenance).           │
-│                                                               │
-│  8. Scaling horizontal : Citus pour le sharding natif,       │
-│     postgres_fdw pour le federation, ou sharding applicatif. │
-│                                                               │
-│  9. Combiner partitioning + read replicas + WAL archiving    │
-│     pour une architecture production complete.               │
-└──────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Navigation
-
-| Précédent | Suivant |
-|---|---|
-| [Module 17 — Monitoring & Observabilité](./17-monitoring-et-observabilite.md) | Fin du cours avance |
-
----
-
-> *"Le partitionnement n'est pas une optimisation prematuree — c'est une decision d'architecture. Comme pour un immeuble, il vaut mieux prevoir les etages avant de couler les fondations que d'essayer de les ajouter après."*
-
----
-
-<!-- parcours-recommande -->
-
-::: tip Parcours recommandé
-1. **Screencast** : [screencast 18 partitioning et scaling](../screencasts/screencast-18-partitioning-et-scaling.md)
-2. **Lab** : [lab-18-partitioning](../labs/lab-18-partitioning/README)
-3. **Quiz** : [quiz 18 partitioning](../quizzes/quiz-18-partitioning.html)
-:::
-
----
-
-<!-- navigation-inter-cours -->
-
-::: info Cours suivant
-Bravo, tu as termine le cours **PostgreSQL** ! 
-Le prochain cours du curriculum est **HTTP & Caching**.
-
-[Commencer HTTP & Caching →](../../07-http-caching/modules/00-prerequis-et-vue-ensemble.md)
-:::
+> Lab associé : `10-postgresql/labs/lab-18-partitioning/`. Tu partitionnes la table `posts` de TribuZen par mois, tu vérifies le pruning avec `EXPLAIN ANALYZE`, tu inspectes la taille de chaque partition via `pg_inherits`, et tu simules un cycle de vie complet (DETACH CONCURRENTLY + DROP). Corrigé SQL inline dans le README, aucun fichier séparé.

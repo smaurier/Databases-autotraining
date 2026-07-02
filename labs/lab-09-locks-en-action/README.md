@@ -356,6 +356,45 @@ COMMIT;
 
 ---
 
+## Variante J+30 (fading)
+
+> Refais sans corrigé, sans regarder les exercices 1 à 5 ci-dessus.
+
+**Nouveau scénario : contention à 3 sessions concurrentes sur la dernière place.**
+
+Recrée l'événement avec **1 seule place restante**, puis ouvre **3 terminaux psql** (Sessions A, B, C) et rejoue le scénario suivant sans aide :
+
+1. Sessions A, B et C démarrent chacune une transaction et tentent `SELECT … FOR UPDATE` sur la même ligne simultanément.
+2. Session A valide la réservation (UPDATE + INSERT + COMMIT).
+3. Sessions B et C se débloquent dans un ordre non déterministe — chacune doit détecter `places_restantes = 0` et faire `ROLLBACK`.
+4. Pendant que B et C attendent, ouvre un **4e terminal** (Session obs) et interroge `pg_locks` + `pg_blocking_pids` pour identifier les deux sessions bloquées.
+5. Vérifie en fin d'exercice que `SELECT COUNT(*) FROM reservations` retourne exactement `1`.
+
+**Contraintes d'exécution :**
+
+- Ne consulte aucun corrigé.
+- Utilise `NOWAIT` dans une variante : remplace le scénario précédent par B qui utilise `FOR UPDATE NOWAIT` — elle doit échouer instantanément pendant que A tient le lock.
+- Utilise `lock_timeout = '3s'` dans une autre variante pour C.
+- À la fin, note dans un commentaire SQL quelle erreur SQLSTATE reçoivent B (NOWAIT) et C (timeout).
+
+```sql
+-- Template de départ (à compléter de mémoire)
+-- Réinitialiser
+DELETE FROM reservations;
+UPDATE evenements SET places_restantes = 1 WHERE id = 1;
+
+-- Session A : BEGIN; SELECT ... FOR UPDATE; (tenir ouvert)
+-- Session B : BEGIN; SELECT ... FOR UPDATE NOWAIT; → erreur ?
+-- Session C : BEGIN; SET LOCAL lock_timeout = '3s'; SELECT ... FOR UPDATE; → erreur après 3s ?
+-- Session obs : interroger pg_blocking_pids(...)
+-- Session A : UPDATE + INSERT + COMMIT
+-- Vérification finale : SELECT COUNT(*) FROM reservations; → 1
+```
+
+**Critère de réussite :** tu obtiens exactement 1 réservation, tu as vu les deux SQLSTATE différents (NOWAIT vs timeout) et tu as identifié les PIDs bloquants dans `pg_locks` sans consulter le corrigé.
+
+---
+
 ## Récapitulatif des patterns
 
 | Besoin | Solution SQL |

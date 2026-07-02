@@ -559,6 +559,68 @@ TOUTES           | TOTAL          |       10 |              34 |               6
 - [ ] Exo 5 : Famille Leblanc apparaît avec son unique post (LEFT JOIN LATERAL)
 - [ ] Exo 6 : la ligne `TOUTES | TOTAL` affiche le cumul des 3 familles
 
+## Variante J+30 (fading)
+
+> Refais sans regarder le corrigé ni les exercices. Contrainte : **pas de sous-requête imbriquée** — uniquement des CTEs chaînées.
+
+**Exercice de mémoire — tableau de bord en CTEs pures :**
+
+Reproduis le résultat de l'exercice 6 (statistiques multi-niveaux) **sans utiliser `GROUPING SETS`, `ROLLUP` ou `CUBE`**. Utilise uniquement des CTEs `WITH` chaînées pour calculer :
+
+1. Le nombre de posts et le total de réactions **par famille et par période** (`cette semaine` / `archives`).
+2. Le sous-total **par famille** (toutes périodes confondues).
+3. Le **total général** (toutes familles, toutes périodes).
+
+Puis assemble les trois niveaux avec `UNION ALL`.
+
+```sql
+-- Template vide — complète de mémoire, pas de GROUPING SETS autorisé
+WITH
+post_stats AS (
+  -- reprendre le CTE de base de l'exercice 6
+  SELECT ...
+),
+par_famille_periode AS (
+  SELECT famille, periode, COUNT(post_id) AS nb_posts, SUM(nb_reactions) AS total_reactions
+  FROM post_stats
+  GROUP BY famille, periode
+),
+par_famille AS (
+  SELECT famille, 'TOTAL' AS periode, ...
+  FROM post_stats
+  GROUP BY famille
+),
+total_general AS (
+  SELECT 'TOUTES' AS famille, 'TOTAL' AS periode, ...
+  FROM post_stats
+)
+SELECT * FROM par_famille_periode
+UNION ALL
+SELECT * FROM par_famille
+UNION ALL
+SELECT * FROM total_general
+ORDER BY famille, periode;
+```
+
+**Contrainte supplémentaire (niveau +1) :** réécrire l'exercice 4 (arbre généalogique) en remontant depuis **Eve** (id = 5) jusqu'à la racine — de mémoire, en CTE récursive, sans regarder la variante ancêtres du corrigé.
+
+```sql
+-- Template vide
+WITH RECURSIVE ancetres AS (
+  -- anchor : Eve
+  ...
+  UNION ALL
+  -- récursif : remonter vers parent
+  ...
+)
+SELECT display_name, niveau FROM ancetres ORDER BY niveau;
+-- Résultat attendu : Eve (0) → Bob (1) → Alice (2)
+```
+
+**Critère de réussite :** les deux résultats correspondent aux valeurs attendues de l'exercice 6 et de la variante ancêtres — sans sous-requêtes imbriquées dans aucun des deux cas.
+
+---
+
 ## Aller plus loin
 
 - Ajouter une clause `CYCLE id SET is_cycle USING path` (PG 14+) à l'exercice 4 pour détecter les cycles sans la protection manuelle `NOT (id = ANY(chemin))`

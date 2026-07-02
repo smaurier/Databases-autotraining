@@ -1,1080 +1,546 @@
-# Module 14 — Sécurité & Administration
-
-> **Objectif** : Securiser votre base PostgreSQL de bout en bout — authentification, roles, privileges, Row Level Security — et maîtriser les taches d'administration essentielles.
->
-> **Difficulte** : ⭐⭐⭐⭐
-
+---
+titre: Sécurité et administration
+cours: 10-postgresql
+notions: [rôles et privilèges GRANT REVOKE, principe du moindre privilège, Row-Level Security RLS et policies, authentification pg_hba.conf, chiffrement SSL, prévention des injections SQL, sauvegarde pg_dump et restauration]
+outcomes: [gérer rôles et privilèges au moindre privilège, isoler les données par tenant avec RLS, prévenir les injections SQL, sauvegarder et restaurer la base]
+prerequis: [13-jsonb-et-types-avances]
+next: 15-projet-final
+libs: [{ name: postgresql, version: "17" }]
+tribuzen: isoler les données par famille avec Row-Level Security dans TribuZen (une famille ne voit que ses posts)
+last-reviewed: 2026-07
 ---
 
-## 1. Modèle de sécurité PostgreSQL
+# Sécurité et administration
 
-La sécurité dans PostgreSQL s'organise en **couches concentriques** :
+> **Outcomes — tu sauras FAIRE :** créer des rôles au moindre privilège, isoler les données par famille avec RLS, prévenir les injections SQL avec des requêtes paramétrées, sauvegarder et restaurer une base PostgreSQL.
+> **Difficulté :** :star::star::star::star:
 
-```
-┌───────────────────────────────────────────────────────┐
-│  Couche 1 : RESEAU                                     │
-│  Firewall, SSL/TLS, listen_addresses                   │
-│  ┌───────────────────────────────────────────────────┐ │
-│  │  Couche 2 : AUTHENTIFICATION (pg_hba.conf)         │ │
-│  │  Qui peut se connecter ? Avec quelle methode ?     │ │
-│  │  ┌───────────────────────────────────────────────┐ │ │
-│  │  │  Couche 3 : AUTORISATION (GRANT/REVOKE)        │ │ │
-│  │  │  Que peut faire l'utilisateur connecte ?       │ │ │
-│  │  │  ┌───────────────────────────────────────────┐ │ │ │
-│  │  │  │  Couche 4 : ROW LEVEL SECURITY (RLS)      │ │ │ │
-│  │  │  │  Quelles LIGNES peut-il voir/modifier ?   │ │ │ │
-│  │  │  └───────────────────────────────────────────┘ │ │ │
-│  │  └───────────────────────────────────────────────┘ │ │
-│  └───────────────────────────────────────────────────┘ │
-└───────────────────────────────────────────────────────┘
-```
+## 1. Cas concret d'abord
 
-> **Analogie** : Imaginez un immeuble de bureaux. Le firewall est la grille exterieure. pg_hba.conf est le badge d'acces à la porte. GRANT/REVOKE est la clé de chaque bureau. RLS est le coffre-fort dans le bureau : même si vous avez la clé, vous ne voyez que vos propres documents.
-
----
-
-## 2. Authentification — pg_hba.conf
-
-### 2.1 Le fichier pg_hba.conf
-
-`pg_hba.conf` (Host-Based Authentication) est le **gardien** de PostgreSQL. Il définit qui peut se connecter, depuis ou, et comment.
+Dans TribuZen, la table `posts` contient les messages de **toutes les familles**. Sans protection, un seul bug dans l'application suffit à fuiter l'intégralité des données :
 
 ```sql
--- Trouver l'emplacement du fichier
-SHOW hba_file;
--- /etc/postgresql/17/main/pg_hba.conf (Linux)
--- C:/Program Files/PostgreSQL/17/data/pg_hba.conf (Windows)
+-- Bug applicatif : filtre family_id oublié dans le handler de feed
+SELECT id, content, author_id, created_at
+FROM posts
+ORDER BY created_at DESC
+LIMIT 20;
+-- Retourne les posts de TOUTES les familles. Fuite silencieuse.
 ```
 
-### 2.2 Format du fichier
+Trois vecteurs distincts à neutraliser :
 
-```
-# TYPE    DATABASE    USER        ADDRESS         METHOD
-local     all         postgres                    peer
-host      all         all         127.0.0.1/32    scram-sha-256
-host      all         all         ::1/128         scram-sha-256
-host      mydb        myapp       10.0.0.0/24     scram-sha-256
-host      all         all         0.0.0.0/0       reject
-```
+1. **Excès de privilèges** — l'utilisateur applicatif peut exécuter `DROP TABLE posts` ou `TRUNCATE posts`, opérations qu'il n'a jamais besoin de faire.
+2. **Absence de Row-Level Security** — même connecté avec le bon rôle, une requête sans filtre retourne tout : la sécurité repose entièrement sur le code applicatif.
+3. **Injection SQL** — si `family_id` vient d'un paramètre externe et est concaténé dans la requête, un attaquant peut réécrire la requête et contourner tout filtrage.
 
-| Champ | Description | Exemples |
-|-------|-------------|----------|
-| TYPE | Type de connexion | local, host, hostssl, hostnossl |
-| DATABASE | Base(s) cible(s) | all, mydb, "db1,db2" |
-| USER | Utilisateur(s) | all, myuser, +mygroup |
-| ADDRESS | Adresse IP / réseau | 127.0.0.1/32, 10.0.0.0/24 |
-| METHOD | Méthode d'authentification | trust, password, md5, scram-sha-256, peer, cert |
+Ce module installe les trois protections couche par couche sur le schéma TribuZen réel.
 
-### 2.3 Méthodes d'authentification
+## 2. Théorie complète, concise
 
-| Méthode | Sécurité | Description |
-|---------|----------|-------------|
-| `trust` | **Aucune** | Pas de mot de passe (dev uniquement !) |
-| `password` | Faible | Mot de passe en clair sur le réseau |
-| `md5` | Moyenne | Hash MD5 (obsolete mais courant) |
-| `scram-sha-256` | **Forte** | Standard actuel recommande |
-| `peer` | Forte | Authentification OS (local uniquement) |
-| `cert` | **Très forte** | Certificat SSL client |
-| `reject` | - | Refus systematique |
+### Rôles et privilèges
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  RECOMMANDATION :                                             │
-│                                                               │
-│  1. Production : scram-sha-256 + SSL obligatoire             │
-│  2. Developpement : scram-sha-256 ou trust (local)           │
-│  3. JAMAIS de trust en production !                          │
-│  4. JAMAIS de password (utiliser scram-sha-256)              │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### 2.4 Exemple de pg_hba.conf sécurisé
-
-```
-# Connexions locales : authentification OS
-local   all     postgres                peer
-
-# Connexions locales pour l'application
-local   mydb    myapp                   scram-sha-256
-
-# Connexions TCP depuis le serveur lui-meme
-host    all     all     127.0.0.1/32    scram-sha-256
-host    all     all     ::1/128         scram-sha-256
-
-# Application depuis le reseau interne (SSL obligatoire)
-hostssl mydb    myapp   10.0.0.0/24     scram-sha-256
-
-# Replication depuis le standby
-hostssl replication replicator 10.0.1.5/32 scram-sha-256
-
-# Refuser tout le reste
-host    all     all     0.0.0.0/0       reject
-```
-
-### 2.5 Recharger la configuration
+PostgreSQL ne distingue pas "utilisateur" et "groupe" : tout est un **rôle**. L'attribut `LOGIN` permet la connexion (= utilisateur) ; sans `LOGIN`, le rôle sert de groupe réutilisable.
 
 ```sql
--- Apres modification de pg_hba.conf
+-- Groupes fonctionnels (sans LOGIN)
+CREATE ROLE tribuzen_readonly;    -- rapports, analytics
+CREATE ROLE tribuzen_app;         -- API applicative (CRUD)
+CREATE ROLE tribuzen_migrator;    -- migrations de schéma
+
+-- Utilisateur applicatif — hérite des droits de son groupe
+CREATE ROLE tribuzen_api WITH LOGIN PASSWORD 'mot_de_passe_fort';
+GRANT tribuzen_app TO tribuzen_api;
+```
+
+**Principe du moindre privilège** : chaque rôle reçoit exactement ce dont il a besoin, pas plus.
+
+```sql
+-- Lecture seule
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO tribuzen_readonly;
+
+-- API applicative : CRUD, jamais DDL ni TRUNCATE
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO tribuzen_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO tribuzen_app;
+
+-- Migrations : tous droits, exécuté hors production ou via CI dédié
+GRANT ALL PRIVILEGES ON ALL TABLES   IN SCHEMA public TO tribuzen_migrator;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO tribuzen_migrator;
+```
+
+**ALTER DEFAULT PRIVILEGES** — couvre les tables créées *après* le GRANT :
+
+```sql
+-- GRANT ... ON ALL TABLES s'applique uniquement aux tables existantes.
+-- Pour les tables créées lors des futures migrations :
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO tribuzen_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO tribuzen_app;
+```
+
+**REVOKE** — retirer un privilège déjà accordé :
+
+```sql
+-- Retirer DELETE sur une table sensible
+REVOKE DELETE ON posts FROM tribuzen_app;
+
+-- Retirer tous les droits à un rôle compromis
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM role_compromis;
+
+-- Retirer le droit de connexion immédiatement
+REVOKE CONNECT ON DATABASE tribuzen FROM role_compromis;
+```
+
+Vérifier les droits existants :
+
+```sql
+-- Dans psql, affichage formaté des ACL d'une table
+\dp posts
+
+-- Via information_schema (scriptable)
+SELECT grantee, privilege_type, is_grantable
+FROM information_schema.role_table_grants
+WHERE table_name = 'posts'
+ORDER BY grantee, privilege_type;
+```
+
+### pg_hba.conf et authentification
+
+`pg_hba.conf` (Host-Based Authentication) contrôle **qui** peut se connecter, **depuis quelle adresse**, et **par quelle méthode**.
+
+```
+# TYPE    DATABASE     USER           ADDRESS          METHOD
+local     all          postgres                        peer
+host      tribuzen     tribuzen_api   127.0.0.1/32     scram-sha-256
+hostssl   tribuzen     tribuzen_api   10.0.0.0/24      scram-sha-256
+host      all          all            0.0.0.0/0        reject
+```
+
+Méthodes d'authentification :
+
+| Méthode | Sécurité | Usage |
+|---|---|---|
+| `scram-sha-256` | Forte — standard actuel | Production |
+| `peer` | Forte — vérifie l'utilisateur OS | Connexions locales Unix uniquement |
+| `md5` | Faible — obsolète | À migrer vers scram-sha-256 |
+| `trust` | Aucune | Dev local uniquement — interdit en prod |
+| `reject` | — | Blocage explicite d'une source |
+
+Les lignes sont évaluées **de haut en bas** : la première qui correspond s'applique. Un `reject` trop haut bloque tout.
+
+Recharger sans redémarrage après modification :
+
+```sql
 SELECT pg_reload_conf();
--- Ou depuis le shell : pg_ctl reload
+-- Ou depuis le shell OS : pg_ctl reload
 ```
 
-> **Piege classique** : Les regles sont evaluees de **haut en bas**. La première regle qui correspond est utilisee. Si vous mettez `reject` en premier, plus personne ne peut se connecter !
+### SSL — chiffrement du transit
 
----
+`hostssl` dans `pg_hba.conf` impose SSL pour les connexions réseau concernées. Sans SSL, les identifiants et données transitent en clair.
 
-## 3. Roles
+```
+# Forcer SSL pour les connexions réseau (10.x.x.x)
+hostssl   tribuzen   tribuzen_api   10.0.0.0/24   scram-sha-256
+# Autoriser sans SSL uniquement depuis localhost
+host      tribuzen   tribuzen_api   127.0.0.1/32  scram-sha-256
+```
 
-### 3.1 Concept
-
-Dans PostgreSQL, il n'y a pas de distinction entre "utilisateur" et "groupe". Tout est un **role**. Un role peut avoir l'attribut `LOGIN` (ce qui en fait un utilisateur) ou non (ce qui en fait un groupe).
+Vérifier côté serveur :
 
 ```sql
--- Creer un role (groupe, pas de login)
-CREATE ROLE app_readers;
-CREATE ROLE app_writers;
-CREATE ROLE app_admins;
-
--- Creer un utilisateur (role avec LOGIN)
-CREATE ROLE myapp WITH LOGIN PASSWORD 'secret_password';
-
--- Equivalent :
-CREATE USER myapp WITH PASSWORD 'secret_password';
--- CREATE USER est juste un alias pour CREATE ROLE ... WITH LOGIN
+SHOW ssl;            -- on / off
+SHOW ssl_cert_file;  -- chemin du certificat serveur
 ```
 
-### 3.2 Attributs des roles
+### Row-Level Security (RLS)
+
+RLS filtre les lignes **au niveau du moteur de base de données**, indépendamment du code applicatif. Même une requête sans clause `WHERE` ne retourne que les lignes autorisées.
+
+**Activation :**
 
 ```sql
-CREATE ROLE admin_user WITH
-    LOGIN                  -- Peut se connecter
-    SUPERUSER              -- Tous les droits (DANGEREUX)
-    CREATEDB               -- Peut creer des bases
-    CREATEROLE             -- Peut creer des roles
-    REPLICATION            -- Peut initier la replication
-    INHERIT                -- Herite des privileges des roles parents
-    CONNECTION LIMIT 5     -- Max 5 connexions simultanees
-    VALID UNTIL '2026-01-01'  -- Expiration
-    PASSWORD 'strong_password';
+-- Activer RLS sur la table
+ALTER TABLE posts ENABLE ROW LEVEL SECURITY;
+-- Après activation : aucune ligne visible pour les non-propriétaires, sans policy explicite.
+-- Deny-by-default intégré.
+
+-- FORCE : soumet également le propriétaire de la table aux policies
+-- Indispensable en production (le rôle "migration" est souvent propriétaire)
+ALTER TABLE posts FORCE ROW LEVEL SECURITY;
 ```
 
-| Attribut | Description | Defaut |
-|----------|-------------|--------|
-| LOGIN | Peut se connecter | Non (NOLOGIN) |
-| SUPERUSER | Ignore toutes les verifications | Non |
-| CREATEDB | Peut créer des bases | Non |
-| CREATEROLE | Peut créer d'autres roles | Non |
-| REPLICATION | Peut se connecter en mode replication | Non |
-| INHERIT | Herite des privileges des roles membres | Oui |
-
-### 3.3 Héritage de roles
+**Créer les policies (isolation par famille) :**
 
 ```sql
--- Creer une hierarchie de roles
-CREATE ROLE readers;
-CREATE ROLE writers;
-CREATE ROLE admins;
+-- SELECT : ne voir que ses propres posts
+CREATE POLICY posts_family_select ON posts
+  FOR SELECT
+  USING (family_id = current_setting('app.family_id', true)::int);
 
--- Les writers heritent des droits readers
-GRANT readers TO writers;
--- Les admins heritent des droits writers (donc aussi readers)
-GRANT writers TO admins;
+-- INSERT : ne pouvoir insérer que dans son propre espace
+CREATE POLICY posts_family_insert ON posts
+  FOR INSERT
+  WITH CHECK (family_id = current_setting('app.family_id', true)::int);
 
--- Creer des utilisateurs
-CREATE USER alice WITH PASSWORD 'pwd_alice' IN ROLE readers;
-CREATE USER bob WITH PASSWORD 'pwd_bob' IN ROLE writers;
-CREATE USER charlie WITH PASSWORD 'pwd_charlie' IN ROLE admins;
+-- UPDATE : USING filtre les lignes modifiables ; WITH CHECK valide la ligne après modification
+CREATE POLICY posts_family_update ON posts
+  FOR UPDATE
+  USING  (family_id = current_setting('app.family_id', true)::int)
+  WITH CHECK (family_id = current_setting('app.family_id', true)::int);
+
+-- DELETE : USING filtre les lignes supprimables
+CREATE POLICY posts_family_delete ON posts
+  FOR DELETE
+  USING (family_id = current_setting('app.family_id', true)::int);
 ```
 
-```
-Hierarchie :
-                admins
-                  │
-                  ▼ (herite de)
-               writers
-                  │
-                  ▼ (herite de)
-               readers
+**USING vs WITH CHECK :**
 
-Charlie (admin) a les droits de : admins + writers + readers
-Bob (writer) a les droits de : writers + readers
-Alice (reader) a les droits de : readers
-```
+| Clause | Opérations | Rôle |
+|---|---|---|
+| `USING` | SELECT, UPDATE (source), DELETE | Filtre les lignes **existantes** visibles/modifiables |
+| `WITH CHECK` | INSERT, UPDATE (résultat) | Valide la **nouvelle** ligne avant persistance |
 
-### 3.4 SET ROLE — Changer de role temporairement
+Pour un UPDATE, les deux clauses s'appliquent : `USING` détermine quelle ligne peut être sélectionnée pour la modification, `WITH CHECK` vérifie que la ligne résultante est aussi autorisée — ce qui empêche un utilisateur de changer le `family_id` d'un post pour le "déplacer" vers une autre famille.
+
+**`current_setting('app.family_id', true)`** — le deuxième argument `true` = *missing_ok* : si la variable n'est pas définie dans la session, retourne `NULL` au lieu de lever une erreur. `NULL::int` rend `family_id = NULL` toujours faux pour toutes les lignes → **deny-by-default** automatique si l'application oublie de positionner le contexte. Ne jamais utiliser la forme à un seul argument dans une policy RLS.
+
+**Positionner le contexte depuis l'application :**
 
 ```sql
--- Connecte en tant que charlie (admin)
-SELECT current_user;  -- charlie
+-- set_config(name, value, is_local)
+-- is_local = true : LOCAL à la transaction — réinitialisé au COMMIT/ROLLBACK
+-- Sûr avec un pool de connexions : la connexion retournée au pool est propre
+BEGIN;
+SELECT set_config('app.family_id', '42', true);
+SELECT * FROM posts;  -- ne retourne que les posts de la famille 42
+INSERT INTO posts (family_id, author_id, content)
+  VALUES (42, 7, 'Nouveau post') ;  -- OK (family_id = 42 = contexte)
+COMMIT;
 
--- Se "transformer" en alice pour tester ses droits
-SET ROLE alice;
-SELECT current_user;  -- alice
-
--- Revenir a charlie
-RESET ROLE;
-SELECT current_user;  -- charlie
+-- À ne PAS faire : SET au niveau session (persiste après COMMIT, fuite dans le pool)
+-- SET app.family_id = '42';  -- dangereux avec pooling
 ```
 
----
-
-## 4. GRANT / REVOKE
-
-### 4.1 Privileges sur les tables
+**Policies multiples et modes :**
 
 ```sql
--- Donner les droits de lecture aux readers
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO readers;
+-- PERMISSIVE (défaut) : les policies d'un même rôle/opération sont OR-ées
+-- RESTRICTIVE : AND-ées avec les policies permissives
 
--- Donner les droits d'ecriture aux writers
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO writers;
+-- Accès admin total via rôle dédié (pas SUPERUSER)
+CREATE POLICY posts_admin_all ON posts
+  FOR ALL
+  TO tribuzen_migrator
+  USING (true)
+  WITH CHECK (true);
 
--- Donner tous les droits aux admins
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO admins;
-
--- Droits sur les sequences (necessaire pour INSERT avec SERIAL)
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO writers;
+-- Rôles qui contournent RLS par défaut :
+-- - SUPERUSER (toujours)
+-- - Propriétaire de la table (sauf FORCE ROW LEVEL SECURITY)
+-- - Tout rôle avec l'attribut BYPASSRLS
 ```
 
-### 4.2 Privileges disponibles
+### Prévention des injections SQL
 
-| Privilege | Table | Sequence | Schema | Function |
-|-----------|-------|----------|--------|----------|
-| SELECT | Lire | Lire la valeur | - | - |
-| INSERT | Inserer | - | - | - |
-| UPDATE | Modifier | Incrementer | - | - |
-| DELETE | Supprimer | - | - | - |
-| TRUNCATE | Vider | - | - | - |
-| REFERENCES | Créer FK | - | - | - |
-| TRIGGER | Créer trigger | - | - | - |
-| CREATE | - | - | Créer objets | - |
-| USAGE | - | Utiliser | Acceder | - |
-| EXECUTE | - | - | - | Exécuter |
-| ALL | Tout | Tout | Tout | Tout |
-
-### 4.3 Default privileges
+Une injection SQL se produit quand une valeur externe est **concaténée** dans la chaîne SQL plutôt que passée comme paramètre séparé.
 
 ```sql
--- Appliquer automatiquement les privileges aux FUTURS objets
-ALTER DEFAULT PRIVILEGES IN SCHEMA public
-    GRANT SELECT ON TABLES TO readers;
+-- DANGEREUX : valeur external concaténée dans le SQL
+-- Un attaquant envoie : family_id = "0 OR 1=1 --"
+-- Requête générée : SELECT * FROM posts WHERE family_id = 0 OR 1=1 --
+-- → retourne tous les posts (1=1 est toujours vrai)
 
-ALTER DEFAULT PRIVILEGES IN SCHEMA public
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO writers;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA public
-    GRANT USAGE, SELECT ON SEQUENCES TO writers;
+-- SÛR : requête paramétrée — $1 est TOUJOURS traité comme donnée, jamais comme SQL
+SELECT id, content, created_at
+FROM posts
+WHERE family_id = $1;
+-- Le moteur compile le plan sans la valeur, puis substitue $1 lors de l'exécution
+-- Injection impossible : $1 ne peut pas modifier la structure de la requête
 ```
 
-> **Piege classique** : `GRANT ... ON ALL TABLES` s'applique aux tables **existantes**. Les tables creees APRES le GRANT ne sont PAS couvertes. Utilisez `ALTER DEFAULT PRIVILEGES` pour les futures tables.
-
-### 4.4 REVOKE — Retirer des privileges
-
-```sql
--- Retirer le droit DELETE aux writers
-REVOKE DELETE ON ALL TABLES IN SCHEMA public FROM writers;
-
--- Retirer tous les droits a un role
-REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM some_role;
-
--- Retirer le droit de connexion
-REVOKE CONNECT ON DATABASE mydb FROM some_role;
-```
-
-### 4.5 Principe du moindre privilege
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  PRINCIPE DU MOINDRE PRIVILEGE                                │
-│                                                               │
-│  Chaque role ne doit avoir QUE les droits necessaires        │
-│  a sa fonction. Rien de plus.                                │
-│                                                               │
-│  Application web → SELECT, INSERT, UPDATE, DELETE            │
-│  Rapports       → SELECT uniquement                          │
-│  Monitoring     → CONNECT + pg_monitor role                  │
-│  Migrations     → DDL (CREATE, ALTER, DROP)                  │
-│  Replication    → REPLICATION attribute                      │
-│                                                               │
-│  JAMAIS de SUPERUSER pour l'application !                    │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### 4.6 Node.js : configuration par role
+En Node.js avec le driver `pg` :
 
 ```typescript
-import pg from 'pg';
-const { Pool } = pg;
-
-// Pool pour l'application (droits limites)
-const appPool = new Pool({
-    user: 'myapp',          // Role avec SELECT, INSERT, UPDATE, DELETE
-    password: process.env.DB_APP_PASSWORD,
-    database: 'mydb',
-    max: 20,
-});
-
-// Pool pour les rapports (lecture seule)
-const reportPool = new Pool({
-    user: 'report_reader',  // Role avec SELECT uniquement
-    password: process.env.DB_REPORT_PASSWORD,
-    database: 'mydb',
-    max: 5,
-});
-
-// Pool pour les migrations (DDL)
-const migrationPool = new Pool({
-    user: 'migrator',       // Role avec CREATE, ALTER, DROP
-    password: process.env.DB_MIGRATION_PASSWORD,
-    database: 'mydb',
-    max: 1,
-});
-```
-
----
-
-## 5. Row Level Security (RLS)
-
-### 5.1 Le concept
-
-RLS permet de filtrer les lignes **au niveau de la base de donnees**. Chaque utilisateur ne voit que les lignes qui le concernent.
-
-> **Analogie** : Imaginez un classeur partage dans une entreprise. Sans RLS, tout le monde voit tous les documents. Avec RLS, chaque employe ouvre le même classeur mais ne voit que SES documents. Le filtrage est transparent et impossible a contourner.
-
-### 5.2 Activer RLS
-
-```sql
--- Table multi-tenant
-CREATE TABLE documents (
-    id         SERIAL PRIMARY KEY,
-    tenant_id  INT NOT NULL,
-    titre      TEXT NOT NULL,
-    contenu    TEXT,
-    created_by TEXT NOT NULL DEFAULT current_user,
-    created_at TIMESTAMPTZ DEFAULT now()
+// DANGEREUX : interpolation de chaîne
+const rows = await client.query(
+  `SELECT * FROM posts WHERE family_id = ${req.params.id}`
 );
 
--- Activer RLS sur la table
-ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
-
--- IMPORTANT : par defaut, RLS est RESTRICTIF
--- Apres activation, PERSONNE ne voit rien (sauf les SUPERUSERS)
+// SÛR : tableau de paramètres — toujours
+const { rows } = await client.query(
+  'SELECT id, content, created_at FROM posts WHERE family_id = $1',
+  [req.params.id]  // pg cast et échappe automatiquement
+);
 ```
 
-### 5.3 Créer des policies
+Règle absolue : **aucune interpolation** de valeur externe dans une chaîne SQL. Les noms de tables et colonnes ne peuvent pas être paramétrés (utiliser une allowlist explicite si nécessaire).
+
+### Sauvegarde pg_dump et restauration
+
+`pg_dump` produit un backup logique : cohérent à l'instant t, indépendant de la version de PostgreSQL cible (dans les limites de compatibilité).
+
+```bash
+# Format custom (recommandé) : compressé, restauration sélective, rapide
+pg_dump -U postgres -d tribuzen -Fc -f tribuzen_$(date +%Y%m%d).dump
+
+# Format directory : parallèle (-j 4 = 4 workers simultanés)
+pg_dump -U postgres -d tribuzen -Fd -j 4 -f tribuzen_backup_dir/
+
+# Schéma seul (structure sans données — pour audit ou migration)
+pg_dump -U postgres -d tribuzen --schema-only -f tribuzen_schema.sql
+
+# Restaurer un dump custom sur une base existante vide
+pg_restore -U postgres -d tribuzen tribuzen_20260701.dump
+
+# Restaurer une seule table
+pg_restore -U postgres -d tribuzen -t posts tribuzen_20260701.dump
+
+# Restaurer en parallèle (format directory uniquement)
+pg_restore -U postgres -d tribuzen -j 4 tribuzen_backup_dir/
+```
+
+Formats comparés :
+
+| Format | Option | Compressé | Parallèle | Sélectif |
+|---|---|---|---|---|
+| Plain SQL | `-Fp` | Non | Non | Non |
+| Custom | `-Fc` | Oui | Non | Oui |
+| Directory | `-Fd` | Oui | Oui | Oui |
+
+Règle critique : **tester la restauration** régulièrement. Un backup non testé n'est pas un backup — il peut être corrompu, incomplet, ou incompatible avec la version cible.
+
+## 3. Worked examples
+
+### Exemple A — RLS par famille sur posts TribuZen
+
+Setup complet : schéma, données, rôle, RLS, tests.
 
 ```sql
--- Policy pour SELECT : chaque tenant voit ses documents
-CREATE POLICY tenant_select ON documents
-    FOR SELECT
-    USING (tenant_id = current_setting('app.tenant_id')::int);
+-- Nettoyer si déjà joué
+DROP TABLE IF EXISTS posts, families CASCADE;
+DROP ROLE IF EXISTS tribuzen_api;
 
--- Policy pour INSERT : peut inserer uniquement pour son tenant
-CREATE POLICY tenant_insert ON documents
-    FOR INSERT
-    WITH CHECK (tenant_id = current_setting('app.tenant_id')::int);
+-- Schéma TribuZen minimal
+CREATE TABLE families (
+  id   SERIAL PRIMARY KEY,
+  name TEXT NOT NULL
+);
 
--- Policy pour UPDATE : peut modifier uniquement ses documents
-CREATE POLICY tenant_update ON documents
-    FOR UPDATE
-    USING (tenant_id = current_setting('app.tenant_id')::int)
-    WITH CHECK (tenant_id = current_setting('app.tenant_id')::int);
+CREATE TABLE posts (
+  id         SERIAL PRIMARY KEY,
+  family_id  INT NOT NULL REFERENCES families(id),
+  author_id  INT NOT NULL,
+  content    TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
--- Policy pour DELETE : peut supprimer uniquement ses documents
-CREATE POLICY tenant_delete ON documents
-    FOR DELETE
-    USING (tenant_id = current_setting('app.tenant_id')::int);
+-- Données : 2 familles, 3 posts chacune
+INSERT INTO families (name) VALUES ('Famille Dupont'), ('Famille Martin');
+
+INSERT INTO posts (family_id, author_id, content) VALUES
+  (1, 1, 'Vacances Dupont — côte bretonne'),
+  (1, 2, 'Réunion Dupont — dimanche'),
+  (1, 1, 'Photo Dupont — plage'),
+  (2, 3, 'Vacances Martin — montagne'),
+  (2, 4, 'Anniversaire Martin — mercredi'),
+  (2, 3, 'Photo Martin — neige');
+
+-- Rôle applicatif avec droits minimaux
+CREATE ROLE tribuzen_api WITH LOGIN PASSWORD 'mdp_fort_1234';
+GRANT SELECT, INSERT, UPDATE, DELETE ON posts    TO tribuzen_api;
+GRANT SELECT                          ON families TO tribuzen_api;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO tribuzen_api;
 ```
 
-### 5.4 USING vs WITH CHECK
+Activation de RLS et création des policies :
 
-| Clause | Appliquee a | Effet |
-|--------|-------------|-------|
-| `USING` | SELECT, UPDATE (lecture), DELETE | Filtre les lignes **visibles** |
-| `WITH CHECK` | INSERT, UPDATE (écriture) | Verifie les lignes **ecrites** |
+```sql
+ALTER TABLE posts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE posts FORCE ROW LEVEL SECURITY;  -- protège aussi le propriétaire
 
+CREATE POLICY posts_family_select ON posts
+  FOR SELECT
+  USING (family_id = current_setting('app.family_id', true)::int);
+
+CREATE POLICY posts_family_insert ON posts
+  FOR INSERT
+  WITH CHECK (family_id = current_setting('app.family_id', true)::int);
+
+CREATE POLICY posts_family_update ON posts
+  FOR UPDATE
+  USING  (family_id = current_setting('app.family_id', true)::int)
+  WITH CHECK (family_id = current_setting('app.family_id', true)::int);
+
+CREATE POLICY posts_family_delete ON posts
+  FOR DELETE
+  USING (family_id = current_setting('app.family_id', true)::int);
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  SELECT : USING filtre ce qui est retourne                   │
-│                                                               │
-│  INSERT : WITH CHECK verifie la nouvelle ligne              │
-│                                                               │
-│  UPDATE : USING filtre les lignes modifiables               │
-│           WITH CHECK verifie la ligne apres modification    │
-│                                                               │
-│  DELETE : USING filtre les lignes supprimables              │
-└─────────────────────────────────────────────────────────────┘
+
+Tests d'isolation (se connecter en tant que tribuzen_api, ou `SET ROLE`) :
+
+```sql
+SET ROLE tribuzen_api;
+
+-- 1. Sans contexte : deny-by-default (missing_ok → NULL → aucune ligne)
+SELECT COUNT(*) FROM posts;
+-- → 0  (pas d'erreur, juste aucun résultat)
+
+-- 2. Famille 1 : voit uniquement ses 3 posts
+SELECT set_config('app.family_id', '1', true);
+SELECT id, family_id, content FROM posts ORDER BY id;
+-- → 3 lignes (Dupont uniquement)
+
+-- 3. Famille 2 : voit uniquement ses 3 posts
+SELECT set_config('app.family_id', '2', true);
+SELECT id, family_id, content FROM posts ORDER BY id;
+-- → 3 lignes (Martin uniquement)
+
+-- 4. INSERT cross-famille : bloqué par WITH CHECK
+SELECT set_config('app.family_id', '1', true);
+INSERT INTO posts (family_id, author_id, content)
+  VALUES (2, 1, 'Post frauduleux dans Martin');
+-- ERROR: new row violates row-level security policy for table "posts"
+
+-- 5. UPDATE pour changer le family_id d'un post : bloqué par WITH CHECK
+SELECT set_config('app.family_id', '1', true);
+UPDATE posts SET family_id = 2 WHERE id = 1;
+-- ERROR: new row violates row-level security policy for table "posts"
+
+-- 6. UPDATE sur un post d'une autre famille : invisible → 0 lignes affectées
+SELECT set_config('app.family_id', '1', true);
+UPDATE posts SET content = 'Modifié' WHERE family_id = 2;
+-- UPDATE 0  (silencieux — les lignes sont invisibles, pas d'erreur)
+
+-- 7. DROP TABLE : interdit (rôle sans DDL)
+DROP TABLE posts;
+-- ERROR: must be owner of table posts
+
+RESET ROLE;
 ```
 
-### 5.5 Utiliser RLS avec Node.js
+Pas-à-pas : (1) sans contexte, `current_setting('app.family_id', true)` retourne `NULL`, `family_id = NULL` est faux → aucune ligne ; (2) `set_config(..., true)` avec `is_local=true` limite le paramètre à la transaction courante — indispensable avec un pool pour éviter les "fuites" entre requêtes de clients différents ; (3) le INSERT avec `family_id = 2` dans un contexte `app.family_id = '1'` est rejeté par la policy `WITH CHECK` — protection contre la falsification du `family_id` côté client ; (4) l'UPDATE de `family_id` pour déplacer un post vers une autre famille est rejeté par la policy UPDATE qui vérifie la **valeur après modification** via `WITH CHECK` ; (5) `FORCE ROW LEVEL SECURITY` empêche l'utilisateur propriétaire de la table (ex. rôle de migration) de voir tous les posts — sans FORCE, le propriétaire contourne toujours RLS.
+
+### Exemple B — Requête paramétrée vs injection SQL
+
+Illustration du vecteur d'injection et sa prévention en SQL pur et en Node.js.
+
+```sql
+-- Simuler une recherche de posts par famille_id entré par l'utilisateur
+-- (en production ce serait dans une fonction ou du code applicatif)
+
+-- DANGEREUX : si family_id_param = '0 OR 1=1 --'
+-- La requête construite devient :
+-- SELECT * FROM posts WHERE family_id = 0 OR 1=1 --
+-- L'opérateur -- commente le reste → toutes les lignes retournées
+
+-- SÛR : requête paramétrée en psql (syntaxe \set + requête avec $1)
+-- En pratique, on utilise le driver qui gère les paramètres
+\set fam_id 1
+SELECT id, content FROM posts WHERE family_id = :fam_id;
+-- $1 est toujours traité comme scalaire entier, jamais comme SQL
+```
+
+Avec le driver `pg` en Node.js (contexte RLS + requête paramétrée combinés) :
 
 ```typescript
-import pg from 'pg';
-import type { PoolClient } from 'pg';
-const { Pool } = pg;
+import { Pool } from 'pg';
 
 const pool = new Pool({
-    user: 'myapp',
-    database: 'mydb',
-    max: 20,
+  user: 'tribuzen_api',
+  password: process.env.DB_APP_PASSWORD,
+  database: 'tribuzen',
+  host: process.env.DB_HOST,
+  ssl: { rejectUnauthorized: true },  // SSL obligatoire — refuse les certificats non approuvés
+  max: 20,
 });
 
 /**
- * Execute une requete dans le contexte d'un tenant.
- * RLS filtre automatiquement les lignes.
+ * Récupère les posts d'une famille.
+ * Double protection : RLS (moteur) + requête paramétrée (parsing).
  */
-async function queryAsTenant<T extends Record<string, unknown>>(
-    tenantId: number,
-    sql: string,
-    params: unknown[] = []
-): Promise<T[]> {
-    const client: PoolClient = await pool.connect();
-
-    try {
-        // Definir le tenant pour cette session
-        await client.query(
-            "SELECT set_config('app.tenant_id', $1::text, true)",
-            [tenantId.toString()]
-        );
-        // Le 3eme parametre `true` = local a la transaction
-
-        const result = await client.query<T>(sql, params);
-        return result.rows;
-    } finally {
-        client.release();
-    }
-}
-
-// Utilisation : chaque requete est automatiquement filtree
-const docs = await queryAsTenant(42, 'SELECT * FROM documents');
-// Retourne UNIQUEMENT les documents du tenant 42
-
-// Meme si l'application a un bug et ne filtre pas par tenant_id,
-// RLS empeche de voir les documents des autres tenants
-const allDocs = await queryAsTenant(42, 'SELECT * FROM documents');
-// Retourne toujours UNIQUEMENT les documents du tenant 42 !
-```
-
-### 5.6 Policies multiples et roles
-
-```sql
--- Policy pour les admins : voir TOUT
-CREATE POLICY admin_all ON documents
-    FOR ALL
-    TO admins
-    USING (true)
-    WITH CHECK (true);
-
--- Policy pour les managers : voir leur equipe
-CREATE POLICY manager_view ON documents
-    FOR SELECT
-    TO managers
-    USING (
-        tenant_id IN (
-            SELECT tenant_id FROM team_members
-            WHERE manager_user = current_user
-        )
+export async function getFamilyPosts(familyId: number): Promise<Post[]> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // set_config paramétré lui aussi ($1) — jamais de concaténation
+    await client.query(
+      "SELECT set_config('app.family_id', $1::text, true)",
+      [familyId]
     );
-```
-
-> **Point clé** : Quand plusieurs policies existent pour le même role et la même operation, elles sont combinees avec **OR** (mode PERMISSIVE par defaut). Avec `CREATE POLICY ... AS RESTRICTIVE`, elles sont combinees avec **AND**.
-
-### 5.7 Bypass RLS
-
-```sql
--- Les SUPERUSERS ignorent toujours RLS
-
--- Les proprietaires de tables aussi (par defaut)
--- Pour forcer RLS meme sur le proprietaire :
-ALTER TABLE documents FORCE ROW LEVEL SECURITY;
-
--- Role avec BYPASSRLS
-CREATE ROLE admin_bypass WITH LOGIN BYPASSRLS PASSWORD 'secure';
-```
-
-### 5.8 Tester RLS
-
-```sql
--- Se connecter en tant que l'utilisateur de l'app
-SET ROLE myapp;
-
--- Definir le tenant
-SET app.tenant_id = '42';
-
--- Tester
-SELECT * FROM documents;
--- Ne voit que les documents du tenant 42
-
--- Essayer d'inserer pour un autre tenant
-INSERT INTO documents (tenant_id, titre) VALUES (99, 'Pirate !');
--- ERROR: new row violates row-level security policy for table "documents"
-
-RESET ROLE;
-```
-
----
-
-## 6. Schemas
-
-### 6.1 Le concept
-
-Un **schema** est un namespace (espace de noms) a l'interieur d'une base de donnees.
-
-```
-Base de donnees "mydb"
-├── Schema "public" (defaut)
-│   ├── Table users
-│   ├── Table orders
-│   └── Table products
-├── Schema "reporting"
-│   ├── Table daily_stats
-│   └── Table monthly_reports
-└── Schema "tenant_42"
-    ├── Table users
-    └── Table orders   (memes noms, donnees differentes)
-```
-
-### 6.2 Créer et utiliser des schemas
-
-```sql
--- Creer un schema
-CREATE SCHEMA reporting;
-CREATE SCHEMA IF NOT EXISTS analytics;
-
--- Creer une table dans un schema specifique
-CREATE TABLE reporting.daily_stats (
-    date_stat  DATE PRIMARY KEY,
-    total_orders INT,
-    total_revenue NUMERIC(12,2)
-);
-
--- Acceder avec le nom qualifie
-SELECT * FROM reporting.daily_stats;
-
--- Changer le search_path
-SET search_path TO reporting, public;
--- Maintenant, "daily_stats" est trouve sans prefixe
-SELECT * FROM daily_stats;
-```
-
-### 6.3 search_path
-
-```sql
--- Voir le search_path courant
-SHOW search_path;
--- "$user", public
-
--- L'ordre compte : le premier schema est prioritaire
-SET search_path TO myschema, public;
-
--- Par utilisateur
-ALTER ROLE myapp SET search_path TO myapp_schema, public;
-```
-
-### 6.4 Schema-based multi-tenancy
-
-```sql
--- Creer un schema par tenant
-CREATE SCHEMA tenant_1;
-CREATE SCHEMA tenant_2;
-
--- Tables identiques dans chaque schema
-CREATE TABLE tenant_1.users (id SERIAL PRIMARY KEY, nom TEXT);
-CREATE TABLE tenant_2.users (id SERIAL PRIMARY KEY, nom TEXT);
-
--- L'application definit le search_path selon le tenant
-SET search_path TO tenant_1, public;
-SELECT * FROM users;  -- Retourne les users du tenant 1
-```
-
----
-
-## 7. pg_dump / pg_restore
-
-### 7.1 Backup logique
-
-```bash
-# Backup complet (format plain SQL)
-pg_dump -U postgres -d mydb > backup.sql
-
-# Backup complet (format custom, compresse)
-pg_dump -U postgres -d mydb -Fc -f backup.dump
-
-# Backup complet (format directory, parallele)
-pg_dump -U postgres -d mydb -Fd -j 4 -f backup_dir/
-
-# Schema uniquement (structure sans donnees)
-pg_dump -U postgres -d mydb --schema-only -f schema.sql
-
-# Donnees uniquement
-pg_dump -U postgres -d mydb --data-only -f data.sql
-
-# Une seule table
-pg_dump -U postgres -d mydb -t users -f users.sql
-
-# Exclure une table
-pg_dump -U postgres -d mydb --exclude-table=logs -f backup.sql
-```
-
-### 7.2 Formats de dump
-
-| Format | Option | Compresse | Parallele | Restauration selective |
-|--------|--------|-----------|-----------|----------------------|
-| Plain SQL | `-Fp` (defaut) | Non | Non | Non (fichier texte) |
-| Custom | `-Fc` | Oui | Non | **Oui** |
-| Directory | `-Fd` | Oui | **Oui** | **Oui** |
-| Tar | `-Ft` | Non | Non | Oui |
-
-### 7.3 Restauration
-
-```bash
-# Restaurer un dump plain SQL
-psql -U postgres -d mydb < backup.sql
-
-# Restaurer un dump custom
-pg_restore -U postgres -d mydb backup.dump
-
-# Restaurer en parallele (format directory)
-pg_restore -U postgres -d mydb -j 4 backup_dir/
-
-# Restaurer une seule table
-pg_restore -U postgres -d mydb -t users backup.dump
-
-# Restaurer en creant la base
-pg_restore -U postgres -C -d postgres backup.dump
-```
-
-### 7.4 Bonnes pratiques de backup
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  STRATEGIE DE BACKUP RECOMMANDEE                              │
-│                                                               │
-│  1. pg_dump quotidien (backup logique complet)               │
-│  2. WAL archiving continu (Point-in-Time Recovery)           │
-│  3. Tester la restauration regulierement !                   │
-│  4. Stocker les backups sur un autre serveur/region          │
-│  5. Chiffrer les backups (gpg, age)                          │
-│  6. Retention : 7 jours quotidiens + 4 hebdomadaires         │
-│     + 12 mensuels                                            │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### 7.5 Point-in-Time Recovery (PITR)
-
-```
-                 Backup        Probleme
-                 de base       (DROP TABLE)
-                    │              │
-Timeline:  ─────────┼──────────────┼──────────────── temps
-                    │              │
-                    │    WAL 1   WAL 2   WAL 3
-                    │    ──────►──────►──────►
-                    │
-                    └── Restaurer le backup
-                        + rejouer les WAL
-                        jusqu'a JUSTE AVANT le DROP TABLE
-                        = PITR
-```
-
-```sql
--- Configurer l'archivage WAL
-ALTER SYSTEM SET wal_level = 'replica';
-ALTER SYSTEM SET archive_mode = 'on';
-ALTER SYSTEM SET archive_command = 'cp %p /backup/wal/%f';
--- Necessite un RESTART
-```
-
----
-
-## 8. Monitoring
-
-### 8.1 pg_stat_activity — Sessions actives
-
-```sql
--- Vue complete des sessions
-SELECT
-    pid,
-    usename,
-    datname,
-    state,
-    query,
-    age(now(), query_start) AS query_duration,
-    age(now(), xact_start) AS tx_duration,
-    wait_event_type,
-    wait_event,
-    client_addr
-FROM pg_stat_activity
-WHERE datname = current_database()
-  AND pid != pg_backend_pid()
-ORDER BY query_start;
-```
-
-### 8.2 Requetes longues
-
-```sql
--- Requetes actives depuis plus de 5 secondes
-SELECT
-    pid,
-    usename,
-    query,
-    age(now(), query_start) AS duration,
-    state
-FROM pg_stat_activity
-WHERE state = 'active'
-  AND age(now(), query_start) > interval '5 seconds'
-  AND pid != pg_backend_pid()
-ORDER BY query_start;
-```
-
-### 8.3 pg_stat_statements — Top SQL
-
-```sql
--- Installer si pas fait
-CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
-
--- Top 10 par temps total
-SELECT
-    LEFT(query, 100) AS query,
-    calls,
-    ROUND(total_exec_time::numeric, 2) AS total_ms,
-    ROUND(mean_exec_time::numeric, 2) AS avg_ms,
-    ROUND(stddev_exec_time::numeric, 2) AS stddev_ms,
-    rows,
-    ROUND(100.0 * shared_blks_hit /
-        NULLIF(shared_blks_hit + shared_blks_read, 0), 1) AS cache_hit_pct
-FROM pg_stat_statements
-WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
-ORDER BY total_exec_time DESC
-LIMIT 10;
-```
-
-### 8.4 Sante des tables
-
-```sql
--- Vue de sante des tables
-SELECT
-    schemaname || '.' || relname AS table_name,
-    pg_size_pretty(pg_total_relation_size(relid)) AS total_size,
-    n_live_tup AS live_rows,
-    n_dead_tup AS dead_rows,
-    ROUND(100.0 * n_dead_tup / NULLIF(n_live_tup + n_dead_tup, 0), 1) AS dead_pct,
-    last_autovacuum,
-    last_autoanalyze,
-    seq_scan,
-    idx_scan,
-    ROUND(100.0 * idx_scan / NULLIF(seq_scan + idx_scan, 0), 1) AS idx_usage_pct
-FROM pg_stat_user_tables
-ORDER BY pg_total_relation_size(relid) DESC
-LIMIT 20;
-```
-
-### 8.5 Dashboard Node.js de monitoring
-
-```typescript
-import pg from 'pg';
-const { Pool } = pg;
-
-const pool = new Pool({
-    user: 'monitoring',  // Role avec pg_monitor
-    database: 'mydb',
-    max: 2,
-});
-
-interface ConnectionState {
-    state: string;
-    count: string;
+    // La requête paramétrée prévient l'injection ;
+    // RLS filtre par family_id même si on oublie le WHERE.
+    const { rows } = await client.query<Post>(
+      'SELECT id, content, created_at FROM posts ORDER BY created_at DESC LIMIT 20',
+    );
+    await client.query('COMMIT');
+    return rows;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();   // la connexion repasse au pool, set_config LOCAL réinitialisé
+  }
 }
-
-interface CacheRow {
-    hit_ratio: string;
-}
-
-interface TransactionRow {
-    total_txn: string;
-    commits: string;
-    rollbacks: string;
-    deadlocks: string;
-}
-
-interface TableRow {
-    relname: string;
-    size: string;
-    dead_tuples: string;
-}
-
-interface DatabaseHealth {
-    connections: ConnectionState[];
-    cacheHitRatio: string;
-    transactions: TransactionRow;
-    topTables: TableRow[];
-}
-
-async function getDatabaseHealth(): Promise<DatabaseHealth> {
-    // 1. Connexions actives
-    const { rows: connections } = await pool.query<ConnectionState>(`
-        SELECT
-            state,
-            COUNT(*) AS count
-        FROM pg_stat_activity
-        WHERE datname = current_database()
-        GROUP BY state
-    `);
-
-    // 2. Cache hit ratio
-    const { rows: cache } = await pool.query<CacheRow>(`
-        SELECT
-            ROUND(100.0 * SUM(blks_hit) /
-                NULLIF(SUM(blks_hit) + SUM(blks_read), 0), 2) AS hit_ratio
-        FROM pg_stat_database
-        WHERE datname = current_database()
-    `);
-
-    // 3. Transactions par seconde
-    const { rows: txn } = await pool.query<TransactionRow>(`
-        SELECT
-            xact_commit + xact_rollback AS total_txn,
-            xact_commit AS commits,
-            xact_rollback AS rollbacks,
-            deadlocks
-        FROM pg_stat_database
-        WHERE datname = current_database()
-    `);
-
-    // 4. Tables les plus volumineuses
-    const { rows: tables } = await pool.query<TableRow>(`
-        SELECT
-            relname,
-            pg_size_pretty(pg_total_relation_size(relid)) AS size,
-            n_dead_tup AS dead_tuples
-        FROM pg_stat_user_tables
-        ORDER BY pg_total_relation_size(relid) DESC
-        LIMIT 5
-    `);
-
-    return {
-        connections,
-        cacheHitRatio: cache[0].hit_ratio,
-        transactions: txn[0],
-        topTables: tables,
-    };
-}
-
-// Appel periodique
-setInterval(async () => {
-    const health: DatabaseHealth = await getDatabaseHealth();
-    console.log(JSON.stringify(health, null, 2));
-}, 60_000); // Toutes les minutes
 ```
 
----
+Pas-à-pas : (1) `set_config('app.family_id', $1::text, true)` est lui-même paramétré — le `familyId` n'est jamais concaténé dans le SQL ; (2) `is_local=true` garantit que le paramètre de session est effacé au `COMMIT`/`ROLLBACK` — la connexion retournée au pool est propre pour le prochain utilisateur ; (3) la requête `SELECT ... FROM posts` sans `WHERE family_id` semble dangereuse mais RLS l'intercepte au moteur — **défense en profondeur** : le code applicatif peut oublier le filtre, le moteur l'impose quand même ; (4) `ssl: { rejectUnauthorized: true }` refuse les certificats non approuvés — activer SSL sans ce flag est vulnérable aux attaques man-in-the-middle.
 
-## 9. Extensions populaires
+## 4. Pièges & misconceptions
 
-### 9.1 pg_stat_statements
+- **`GRANT ... ON ALL TABLES` ne couvre pas les tables futures.** Le GRANT s'applique aux tables existantes au moment de son exécution. *Correct :* `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ... TO role` pour que les tables créées lors des prochaines migrations reçoivent automatiquement les bons droits.
 
-Déjà couvert en detail — indispensable pour le monitoring.
+- **`ENABLE ROW LEVEL SECURITY` sans `FORCE` laisse passer le propriétaire.** Le propriétaire de la table contourne RLS par défaut — ce qui inclut souvent le rôle de migration. *Correct :* ajouter systématiquement `ALTER TABLE t FORCE ROW LEVEL SECURITY` sur toute table multi-tenant.
 
-### 9.2 pgcrypto
+- **Policy UPDATE sans `WITH CHECK` explicite laisse modifier le `family_id`.** Si seul `USING` est spécifié sur une policy ALL/UPDATE, la clause `WITH CHECK` prend implicitement la valeur de `USING` — mais ce comportement implicite est source d'erreurs. *Correct :* toujours déclarer `WITH CHECK` explicitement sur les policies UPDATE portant sur une colonne de partition.
 
-```sql
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+- **`current_setting('app.family_id')` sans deuxième argument lève une erreur si la variable n'est pas définie.** *Correct :* `current_setting('app.family_id', true)` (missing_ok = true). Si la variable est absente, retourne `NULL` → deny-by-default. La forme à un seul argument est dangereuse dans une policy RLS : une session sans contexte lèverait une erreur au lieu de simplement ne rien retourner.
 
--- Hasher un mot de passe
-SELECT crypt('mon_mot_de_passe', gen_salt('bf', 10)) AS hash;
--- $2a$10$xxxxx...
+- **`SET app.family_id = '42'` (au niveau session) fuite dans un pool de connexions.** Une connexion retournée au pool après un `SET` session-level garde le paramètre pour le prochain utilisateur. *Correct :* utiliser `set_config('app.family_id', $1, true)` dans une transaction (`is_local = true` = réinitialisé au COMMIT/ROLLBACK).
 
--- Verifier un mot de passe
-SELECT (crypt('mon_mot_de_passe', hash) = hash) AS valid
-FROM users WHERE email = 'alice@test.com';
+- **Croire que RLS remplace les requêtes paramétrées.** RLS protège contre les fuites de lignes (isolation données), pas contre l'injection SQL (exécution de code malveillant). *Correct :* les deux couches sont complémentaires et nécessaires.
 
--- Chiffrement symetrique
-SELECT encrypt('donnee sensible'::bytea, 'cle_secrete'::bytea, 'aes');
-SELECT convert_from(
-    decrypt(encrypted_data, 'cle_secrete'::bytea, 'aes'),
-    'UTF8'
-);
+- **Tester un backup sans tester la restauration.** Un dump corrompu ou incompatible ne se révèle qu'au moment où on en a besoin. *Correct :* exécuter `pg_restore` sur une base de test à chaque changement de schéma majeur et valider que les données sont cohérentes.
 
--- Generation de donnees aleatoires
-SELECT gen_random_bytes(32);  -- 32 octets aleatoires
-```
+## 5. Ancrage TribuZen
 
-### 9.3 uuid-ossp et gen_random_uuid()
+Couche fil-rouge : **isolation des données par famille avec RLS** dans `smaurier/tribuzen`.
 
-```sql
--- PostgreSQL 13+ : gen_random_uuid() est integre (pas besoin d'extension)
-SELECT gen_random_uuid();
--- a81bc81b-dead-4e5d-abff-90865d1e13b1
+- La table `posts` est la table la plus sensible de TribuZen : messages privés de famille, photos, souvenirs. Sans RLS, un bug de filtrage dans l'API — oubli d'un `WHERE family_id = $familyId` — exposerait les posts de toutes les familles à n'importe quel utilisateur connecté, silencieusement.
+- `ALTER TABLE posts FORCE ROW LEVEL SECURITY` + quatre policies (SELECT/INSERT/UPDATE/DELETE) constituent le filet de sécurité **moteur** : même si l'application est buggée ou compromise, le moteur refuse les accès cross-famille.
+- `set_config('app.family_id', familyId, true)` dans une transaction (`is_local = true`) : le contexte RLS ne fuit pas entre les requêtes d'un pool de 20 connexions partagées par des centaines de familles concurrentes.
+- La policy UPDATE avec `USING` ET `WITH CHECK` empêche un post d'être "déplacé" d'une famille à une autre via une modification du `family_id` — vecteur d'attaque non évident mais réel.
+- Le rôle `tribuzen_api` (SELECT/INSERT/UPDATE/DELETE — pas de DDL, pas de TRUNCATE, pas de SUPERUSER) applique le moindre privilège : une compromission du code applicatif ne peut pas supprimer des tables, créer des rôles ou lire le schéma de sécurité.
+- Les requêtes paramétrées sur les endpoints d'API (feed, création de post, recherche) éliminent le vecteur d'injection SQL — couche distincte de RLS qui opère au niveau du parsing de la requête.
 
--- Pour les autres fonctions UUID :
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-SELECT uuid_generate_v4();  -- UUID v4 (aleatoire)
-SELECT uuid_generate_v1();  -- UUID v1 (basee sur le temps + MAC)
-```
+## 6. Points clés
 
-### 9.4 PostGIS (introduction)
+1. PostgreSQL unifie utilisateurs et groupes en **rôles** ; `LOGIN` = peut se connecter, son absence = groupe ; un utilisateur hérite des droits du groupe via `GRANT groupe TO utilisateur`.
+2. Moindre privilège : SELECT/INSERT/UPDATE/DELETE pour l'API, SELECT pour les rapports, DDL uniquement pour les migrations — **jamais SUPERUSER** pour le compte applicatif.
+3. `ALTER DEFAULT PRIVILEGES` est indispensable en complément de `GRANT ... ON ALL TABLES` : couvre les tables créées lors des prochaines migrations.
+4. `pg_hba.conf` : méthode recommandée = `scram-sha-256` ; `trust` interdit en production ; `hostssl` impose SSL côté client pour les connexions réseau.
+5. `ALTER TABLE t ENABLE ROW LEVEL SECURITY` : deny-by-default dès l'activation (aucune ligne visible sans policy). Ajouter `FORCE` pour inclure le propriétaire.
+6. `USING` filtre les lignes **existantes** (SELECT, source d'UPDATE, DELETE) ; `WITH CHECK` valide la **nouvelle** ligne (INSERT, résultat d'UPDATE) — toujours déclarer les deux explicitement sur les policies UPDATE.
+7. `current_setting('app.family_id', true)` avec `true` = *missing_ok* : si la variable n'est pas définie, retourne `NULL` → deny-by-default automatique.
+8. Requêtes paramétrées (`$1`, `$2`) : le plan SQL et la donnée sont compilés séparément — injection impossible. `set_config` lui-même doit utiliser des paramètres.
+9. `pg_dump -Fc` (format custom) : compressé, restauration sélective via `pg_restore -t table` ; **tester la restauration** sur une base de test à chaque changement majeur.
 
-```sql
-CREATE EXTENSION IF NOT EXISTS postgis;
-
--- Stocker des coordonnees geographiques
-CREATE TABLE magasins (
-    id       SERIAL PRIMARY KEY,
-    nom      TEXT NOT NULL,
-    position GEOGRAPHY(POINT, 4326)  -- WGS84 (GPS)
-);
-
-INSERT INTO magasins (nom, position) VALUES
-    ('Magasin Paris', ST_MakePoint(2.3522, 48.8566)),
-    ('Magasin Lyon', ST_MakePoint(4.8357, 45.7640)),
-    ('Magasin Marseille', ST_MakePoint(5.3698, 43.2965));
-
--- Trouver les magasins dans un rayon de 300km de Paris
-SELECT nom,
-       ST_Distance(position, ST_MakePoint(2.3522, 48.8566)::geography) / 1000
-       AS distance_km
-FROM magasins
-WHERE ST_DWithin(position, ST_MakePoint(2.3522, 48.8566)::geography, 300000)
-ORDER BY distance_km;
-```
-
-### 9.5 pg_trgm — Trigrams et similarite
-
-```sql
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-
--- Recherche floue (tolere les fautes de frappe)
-SELECT nom, similarity(nom, 'Postgrés') AS sim
-FROM produits
-WHERE similarity(nom, 'Postgrés') > 0.3
-ORDER BY sim DESC;
-
--- Index GIN pour la recherche floue
-CREATE INDEX idx_produits_nom_trgm ON produits USING GIN (nom gin_trgm_ops);
-
--- LIKE et ILIKE optimises avec pg_trgm
-SELECT * FROM produits WHERE nom ILIKE '%laptop%';
--- Utilise l'index GIN trgm !
-```
-
----
-
-## 10. Maintenance
-
-### 10.1 REINDEX
-
-```sql
--- Reconstruire un index corrompu ou bloate
-REINDEX INDEX idx_users_email;
-
--- Reconstruire tous les index d'une table
-REINDEX TABLE users;
-
--- PostgreSQL 12+ : REINDEX CONCURRENTLY (sans bloquer les requetes)
-REINDEX INDEX CONCURRENTLY idx_users_email;
-```
-
-### 10.2 CLUSTER
-
-```sql
--- Reorganiser physiquement la table selon un index
--- (les lignes sont reordonnees sur disque)
-CLUSTER users USING idx_users_created_at;
--- ATTENTION : ACCESS EXCLUSIVE lock !
-
--- Utile pour les requetes de range sur une colonne
--- (les donnees adjacentes sont sur les memes pages disque)
-```
-
-### 10.3 pg_repack
-
-```bash
-# Reorganiser une table sans lock exclusif (alternative a VACUUM FULL)
-pg_repack -U postgres -d mydb -t users
-
-# Reorganiser tous les index d'une table
-pg_repack -U postgres -d mydb -t users --only-indexes
-```
-
----
-
-## 11. Exercice mental
-
-> **Exercice mental** : Vous construisez une application SaaS multi-tenant. 500 clients partagent la même base de donnees. Comment organiseriez-vous la sécurité ? Quelles sont les options et leurs trade-offs ?
-
-<details>
-<summary>Reponse</summary>
-
-**Option 1 : RLS (Row Level Security)**
-- Une seule table `users`, chaque ligne à un `tenant_id`
-- Policies RLS filtrent par tenant
-- Avantages : simple, un seul schema, maintenance facile
-- Inconvenients : risque de fuite si mauvaise config, index plus gros
-
-**Option 2 : Schema par tenant**
-- Un schema par client (`tenant_1.users`, `tenant_2.users`)
-- search_path dynamique
-- Avantages : isolation forte, backup par tenant possible
-- Inconvenients : 500 schemas = 500 x chaque table, migration complexe
-
-**Option 3 : Base par tenant**
-- Une base PostgreSQL par client
-- Avantages : isolation maximale, backup/restore independant
-- Inconvenients : 500 connexions, maintenance très lourde
-
-**Recommandation** : RLS pour la majorite des cas. Schema par tenant pour les gros clients qui demandent une isolation forte.
-</details>
-
----
-
-## Ce qu'il faut retenir
+## 7. Seeds Anki
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    A RETENIR                                  │
-│                                                               │
-│  1. pg_hba.conf controle QUI peut se connecter               │
-│     → scram-sha-256 en production                            │
-│                                                               │
-│  2. Roles = users + groups. Principe du moindre privilege    │
-│                                                               │
-│  3. GRANT/REVOKE pour les permissions. N'oubliez pas         │
-│     ALTER DEFAULT PRIVILEGES pour les futurs objets          │
-│                                                               │
-│  4. RLS : securite au niveau des lignes, ideal pour          │
-│     le multi-tenant. Transparent pour l'application.         │
-│                                                               │
-│  5. pg_dump -Fc pour les backups, pg_restore pour la         │
-│     restauration. TESTEZ vos restaurations !                 │
-│                                                               │
-│  6. pg_stat_activity + pg_stat_statements = monitoring       │
-│                                                               │
-│  7. Extensions : pgcrypto, pg_trgm, PostGIS, uuid-ossp      │
-│                                                               │
-│  8. JAMAIS de SUPERUSER pour l'application !                 │
-└──────────────────────────────────────────────────────────────┘
+Différence USING vs WITH CHECK dans une policy RLS PostgreSQL ?|USING filtre les lignes existantes (SELECT visible, UPDATE source, DELETE). WITH CHECK valide la nouvelle ligne avant persistance (INSERT, UPDATE résultat). Pour UPDATE : USING détermine quelles lignes sont modifiables ; WITH CHECK vérifie la ligne après modification.
+Pourquoi current_setting('app.family_id', true) et pas current_setting('app.family_id') dans une policy RLS ?|Le deuxième argument true = missing_ok : si la variable n'est pas définie en session, retourne NULL au lieu de lever une erreur. NULL rend toute comparaison fausse → deny-by-default automatique si l'app oublie de positionner le contexte.
+GRANT ... ON ALL TABLES IN SCHEMA public couvre-t-il les tables créées après ?|Non. GRANT s'applique uniquement aux tables existantes au moment de l'exécution. Utiliser ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ... TO role pour couvrir les futures tables.
+Que fait ALTER TABLE t FORCE ROW LEVEL SECURITY ?|Soumet le propriétaire de la table aux policies RLS comme n'importe quel autre rôle. Sans FORCE, le propriétaire de la table contourne RLS même si ENABLE ROW LEVEL SECURITY est actif.
+Comment éviter qu'un family_id de session fuite entre requêtes dans un pool de connexions PostgreSQL ?|Utiliser set_config('app.family_id', $1, true) (is_local=true) dans une transaction. La valeur est réinitialisée au COMMIT/ROLLBACK — la connexion retournée au pool est propre.
+Pourquoi une requête paramétrée ($1, $2) empêche-t-elle les injections SQL ?|Le moteur compile le plan d'exécution SQL séparément des valeurs. Les paramètres sont toujours traités comme données, jamais comme SQL — impossible d'injecter une commande via $1.
+Quand faut-il WITH CHECK sur une policy UPDATE en plus de USING ?|Toujours sur une colonne de partition (ex. family_id). USING contrôle quelles lignes sont sélectionnables pour update ; WITHOUT CHECK la valeur de la colonne peut être modifiée pour pointer vers une autre famille. WITH CHECK bloque ce changement.
+Différence entre les formats pg_dump -Fc et -Fd ?|-Fc (custom) : un fichier compressé, restauration sélective mais pas parallèle. -Fd (directory) : dossier de fichiers compressés, restauration parallèle avec -j N. Les deux permettent pg_restore -t table pour restaurer une seule table.
+Méthode d'authentification pg_hba.conf recommandée en production ?|scram-sha-256 : authentification par défi côté serveur, résistante aux attaques par rejeu. md5 est obsolète. trust est interdit en production.
 ```
 
----
+## Pont vers le lab
 
-## Navigation
-
-| Précédent | Suivant |
-|---|---|
-| [Module 13 — JSONB & Types avances](./13-jsonb-et-types-avances.md) | [Module 15 — Projet final](./15-projet-final.md) |
-
-**Travaux pratiques** : [Lab 14 — Securiser une base multi-tenant](../labs/lab-14-securite.md)
-
----
-
-> *"La sécurité n'est pas un produit, c'est un processus. Chaque couche que vous ajoutez reduit la surface d'attaque."*
-
----
-
-<!-- parcours-recommande -->
-
-::: tip Parcours recommandé
-1. **Screencast** : [screencast 14 sécurité rls](../screencasts/screencast-14-securite-rls.md)
-2. **Lab** : [lab-14-sécurité-rls](../labs/lab-14-securite-rls/README)
-3. **Quiz** : [quiz 14 sécurité et administration](../quizzes/quiz-14-securite-et-administration.html)
-:::
+> Lab associé : `10-postgresql/labs/lab-14-securite-rls/`. Tu actives RLS sur la table `posts` TribuZen, tu crées les quatre policies d'isolation famille, tu vérifies que famille 1 ne voit pas les posts de famille 2, tu testes le blocage d'un INSERT cross-famille et d'un UPDATE sur le `family_id`, et tu vérifies que le rôle applicatif ne peut pas faire `DROP TABLE`. Corrigé SQL complet inline dans le README.

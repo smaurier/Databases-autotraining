@@ -1,1043 +1,434 @@
-# Module 19 — pgvector & Recherche semantique par embeddings
-
-> **Objectif** : Installer et configurer l'extension pgvector, stocker des vecteurs d'embeddings dans PostgreSQL, creer des index performants (IVFFlat, HNSW), executer des recherches par similarite vectorielle, et integrer le tout dans une application Node.js/TypeScript avec les APIs d'embeddings OpenAI et Cohere.
->
-> **Difficulte** : ⭐⭐⭐⭐
-
+---
+titre: pgvector et embeddings
+cours: 10-postgresql
+notions: [type vector et extension pgvector, embeddings et représentation vectorielle, recherche de similarité cosinus et L2, index HNSW et IVFFlat, cas d'usage RAG, intégration avec une API d'embeddings, dimensions et performances]
+outcomes: [stocker des embeddings avec pgvector, faire une recherche de similarité, choisir un index HNSW ou IVFFlat, comprendre le pattern RAG sur PostgreSQL]
+prerequis: [18-partitioning-et-scaling]
+next: fin-parcours-10-postgresql
+libs: [{ name: postgresql, version: "17" }, { name: pgvector, version: "0.8" }]
+tribuzen: recherche sémantique dans les souvenirs et le journal de TribuZen (embeddings + similarité)
+last-reviewed: 2026-07
 ---
 
-## 1. Pourquoi stocker des vecteurs dans PostgreSQL ?
+# pgvector et embeddings
 
-Imaginez une bibliotheque classique ou les livres sont ranges par genre, puis par auteur. Si vous cherchez "un livre qui parle de survie en mer avec une touche de poesie", le classement alphabetique ne vous aide pas. Vous auriez besoin d'un bibliothecaire qui **comprend le sens** de chaque livre et peut trouver ceux qui ressemblent a votre description.
+> **Outcomes — tu sauras FAIRE :** stocker des embeddings avec pgvector, exécuter une recherche de similarité cosinus, choisir entre HNSW et IVFFlat selon le contexte, et câbler le pattern RAG directement dans PostgreSQL.
+> **Difficulté :** :star::star::star::star:
 
-> **Analogie** : pgvector transforme PostgreSQL en ce bibliothecaire. Chaque texte (produit, article, question) est converti en un **vecteur** — une liste de nombres qui represente son "sens". Deux textes au sens proche auront des vecteurs proches dans l'espace. La recherche par similarite vectorielle, c'est comme demander au bibliothecaire : "trouve-moi les 10 livres les plus proches de cette description".
+## 1. Cas concret d'abord
 
-```
-Recherche classique (mots-cles) :         Recherche semantique (vecteurs) :
-
-  "chaussures running"                      "je cherche quelque chose pour
-  → LIKE '%chaussures%'                      courir confortablement"
-  → match exact sur les mots                → embedding = [0.12, -0.34, 0.78, ...]
-                                            → distance cosinus avec tous les produits
-  Resultat :                                Resultat :
-  ✓ "Chaussures de running Nike"            ✓ "Chaussures de running Nike"
-  ✗ "Baskets pour le jogging"               ✓ "Baskets pour le jogging"
-  ✗ "Sneakers de course legeres"            ✓ "Sneakers de course legeres"
-                                            ✓ "Semelles sport performance"
-```
-
-### Pourquoi pgvector plutot qu'une base vectorielle dediee ?
-
-| Critere | pgvector (PostgreSQL) | Pinecone / Weaviate / Qdrant |
-|---------|----------------------|------------------------------|
-| Infrastructure | Votre PostgreSQL existant | Service supplementaire |
-| Jointures SQL | ✅ Natives | ❌ Impossible |
-| Transactions ACID | ✅ Oui | ❌ Eventuelle |
-| Filtres WHERE | ✅ Combines avec la similarite | ⚠️ Pre/post-filtrage |
-| Scalabilite vectorielle | ✅ Bonne (millions de vecteurs) | ✅ Excellente (milliards) |
-| Cout operationnel | Faible (meme infra) | Eleve (service supplementaire) |
-| Cas d'usage ideal | < 10M vecteurs, SQL requis | > 100M vecteurs, pur vectoriel |
-
-> **Conseil** : si votre application utilise deja PostgreSQL et que vous avez moins de 10 millions de vecteurs, pgvector est presque toujours le meilleur choix. Vous evitez un service supplementaire, vous gardez vos jointures SQL, et les performances sont excellentes.
-
----
-
-## 2. Installation et configuration de pgvector
-
-### 2.1 Installation
-
-```bash
-# ============================================================
-# Ubuntu / Debian
-# ============================================================
-sudo apt install postgresql-16-pgvector
-
-# ============================================================
-# macOS avec Homebrew
-# ============================================================
-brew install pgvector
-
-# ============================================================
-# Docker (image officielle avec pgvector)
-# ============================================================
-docker run -d \
-  --name postgres-vector \
-  -e POSTGRES_PASSWORD=secret \
-  -p 5432:5432 \
-  pgvector/pgvector:pg16
-```
-
-### 2.2 Activation de l'extension
+Dans TribuZen, les membres écrivent des **souvenirs** (moments partagés, anecdotes, instants de vie) et un **journal** personnel. La recherche textuelle classique (`ILIKE '%mamie%'`) ne retrouve que les mots exacts — elle rate "grand-mère", "pépé", "bonne-maman". Un utilisateur qui tape *"les moments doux avec mamie"* doit retrouver le souvenir intitulé *"goûter du dimanche chez grand-mère"* même si aucun mot commun n'existe.
 
 ```sql
--- Activer l'extension dans votre base
+-- Sans pgvector : recherche par mots-clés, résultats limités
+SELECT titre, contenu
+FROM souvenirs
+WHERE contenu ILIKE '%mamie%' OR contenu ILIKE '%grand-mère%';
+-- 2 lignes — rate tout ce qui dit "pépé", "aïeule", "nan", "bonne-maman"
+
+-- Avec pgvector : recherche sémantique, résultats par sens
+-- $1 = embedding de "les moments doux avec mamie"
+SELECT titre, 1 - (embedding <=> $1::vector) AS similarite
+FROM souvenirs
+WHERE famille_id = $2
+ORDER BY embedding <=> $1::vector
+LIMIT 5;
+-- Résultat : "goûter du dimanche chez grand-mère" (0.91),
+--            "promenade avec papi et les enfants" (0.87), ...
+```
+
+Le reste du module explique comment passer de la table `souvenirs` brute aux vecteurs stockés, indexés et interrogeables, puis comment assembler le pattern RAG pour qu'un LLM réponde en citant les vrais souvenirs de la famille.
+
+## 2. Théorie complète, concise
+
+### Extension et type `vector`
+
+pgvector s'installe comme n'importe quelle extension PostgreSQL. Elle expose le type `vector(n)` où `n` est la dimension, fixée à la création de la colonne :
+
+```sql
+-- À exécuter une fois par base de données
 CREATE EXTENSION IF NOT EXISTS vector;
 
--- Verifier l'installation
-SELECT * FROM pg_extension WHERE extname = 'vector';
--- extname | extversion
--- --------+-----------
--- vector  | 0.7.4
-```
-
-> **Piege classique** : l'extension doit etre activee **par base de donnees**. Si vous avez plusieurs bases sur le meme serveur, executez `CREATE EXTENSION vector` dans chacune.
-
----
-
-## 3. Types de donnees vectoriels
-
-### 3.1 Le type `vector(n)`
-
-Un vecteur est une liste ordonnee de nombres a virgule flottante. La dimension `n` est fixee a la creation de la colonne.
-
-```sql
--- Creer une table avec une colonne vectorielle
-CREATE TABLE products (
+CREATE TABLE souvenirs (
     id          SERIAL PRIMARY KEY,
-    name        TEXT NOT NULL,
-    description TEXT,
-    price       NUMERIC(10, 2),
-    category    TEXT,
-    -- Vecteur d'embedding de dimension 1536 (OpenAI text-embedding-3-small)
-    embedding   vector(1536)
+    auteur_id   INT NOT NULL,
+    famille_id  INT NOT NULL,
+    titre       TEXT NOT NULL,
+    contenu     TEXT NOT NULL,
+    created_at  TIMESTAMPTZ DEFAULT now(),
+    embedding   vector(1536)   -- dimension du modèle d'embedding
 );
 ```
 
-### 3.2 Choisir la dimension
+> L'extension est activée **par base de données**. Sur un serveur multi-bases, `CREATE EXTENSION vector` doit être exécuté dans chaque base concernée.
 
-Le choix de la dimension depend du modele d'embedding utilise :
+### Embeddings et représentation vectorielle
 
-| Modele | Dimension | Qualite | Cout | Cas d'usage |
-|--------|-----------|---------|------|-------------|
-| OpenAI `text-embedding-3-small` | 1536 | Bonne | $0.02/1M tokens | Usage general, bon rapport qualite/prix |
-| OpenAI `text-embedding-3-large` | 3072 | Excellente | $0.13/1M tokens | Haute precision requise |
-| Cohere `embed-english-v3.0` | 1024 | Tres bonne | $0.10/1M tokens | Multilingue, classification |
-| Sentence-Transformers `all-MiniLM-L6-v2` | 384 | Correcte | Gratuit (local) | Prototypage, budget serre |
-| Mistral `mistral-embed` | 1024 | Bonne | $0.10/1M tokens | Ecosysteme Mistral |
+Un **embedding** est la projection d'un texte dans un espace vectoriel de dimension fixe. Deux textes sémantiquement proches produisent des vecteurs proches. L'API d'embeddings prend du texte en entrée et retourne un tableau de flottants :
+
+```
+"goûter du dimanche chez grand-mère"  →  [0.12, -0.34, 0.78, ..., 0.05]  (1536 valeurs)
+"les moments doux avec mamie"          →  [0.11, -0.31, 0.80, ..., 0.06]  (1536 valeurs)
+                                                   ↑ vecteurs très proches → sens similaire
+```
+
+Dimensions courantes selon le modèle :
+
+| Modèle | Dimension | Notes |
+|--------|-----------|-------|
+| OpenAI `text-embedding-3-small` | 1536 | Rapport qualité/prix recommandé |
+| OpenAI `text-embedding-3-large` | 3072 | Haute précision |
+| Cohere `embed-v3` | 1024 | Multilingue, différencie query/document |
+| MiniLM-L6-v2 (local) | 384 | Gratuit, prototypage |
+
+### Opérateurs de distance
+
+pgvector expose trois opérateurs. Tous sont supportés par HNSW et IVFFlat :
 
 ```sql
--- Exemples de dimensions courantes
-ALTER TABLE products ADD COLUMN embedding_small vector(384);   -- MiniLM
-ALTER TABLE products ADD COLUMN embedding_medium vector(1024);  -- Cohere
-ALTER TABLE products ADD COLUMN embedding_large vector(1536);   -- OpenAI small
-ALTER TABLE products ADD COLUMN embedding_xl vector(3072);      -- OpenAI large
+-- <=> : distance cosinus (0 = identique, 2 = opposés)
+SELECT titre, embedding <=> $1::vector AS dist
+FROM souvenirs ORDER BY dist LIMIT 5;
+
+-- <-> : distance L2 euclidienne (0 à +∞)
+SELECT titre, embedding <-> $1::vector AS dist
+FROM souvenirs ORDER BY dist LIMIT 5;
+
+-- <#> : produit scalaire négatif (pour vecteurs normalisés)
+SELECT titre, embedding <#> $1::vector AS dist
+FROM souvenirs ORDER BY dist LIMIT 5;
+
+-- Convertir distance cosinus en similarité lisible (0 à 1)
+SELECT titre, 1 - (embedding <=> $1::vector) AS similarite
+FROM souvenirs ORDER BY embedding <=> $1::vector LIMIT 5;
 ```
 
-> **Conseil** : commencez avec `text-embedding-3-small` (1536 dimensions) d'OpenAI. C'est le meilleur rapport qualite/prix pour la plupart des cas d'usage. Passez a 384 dimensions si vous avez des contraintes de stockage ou de performance.
+Règle de choix : `<=>` (cosinus) par défaut pour la recherche sémantique sur texte — recommandé par OpenAI et Cohere. `<->` (L2) quand la magnitude du vecteur a un sens métier (images, clustering spatial).
 
-### 3.3 Operations de base sur les vecteurs
+### Index HNSW
+
+HNSW (Hierarchical Navigable Small World) construit un graphe multi-niveaux : les niveaux supérieurs sont des autoroutes pour naviguer rapidement vers la zone pertinente, la recherche précise se fait au niveau 0.
 
 ```sql
--- Inserer un vecteur
-INSERT INTO products (name, description, price, category, embedding)
-VALUES (
-    'Running Shoe Pro',
-    'Chaussure de course legere avec amorti revolutionnaire',
-    129.99,
-    'chaussures',
-    '[0.12, -0.34, 0.78, ...]'::vector  -- 1536 valeurs
-);
+-- Index HNSW cosinus (défaut recommandé en production)
+CREATE INDEX idx_souvenirs_hnsw
+ON souvenirs
+USING hnsw (embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64);
 
--- Recuperer la dimension d'un vecteur
-SELECT vector_dims(embedding) FROM products LIMIT 1;
--- → 1536
+-- Tuning à la requête : augmenter ef_search pour un meilleur recall
+SET hnsw.ef_search = 100;   -- défaut : 40
 
--- Norme d'un vecteur (utile pour debug)
-SELECT vector_norm(embedding) FROM products LIMIT 1;
--- → 1.0 (si normalise)
+-- Variante half-precision : index plus petit, légèrement moins précis
+CREATE INDEX ON souvenirs
+USING hnsw ((embedding::halfvec(1536)) halfvec_cosine_ops);
 ```
 
----
+Paramètres de construction :
+- `m` (défaut 16) : connexions par nœud — plus élevé = meilleur recall, plus de RAM
+- `ef_construction` (défaut 64) : qualité de construction — augmenter à 128-512 pour la production
 
-## 4. Operateurs de distance
+### Index IVFFlat
 
-pgvector propose trois operateurs de distance, chacun adapte a des cas d'usage differents.
-
-### 4.1 Les trois operateurs
+IVFFlat divise l'espace vectoriel en `lists` clusters. Une requête ne cherche que dans les clusters les plus proches (`probes`). Construction plus rapide que HNSW, recall légèrement inférieur.
 
 ```sql
--- ============================================================
--- <-> : Distance euclidienne (L2)
--- ============================================================
--- Mesure la distance "en ligne droite" entre deux points.
--- Plus petite = plus similaire.
-SELECT name, embedding <-> '[0.12, -0.34, ...]'::vector AS distance
-FROM products
-ORDER BY distance
-LIMIT 5;
-
--- ============================================================
--- <=> : Distance cosinus
--- ============================================================
--- Mesure l'angle entre deux vecteurs (ignore la magnitude).
--- Plus petite = plus similaire. Valeurs entre 0 et 2.
-SELECT name, embedding <=> '[0.12, -0.34, ...]'::vector AS distance
-FROM products
-ORDER BY distance
-LIMIT 5;
-
--- ============================================================
--- <#> : Produit scalaire negatif (inner product)
--- ============================================================
--- Plus petit (plus negatif) = plus similaire.
--- Utile quand les vecteurs sont deja normalises.
-SELECT name, embedding <#> '[0.12, -0.34, ...]'::vector AS distance
-FROM products
-ORDER BY distance
-LIMIT 5;
-```
-
-### 4.2 Quel operateur choisir ?
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│         CHOIX DE L'OPERATEUR DE DISTANCE                      │
-│                                                               │
-│  <=> (cosinus)                                               │
-│  → Le choix par defaut pour la recherche semantique          │
-│  → Insensible a la longueur du vecteur                       │
-│  → Ideal quand les vecteurs ne sont pas normalises           │
-│  → La plupart des APIs d'embedding recommandent cosinus      │
-│                                                               │
-│  <-> (L2 / euclidienne)                                      │
-│  → Sensible a la magnitude des vecteurs                      │
-│  → Utile pour des donnees ou la norme a un sens              │
-│  → Image similarity, clustering spatial                      │
-│                                                               │
-│  <#> (inner product)                                         │
-│  → Equivalent a cosinus SI les vecteurs sont normalises      │
-│  → Plus rapide que cosinus (pas de normalisation)            │
-│  → A preferer quand vous normalisez vous-meme les vecteurs   │
-└──────────────────────────────────────────────────────────────┘
-```
-
-| Operateur | Nom | Plage | Normalisation requise | Cas d'usage |
-|-----------|-----|-------|----------------------|-------------|
-| `<=>` | Cosinus | 0 a 2 | Non | Recherche semantique (defaut) |
-| `<->` | L2 (euclidienne) | 0 a +inf | Non | Clustering, images |
-| `<#>` | Inner product | -inf a +inf | Oui (pour similarite) | Vecteurs pre-normalises |
-
-> **Conseil** : utilisez `<=>` (cosinus) sauf si vous avez une raison specifique de faire autrement. C'est l'operateur recommande par OpenAI et Cohere pour leurs embeddings.
-
----
-
-## 5. Index pour la recherche vectorielle
-
-Sans index, pgvector effectue un scan sequentiel (exact nearest neighbor). Avec des millions de vecteurs, c'est trop lent. Deux types d'index accelerent la recherche au prix d'une approximation.
-
-### 5.1 IVFFlat — Inverted File with Flat Compression
-
-```
-IVFFlat :
-  1. Decoupe l'espace vectoriel en "clusters" (listes)
-  2. Lors d'une requete, ne cherche que dans les clusters les plus proches
-
-  ┌─────────────────────────────────┐
-  │  Espace vectoriel               │
-  │                                 │
-  │   Cluster 1    Cluster 2        │
-  │   ┌───────┐    ┌───────┐       │
-  │   │ • •   │    │  • •  │       │
-  │   │  •    │    │ •  •  │       │
-  │   │   •   │    │  •    │       │
-  │   └───────┘    └───────┘       │
-  │                                 │
-  │   Cluster 3    Cluster 4        │
-  │   ┌───────┐    ┌───────┐       │
-  │   │  •    │    │ •     │       │
-  │   │ • •   │    │  • •  │       │
-  │   └───────┘    └───────┘       │
-  │                                 │
-  │  Requete: Q = ⊕                │
-  │  → probes = 2 : cherche dans   │
-  │    Cluster 2 et Cluster 4      │
-  └─────────────────────────────────┘
-```
-
-```sql
--- ============================================================
--- Creer un index IVFFlat
--- ============================================================
-
--- Regle de base : lists = sqrt(nombre_de_lignes)
--- Pour 1M de lignes : lists = 1000
--- Pour 100K de lignes : lists = 316
-
-CREATE INDEX idx_products_embedding_ivfflat
-ON products
+-- IVFFlat : lists ≈ sqrt(nombre de lignes)
+-- ⚠ Exige des données existantes — ne pas créer sur table vide
+CREATE INDEX idx_souvenirs_ivfflat
+ON souvenirs
 USING ivfflat (embedding vector_cosine_ops)
 WITH (lists = 100);
 
--- vector_cosine_ops → pour l'operateur <=>
--- vector_l2_ops     → pour l'operateur <->
--- vector_ip_ops     → pour l'operateur <#>
+-- Tuning recall à la requête
+SET ivfflat.probes = 10;   -- défaut : 1, recommandé : sqrt(lists)
+
+-- pgvector 0.8 : iterative_scan pour les requêtes filtrées
+SET ivfflat.iterative_scan = 'relaxed_order';
+SELECT titre, embedding <=> $1::vector AS dist
+FROM souvenirs
+WHERE famille_id = 42
+ORDER BY dist LIMIT 10;
 ```
 
-**Parametres de tuning IVFFlat :**
+### HNSW vs IVFFlat
 
-| Parametre | Quand | Valeur | Effet |
-|-----------|-------|--------|-------|
-| `lists` (creation) | CREATE INDEX | sqrt(N) a 4*sqrt(N) | Plus de listes = index plus precis mais plus lent a construire |
-| `probes` (requete) | SET ivfflat.probes | 1 a lists | Plus de probes = meilleur recall, requete plus lente |
+| Critère | HNSW | IVFFlat |
+|---------|------|---------|
+| Construction | Lente (RAM élevée) | Rapide |
+| Recall | Excellent (95-99 %) | Bon (85-95 %) |
+| Insertions dynamiques | Sans dégradation | Nécessite REINDEX périodique |
+| Filtres WHERE | `hnsw.ef_search` + index B-tree | `iterative_scan = relaxed_order` (0.8+) |
+| Cas d'usage | Production, données dynamiques | Batch statique, RAM contrainte |
+
+**Règle** : choisir HNSW pour une nouvelle application. IVFFlat si les données sont reconstruites en batch et que la RAM est limitée.
+
+### Pattern RAG
+
+RAG (Retrieval-Augmented Generation) = récupérer les documents pertinents via similarité vectorielle, puis les passer en contexte à un LLM pour qu'il génère une réponse ancrée dans ces documents.
+
+```
+Question utilisateur
+        │
+        ▼
+   Embedding de la question  (même modèle que l'indexation)
+        │
+        ▼
+   SELECT TOP-K souvenirs  (pgvector + filtres SQL)
+        │
+        ▼
+   Contexte injecté dans le prompt LLM
+        │
+        ▼
+   Réponse LLM citant les vrais souvenirs de la famille
+```
+
+PostgreSQL avec pgvector est l'endroit naturel pour la couche retrieval : on combine similarité vectorielle et filtres SQL (`famille_id`, `created_at`…) sans infrastructure supplémentaire.
+
+## 3. Worked examples
+
+### Exemple A — Stocker les embeddings des souvenirs TribuZen
+
+Objectif : définir le schéma, générer un embedding via l'API OpenAI et l'insérer avec le souvenir.
 
 ```sql
--- Augmenter le nombre de probes pour un meilleur recall
-SET ivfflat.probes = 10;  -- Defaut = 1, recommande = sqrt(lists)
+-- Schéma complet
+CREATE EXTENSION IF NOT EXISTS vector;
 
--- Requete avec le recall ameliore
-SELECT name, embedding <=> $1::vector AS distance
-FROM products
-ORDER BY distance
-LIMIT 10;
-```
+CREATE TABLE souvenirs (
+    id          SERIAL PRIMARY KEY,
+    auteur_id   INT NOT NULL,
+    famille_id  INT NOT NULL,
+    titre       TEXT NOT NULL,
+    contenu     TEXT NOT NULL,
+    created_at  TIMESTAMPTZ DEFAULT now(),
+    embedding   vector(1536)
+);
 
-### 5.2 HNSW — Hierarchical Navigable Small World
-
-```
-HNSW :
-  Graphe multi-niveaux. Les niveaux superieurs sont
-  des "autoroutes" pour naviguer rapidement vers la
-  zone de l'espace qui nous interesse.
-
-  Niveau 2 (autoroute)  :  A ──────── D ──── F
-                           │                  │
-  Niveau 1 (route)      :  A ── B ── D ── E ── F
-                           │    │    │    │    │
-  Niveau 0 (rue)        :  A ─ B ─ C ─ D ─ E ─ F ─ G ─ H
-
-  Recherche de Q (proche de E) :
-  → Niveau 2 : part de A, saute a D, saute a F
-  → Niveau 1 : de D, va a E (proche !)
-  → Niveau 0 : de E, explore les voisins E, D, F
-  → Resultat : E (et ses voisins les plus proches)
-```
-
-```sql
--- ============================================================
--- Creer un index HNSW
--- ============================================================
-CREATE INDEX idx_products_embedding_hnsw
-ON products
+-- Index HNSW pour la recherche sémantique
+CREATE INDEX idx_souvenirs_hnsw
+ON souvenirs
 USING hnsw (embedding vector_cosine_ops)
 WITH (m = 16, ef_construction = 64);
+
+-- Index B-tree pour les filtres métier
+CREATE INDEX idx_souvenirs_famille ON souvenirs (famille_id);
 ```
-
-**Parametres de tuning HNSW :**
-
-| Parametre | Quand | Defaut | Plage recommandee | Effet |
-|-----------|-------|--------|-------------------|-------|
-| `m` | CREATE INDEX | 16 | 8 a 64 | Connexions par noeud. Plus = meilleur recall, plus de RAM |
-| `ef_construction` | CREATE INDEX | 64 | 64 a 512 | Qualite de construction. Plus = index plus precis, build plus lent |
-| `ef_search` | SET hnsw.ef_search | 40 | 40 a 400 | Qualite de recherche. Plus = meilleur recall, requete plus lente |
-
-```sql
--- Augmenter ef_search pour un meilleur recall
-SET hnsw.ef_search = 100;  -- Defaut = 40
-
--- Requete
-SELECT name, embedding <=> $1::vector AS distance
-FROM products
-ORDER BY distance
-LIMIT 10;
-```
-
-### 5.3 IVFFlat vs HNSW — comparaison
-
-| Critere | IVFFlat | HNSW |
-|---------|---------|------|
-| Temps de construction | ⚡ Rapide | 🐢 Lent (5-10x plus) |
-| RAM pendant la construction | Faible | Elevee |
-| Recall (qualite des resultats) | Bon (85-95%) | Excellent (95-99%) |
-| Latence de requete | Bonne | Meilleure |
-| Insertion incrementale | ⚠️ Necessite REINDEX periodique | ✅ Supporte nativement |
-| Cas d'usage | Donnees statiques, budget RAM serre | Donnees dynamiques, haute qualite requise |
-
-> **Conseil** : preferez **HNSW** pour les nouvelles applications. Le cout de construction est plus eleve mais le recall est meilleur et l'index supporte les insertions sans degradation. Utilisez **IVFFlat** si vous avez des contraintes de RAM ou si vos donnees sont reconstruites en batch.
-
----
-
-## 6. Recherche hybride : vecteurs + SQL
-
-La force de pgvector par rapport aux bases vectorielles dediees, c'est de **combiner** la recherche semantique avec des filtres SQL classiques.
-
-### 6.1 Vecteurs + WHERE
-
-```sql
--- ============================================================
--- Recherche semantique AVEC filtres metier
--- ============================================================
-
--- Trouver les 10 produits les plus similaires a une requete
--- MAIS uniquement dans la categorie "chaussures" et en stock
-SELECT
-    p.id,
-    p.name,
-    p.price,
-    p.category,
-    1 - (p.embedding <=> $1::vector) AS similarity  -- Convertir distance en similarite
-FROM products p
-WHERE p.category = 'chaussures'
-  AND p.stock > 0
-  AND p.price BETWEEN 50 AND 200
-ORDER BY p.embedding <=> $1::vector
-LIMIT 10;
-```
-
-> **Piege classique** : l'index vectoriel est utilise **avant** les filtres WHERE. Si le WHERE est tres selectif (peu de lignes matchent), PostgreSQL peut choisir de ne pas utiliser l'index vectoriel et faire un scan sequentiel filtre. Dans ce cas, un index composite (B-tree sur category + vector) peut aider.
-
-### 6.2 Vecteurs + Full-Text Search
-
-```sql
--- ============================================================
--- Recherche hybride : semantique + full-text
--- ============================================================
-
--- Ajouter une colonne tsvector pour le full-text search
-ALTER TABLE products ADD COLUMN search_vector tsvector
-    GENERATED ALWAYS AS (
-        to_tsvector('french', coalesce(name, '') || ' ' || coalesce(description, ''))
-    ) STORED;
-
-CREATE INDEX idx_products_fts ON products USING gin(search_vector);
-
--- Requete hybride : combiner les scores
-WITH semantic AS (
-    SELECT
-        id,
-        1 - (embedding <=> $1::vector) AS semantic_score
-    FROM products
-    ORDER BY embedding <=> $1::vector
-    LIMIT 50  -- Pre-filtrage large en semantique
-),
-fulltext AS (
-    SELECT
-        id,
-        ts_rank(search_vector, plainto_tsquery('french', $2)) AS text_score
-    FROM products
-    WHERE search_vector @@ plainto_tsquery('french', $2)
-)
-SELECT
-    p.id,
-    p.name,
-    p.price,
-    COALESCE(s.semantic_score, 0) AS semantic_score,
-    COALESCE(f.text_score, 0) AS text_score,
-    -- Score hybride (pondere)
-    0.7 * COALESCE(s.semantic_score, 0) + 0.3 * COALESCE(f.text_score, 0) AS hybrid_score
-FROM products p
-LEFT JOIN semantic s ON s.id = p.id
-LEFT JOIN fulltext f ON f.id = p.id
-WHERE s.id IS NOT NULL OR f.id IS NOT NULL
-ORDER BY hybrid_score DESC
-LIMIT 10;
-```
-
-> **Analogie** : la recherche hybride, c'est comme demander a deux experts de noter les memes livres. Le premier (semantique) comprend le sens global. Le second (full-text) repere les mots-cles precis. Vous combinez leurs notes avec une ponderation pour obtenir le meilleur des deux mondes.
-
-### 6.3 Reranking pattern
-
-```sql
--- ============================================================
--- Pattern : sur-recuperer puis reranker
--- ============================================================
-
--- Etape 1 : recuperer 100 candidats avec l'index vectoriel (rapide)
--- Etape 2 : reranker avec un modele plus precis (cote application)
-
--- En SQL, on recupere les candidats :
-SELECT id, name, description,
-       embedding <=> $1::vector AS vector_distance
-FROM products
-WHERE category = $2
-ORDER BY embedding <=> $1::vector
-LIMIT 100;
-
--- Cote Node.js, on reranke avec Cohere Rerank ou un cross-encoder
--- (voir section 7)
-```
-
----
-
-## 7. Integration Node.js / TypeScript
-
-### 7.1 Setup avec pgvector et node-postgres
 
 ```typescript
-// ============================================================
-// Installation
-// ============================================================
 // npm install pg pgvector openai
 // npm install -D @types/pg
-
 import pg from 'pg';
 import pgvector from 'pgvector/pg';
 import OpenAI from 'openai';
 
-const { Pool } = pg;
-
-// ────────────────────────────────────────────────────────────
-// Configuration
-// ────────────────────────────────────────────────────────────
-const pool = new Pool({
-    host: 'localhost',
-    port: 5432,
-    database: 'myapp',
-    user: 'app',
-    password: 'secret',
-});
-
-// Enregistrer le type vector pour node-postgres
-await pgvector.registerTypes(pool);
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+await pgvector.registerTypes(pool);   // ⚠ obligatoire avant toute requête vectorielle
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-```
 
-### 7.2 Generer des embeddings
-
-```typescript
-// ────────────────────────────────────────────────────────────
-// Generer un embedding avec OpenAI
-// ────────────────────────────────────────────────────────────
-async function generateEmbedding(text: string): Promise<number[]> {
-    const response = await openai.embeddings.create({
+async function genererEmbedding(texte: string): Promise<number[]> {
+    const res = await openai.embeddings.create({
         model: 'text-embedding-3-small',
-        input: text,
+        input: texte,
     });
-    return response.data[0].embedding;  // number[] de dimension 1536
+    return res.data[0].embedding;   // number[] de dimension 1536
 }
 
-// ────────────────────────────────────────────────────────────
-// Generer des embeddings en batch (plus efficace)
-// ────────────────────────────────────────────────────────────
-async function generateEmbeddings(texts: string[]): Promise<number[][]> {
-    // L'API OpenAI accepte un tableau d'inputs
-    const response = await openai.embeddings.create({
-        model: 'text-embedding-3-small',
-        input: texts,  // Max 2048 inputs par requete
-    });
-    // Trier par index pour garantir l'ordre
-    return response.data
-        .sort((a, b) => a.index - b.index)
-        .map(d => d.embedding);
-}
-```
-
-### 7.3 Inserer et rechercher
-
-```typescript
-// ────────────────────────────────────────────────────────────
-// Inserer un produit avec son embedding
-// ────────────────────────────────────────────────────────────
-interface Product {
-    id?: number;
-    name: string;
-    description: string;
-    price: number;
-    category: string;
-}
-
-async function insertProduct(product: Product): Promise<number> {
-    const text = `${product.name}: ${product.description}`;
-    const embedding = await generateEmbedding(text);
+async function creerSouvenir(
+    auteurId: number,
+    familleId: number,
+    titre: string,
+    contenu: string,
+): Promise<number> {
+    // Combiner titre + contenu pour que l'embedding capte les deux
+    const embedding = await genererEmbedding(`${titre}. ${contenu}`);
 
     const { rows } = await pool.query<{ id: number }>(`
-        INSERT INTO products (name, description, price, category, embedding)
+        INSERT INTO souvenirs (auteur_id, famille_id, titre, contenu, embedding)
         VALUES ($1, $2, $3, $4, $5)
         RETURNING id
-    `, [product.name, product.description, product.price, product.category, pgvector.toSql(embedding)]);
+    `, [auteurId, familleId, titre, contenu, pgvector.toSql(embedding)]);
 
     return rows[0].id;
 }
 
-// ────────────────────────────────────────────────────────────
-// Recherche semantique
-// ────────────────────────────────────────────────────────────
-interface SearchResult {
+// Utilisation
+await creerSouvenir(
+    1, 42,
+    'Goûter du dimanche',
+    'Ce dimanche chez grand-mère, les enfants ont fait des gâteaux ensemble.',
+);
+```
+
+Pas-à-pas : (1) on concatène titre + contenu pour que l'embedding capte les deux champs ; (2) `pgvector.toSql()` sérialise le tableau JS en format `[0.12,-0.34,…]` attendu par PostgreSQL ; (3) l'index HNSW est mis à jour automatiquement à l'insertion — pas de REINDEX nécessaire.
+
+### Exemple B — Recherche de similarité dans les souvenirs famille
+
+Objectif : retrouver les 5 souvenirs les plus proches d'une requête utilisateur, filtrés par famille.
+
+```sql
+-- Requête SQL directe
+-- $1 = vecteur de la requête, $2 = famille_id, $3 = limite
+SELECT
+    id,
+    titre,
+    left(contenu, 120) AS extrait,
+    1 - (embedding <=> $1::vector) AS similarite
+FROM souvenirs
+WHERE famille_id = $2
+  AND embedding IS NOT NULL
+ORDER BY embedding <=> $1::vector
+LIMIT $3;
+```
+
+```typescript
+interface ResultatRecherche {
     id: number;
-    name: string;
-    description: string;
-    price: number;
-    similarity: number;
+    titre: string;
+    extrait: string;
+    similarite: number;
 }
 
-async function searchProducts(
-    query: string,
-    category?: string,
-    limit: number = 10,
-): Promise<SearchResult[]> {
-    const queryEmbedding = await generateEmbedding(query);
+async function chercherSouvenirs(
+    requete: string,
+    familleId: number,
+    limite = 5,
+): Promise<ResultatRecherche[]> {
+    // ⚠ Même modèle qu'à l'insertion — mélanger les modèles produit des distances sans sens
+    const embedding = await genererEmbedding(requete);
 
-    let sql = `
+    const { rows } = await pool.query<ResultatRecherche>(`
         SELECT
-            id, name, description, price,
-            1 - (embedding <=> $1::vector) AS similarity
-        FROM products
-        WHERE embedding IS NOT NULL
-    `;
-    const params: unknown[] = [pgvector.toSql(queryEmbedding)];
-
-    if (category) {
-        sql += ` AND category = $${params.length + 1}`;
-        params.push(category);
-    }
-
-    sql += `
+            id,
+            titre,
+            left(contenu, 120) AS extrait,
+            1 - (embedding <=> $1::vector) AS similarite
+        FROM souvenirs
+        WHERE famille_id = $2
+          AND embedding IS NOT NULL
         ORDER BY embedding <=> $1::vector
-        LIMIT $${params.length + 1}
-    `;
-    params.push(limit);
+        LIMIT $3
+    `, [pgvector.toSql(embedding), familleId, limite]);
 
-    const { rows } = await pool.query<SearchResult>(sql, params);
     return rows;
 }
 
-// ────────────────────────────────────────────────────────────
 // Utilisation
-// ────────────────────────────────────────────────────────────
-const results = await searchProducts(
-    'chaussure legere pour courir sur route',
-    'chaussures',
-    5,
-);
-
-for (const r of results) {
-    console.log(`${r.name} (${(r.similarity * 100).toFixed(1)}%) — ${r.price}€`);
+const resultats = await chercherSouvenirs('les moments doux avec mamie', 42);
+// → [{ titre: 'Goûter du dimanche chez grand-mère', similarite: 0.91, … }, …]
+for (const r of resultats) {
+    console.log(`${r.titre} (${(r.similarite * 100).toFixed(0)}%) — ${r.extrait}`);
 }
-// Running Shoe Pro (94.2%) — 129.99€
-// Marathon Air Elite (91.8%) — 159.99€
-// Trail Runner GTX (87.5%) — 189.99€
 ```
 
-### 7.4 Integration avec Cohere
+Pas-à-pas : (1) l'embedding de la requête doit utiliser le **même** modèle que celui de l'insertion — des espaces vectoriels différents produisent des distances sans signification ; (2) le filtre `famille_id = $2` restreint la recherche à la famille concernée, combinant isolation relationnelle et recherche sémantique ; (3) `1 - distance` convertit la distance cosinus en score de similarité lisible (0 à 1).
+
+### Exemple C — Pattern RAG sur les souvenirs
+
+Objectif : assembler la couche retrieval PostgreSQL du pattern RAG — pgvector extrait les souvenirs pertinents, le LLM génère une réponse ancrée dans la vraie histoire familiale.
 
 ```typescript
-// ────────────────────────────────────────────────────────────
-// Alternative : Cohere pour les embeddings + reranking
-// ────────────────────────────────────────────────────────────
-// npm install cohere-ai
+async function ragSouvenirs(
+    question: string,
+    familleId: number,
+): Promise<string> {
+    // Étape 1 : retrieval — top-5 souvenirs pertinents via pgvector
+    const souvenirs = await chercherSouvenirs(question, familleId, 5);
 
-import { CohereClient } from 'cohere-ai';
+    if (souvenirs.length === 0) {
+        return "Aucun souvenir correspondant trouvé pour cette famille.";
+    }
 
-const cohere = new CohereClient({ token: process.env.COHERE_API_KEY });
+    // Étape 2 : construction du contexte injecté dans le prompt
+    const contexte = souvenirs
+        .map((s, i) =>
+            `[${i + 1}] "${s.titre}" (similarité ${(s.similarite * 100).toFixed(0)}%)\n${s.extrait}`
+        )
+        .join('\n\n');
 
-async function generateCohereEmbedding(
-    texts: string[],
-    inputType: 'search_query' | 'search_document' = 'search_document',
-): Promise<number[][]> {
-    const response = await cohere.embed({
-        texts,
-        model: 'embed-english-v3.0',
-        inputType,        // Important : differencier query vs document
-        embeddingTypes: ['float'],
+    // Étape 3 : génération LLM avec contexte ancré
+    const reponse = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+            {
+                role: 'system',
+                content: "Tu es l'assistant mémoire de TribuZen. Réponds uniquement à partir des souvenirs fournis. Cite le numéro du souvenir entre crochets.",
+            },
+            {
+                role: 'user',
+                content: `Question : ${question}\n\nSouvenirs disponibles :\n${contexte}`,
+            },
+        ],
     });
-    return response.embeddings.float!;
+
+    return reponse.choices[0].message.content ?? '';
 }
 
-// Reranking avec Cohere (apres la recherche vectorielle)
-async function rerankResults(
-    query: string,
-    documents: { id: number; text: string }[],
-    topN: number = 5,
-): Promise<{ id: number; relevanceScore: number }[]> {
-    const response = await cohere.rerank({
-        query,
-        documents: documents.map(d => d.text),
-        model: 'rerank-english-v3.0',
-        topN,
-    });
-    return response.results.map(r => ({
-        id: documents[r.index].id,
-        relevanceScore: r.relevanceScore,
-    }));
-}
+// Utilisation
+const rep = await ragSouvenirs("Quand est-ce qu'on a fait des gâteaux en famille ?", 42);
+// → "D'après le souvenir [1] 'Goûter du dimanche', les enfants ont fait des gâteaux…"
 ```
 
-> **Conseil** : Cohere differencie les embeddings de type `search_query` et `search_document`. Utilisez `search_document` pour indexer et `search_query` pour chercher. Cela ameliore significativement le recall.
+Pas-à-pas : (1) pgvector fait le travail dur — trouver les documents pertinents dans toute la base via HNSW ; (2) on passe les top-k souvenirs en contexte au LLM, pas toute la table — contrôle du coût en tokens ; (3) le LLM répond en citant les vrais souvenirs → réponse vérifiable, ancrée dans la réalité de la famille, sans hallucination sur des souvenirs inexistants.
 
----
+## 4. Pièges & misconceptions
 
-## 8. Performance, benchmarks et scaling
+- **Mélanger les modèles d'embeddings dans la même colonne.** Un vecteur OpenAI et un vecteur Cohere vivent dans des espaces vectoriels différents — leurs distances sont sans signification. pgvector lève même une erreur si les dimensions diffèrent (`ERROR: different vector dimensions`). *Correct* : un seul modèle par colonne, documenté dans le schéma et idéalement dans une contrainte de commentaire.
 
-### 8.1 Benchmarks de reference
+- **Créer un index IVFFlat sur une table vide.** IVFFlat nécessite des données existantes pour calculer les `lists` clusters lors du `CREATE INDEX`. Sur table vide, l'index est créé mais inutilisable. *Correct* : insérer les données en premier, puis créer l'index IVFFlat ; pour les données dynamiques, préférer HNSW qui accepte les insertions incrémentielles sans dégradation.
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│         BENCHMARKS pgvector (serveur 8 vCPU, 32 GB RAM)       │
-│                                                               │
-│  Dataset : 1 million de vecteurs, dimension 1536              │
-│                                                               │
-│  Sans index (exact KNN) :                                    │
-│  → Latence : ~2000 ms par requete                            │
-│  → Recall : 100% (exact)                                     │
-│                                                               │
-│  IVFFlat (lists=1000, probes=10) :                           │
-│  → Latence : ~15 ms par requete                              │
-│  → Recall : ~92%                                             │
-│  → Construction : ~2 minutes                                 │
-│                                                               │
-│  HNSW (m=16, ef_construction=128, ef_search=100) :           │
-│  → Latence : ~5 ms par requete                               │
-│  → Recall : ~98%                                             │
-│  → Construction : ~20 minutes                                │
-│                                                               │
-│  Recommandation : HNSW pour la production                    │
-└──────────────────────────────────────────────────────────────┘
-```
+- **Oublier `pgvector.registerTypes(pool)` côté Node.js.** Sans cet appel, node-postgres reçoit les vecteurs sous forme de chaîne brute et les opérations de comparaison échouent ou retournent des résultats silencieusement incorrects. *Correct* : appeler `await pgvector.registerTypes(pool)` une fois au démarrage, avant toute requête vectorielle.
 
-### 8.2 Optimisation de la RAM
+- **Confondre distance cosinus et similarité cosinus.** L'opérateur `<=>` retourne une **distance** (0 = identique, 2 = opposés). Trier par `distance DESC` donne les résultats les moins pertinents en premier. *Correct* : toujours `ORDER BY embedding <=> $1 LIMIT k` pour les plus proches, et convertir avec `1 - distance` uniquement pour l'affichage du score.
 
-```sql
--- pgvector charge les index en memoire partagee
--- Verifier la taille de vos index
+- **Laisser `hnsw.ef_search` au défaut (40) en production.** La valeur par défaut favorise la vitesse au détriment du recall (~85 %). Pour une recherche de souvenirs familiaux, un recall de 95 %+ est attendu. *Correct* : `SET hnsw.ef_search = 100` au niveau session, ou configurer dans `postgresql.conf` pour l'appliquer globalement.
 
-SELECT
-    indexrelname AS index_name,
-    pg_size_pretty(pg_relation_size(indexrelid)) AS index_size
-FROM pg_stat_user_indexes
-WHERE schemaname = 'public'
-  AND indexrelname LIKE '%embedding%';
+- **Négliger l'index B-tree sur les colonnes de filtre.** Un filtre `WHERE famille_id = 42` combiné à `ORDER BY embedding <=>` oblige PostgreSQL à choisir entre l'index HNSW et le scan. Sans B-tree sur `famille_id`, PostgreSQL peut scanner toute la table avant de trier. *Correct* : créer un index B-tree sur toute colonne de filtre métier utilisée avec la recherche vectorielle.
 
--- index_name                          | index_size
--- ------------------------------------+-----------
--- idx_products_embedding_hnsw         | 2.4 GB
-```
+- **Appeler l'API d'embedding une fois par texte lors d'une migration.** Vectoriser des milliers de souvenirs un par un coûte du temps et de l'argent. OpenAI accepte jusqu'à 2048 textes par appel. *Correct* : regrouper les textes en batches (`openai.embeddings.create({ input: textes[] })`) et insérer en batch avec des transactions groupées.
+
+## 5. Ancrage TribuZen
+
+Couche fil-rouge : **recherche sémantique dans les souvenirs et le journal** de `smaurier/tribuzen`.
+
+- La table `souvenirs` (Exemples A et B) est la pièce centrale du module Mémoire de TribuZen : chaque souvenir posté par un membre est vectorisé à l'insertion via `creerSouvenir`. Le titre et le contenu sont concaténés pour un embedding riche.
+- Le filtre `famille_id` est le garde-fou d'isolation : un utilisateur ne retrouve que les souvenirs de **sa** famille, combinant la sécurité relationnelle classique (FK, Row-Level Security) avec la recherche vectorielle. C'est l'avantage structurel de pgvector sur les bases vectorielles dédiées qui ne connaissent pas les jointures.
+- La recherche de similarité (Exemple B) alimente le moteur de découverte : "retrouve-moi des moments comme celui-là", "qu'est-ce que nous avons fait l'été dernier", sans correspondance exacte de mots.
+- Le pattern RAG (Exemple C) est la fondation de l'assistant mémoire familial : l'utilisateur pose une question en langage naturel, pgvector extrait les souvenirs pertinents, le LLM génère une réponse ancrée dans la vraie histoire de la famille — sans halluciner des souvenirs inventés.
+- L'index HNSW accepte les insertions dynamiques sans REINDEX : adapté au rythme réel de TribuZen où les familles ajoutent des souvenirs au fil du temps, pas en batch unique.
+
+## 6. Points clés
+
+1. `CREATE EXTENSION IF NOT EXISTS vector;` active pgvector par base de données ; la colonne `vector(n)` fixe la dimension à la création — non modifiable sans migration.
+2. Un embedding = projection d'un texte en vecteur de dimension fixe ; deux textes sémantiquement proches → vecteurs proches ; le modèle doit être le même à l'indexation et à la requête.
+3. Opérateur `<=>` (cosinus) par défaut pour la recherche sémantique sur texte ; `1 - (embedding <=> query)` convertit la distance en similarité lisible de 0 à 1.
+4. HNSW : meilleur recall (95-99 %), insertions dynamiques sans dégradation, `hnsw.ef_search` pour tuner la qualité à la requête ; préférer en production.
+5. IVFFlat : construction rapide, `ivfflat.probes` pour tuner, `iterative_scan = 'relaxed_order'` (pgvector 0.8) améliore le recall sur requêtes filtrées ; exige des données à la création.
+6. Toujours un seul modèle d'embedding par colonne — mélanger OpenAI et Cohere produit des distances sans signification.
+7. Pattern RAG sur PostgreSQL = retrieval pgvector + contexte injecté dans un prompt LLM ; pas d'infrastructure vectorielle supplémentaire si l'application utilise déjà PostgreSQL.
+8. Combiner filtre SQL (`famille_id`, dates…) + `ORDER BY embedding <=>` : avantage clé de pgvector sur les bases vectorielles dédiées qui ne supportent pas les jointures ni le filtrage relationnel natif.
+
+## 7. Seeds Anki
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│         ESTIMATION DE LA RAM REQUISE                          │
-│                                                               │
-│  Formule approximative pour HNSW :                           │
-│  RAM ≈ N × D × 4 bytes × (1 + m/D)                         │
-│                                                               │
-│  Exemples (dimension 1536) :                                 │
-│  100K vecteurs  → ~0.6 GB                                    │
-│  1M vecteurs    → ~6 GB                                      │
-│  5M vecteurs    → ~30 GB                                     │
-│  10M vecteurs   → ~60 GB                                     │
-│                                                               │
-│  → shared_buffers doit etre suffisant pour contenir l'index  │
-│  → Sinon, les requetes vectorielles seront ralenties par     │
-│    les lectures disque                                       │
-└──────────────────────────────────────────────────────────────┘
+Quelle commande active pgvector dans une base PostgreSQL ?|CREATE EXTENSION IF NOT EXISTS vector; — à exécuter dans chaque base de données concernée, pas une seule fois sur le serveur
+Quel opérateur pgvector utiliser par défaut pour la recherche sémantique sur texte ?|<=> (distance cosinus) — recommandé par OpenAI et Cohere pour les embeddings textuels ; ORDER BY embedding <=> query LIMIT k
+Comment convertir une distance cosinus pgvector en score de similarité 0-1 ?|1 - (embedding <=> query::vector) — la distance 0 (identique) devient similarité 1, la distance 2 (opposés) devient 0
+Différence principale entre HNSW et IVFFlat dans pgvector ?|HNSW = meilleur recall (95-99 %), insertions dynamiques, lent à construire ; IVFFlat = construction rapide, REINDEX périodique, recall 85-95 %
+Quel paramètre de session améliore le recall des requêtes HNSW ?|SET hnsw.ef_search = 100 (défaut 40) — plus élevé = meilleur recall, requête plus lente
+Pourquoi IVFFlat ne peut-il pas être créé sur une table vide ?|Il nécessite des données existantes pour calculer les clusters (lists) lors du CREATE INDEX
+Quel est le rôle de pgvector dans le pattern RAG ?|La couche retrieval — trouver les k documents les plus similaires à la question via similarité vectorielle, passés en contexte au LLM
+Pourquoi ne pas mélanger deux modèles d'embeddings dans la même colonne vector ?|Les vecteurs vivent dans des espaces vectoriels différents, leurs distances sont sans signification ; pgvector lève ERROR si les dimensions diffèrent
+Quel appel Node.js est obligatoire avant d'utiliser pgvector avec node-postgres ?|await pgvector.registerTypes(pool) — enregistre le type vector pour que node-postgres désérialise correctement les résultats
 ```
 
-```sql
--- Ajuster shared_buffers pour pgvector
--- Recommandation : au moins 2x la taille de l'index vectoriel
-ALTER SYSTEM SET shared_buffers = '8GB';
-ALTER SYSTEM SET effective_cache_size = '24GB';
-ALTER SYSTEM SET maintenance_work_mem = '2GB';  -- Pour la construction d'index
-SELECT pg_reload_conf();
-```
-
-### 8.3 Partitionnement des vecteurs
-
-Pour les tres gros volumes (> 5M vecteurs), combinez pgvector avec le partitionnement PostgreSQL.
-
-```sql
--- ============================================================
--- Partitionnement + pgvector
--- ============================================================
-
--- Partitionner par categorie (LIST)
-CREATE TABLE products_partitioned (
-    id          SERIAL,
-    name        TEXT NOT NULL,
-    category    TEXT NOT NULL,
-    embedding   vector(1536),
-    PRIMARY KEY (id, category)
-) PARTITION BY LIST (category);
-
-CREATE TABLE products_shoes PARTITION OF products_partitioned
-    FOR VALUES IN ('chaussures');
-CREATE TABLE products_clothes PARTITION OF products_partitioned
-    FOR VALUES IN ('vetements');
-CREATE TABLE products_electronics PARTITION OF products_partitioned
-    FOR VALUES IN ('electronique');
-
--- Creer un index HNSW sur CHAQUE partition
--- (les index partitionnes sont plus petits = plus rapides)
-CREATE INDEX ON products_shoes
-    USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 128);
-CREATE INDEX ON products_clothes
-    USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 128);
-CREATE INDEX ON products_electronics
-    USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 128);
-
--- La requete avec filtre sur la categorie beneficie
--- du partition pruning ET de l'index vectoriel
-SELECT name, embedding <=> $1::vector AS distance
-FROM products_partitioned
-WHERE category = 'chaussures'
-ORDER BY embedding <=> $1::vector
-LIMIT 10;
--- → Ne scanne que la partition products_shoes (et son index HNSW local)
-```
-
-### 8.4 Insertion en batch
-
-```typescript
-// ============================================================
-// Insertion optimisee en batch avec COPY
-// ============================================================
-import { pipeline } from 'stream/promises';
-import { Readable } from 'stream';
-import { from as copyFrom } from 'pg-copy-streams';
-
-interface ProductBatch {
-    name: string;
-    description: string;
-    price: number;
-    category: string;
-    embedding: number[];
-}
-
-async function bulkInsertProducts(products: ProductBatch[]): Promise<void> {
-    const client = await pool.connect();
-    try {
-        // Generer les embeddings en batch
-        const texts = products.map(p => `${p.name}: ${p.description}`);
-        const embeddings = await generateEmbeddings(texts);
-
-        // Utiliser COPY pour l'insertion bulk (10-50x plus rapide qu'INSERT)
-        const copyStream = client.query(
-            copyFrom(`COPY products (name, description, price, category, embedding)
-                       FROM STDIN WITH (FORMAT csv)`)
-        );
-
-        const rows = products.map((p, i) => {
-            const embStr = `"[${embeddings[i].join(',')}]"`;
-            return `"${p.name}","${p.description}",${p.price},"${p.category}",${embStr}`;
-        });
-
-        const readable = Readable.from(rows.join('\n') + '\n');
-        await pipeline(readable, copyStream);
-
-        console.log(`${products.length} produits inseres`);
-    } finally {
-        client.release();
-    }
-}
-```
-
----
-
-## 9. Exemple complet : recherche semantique sur un catalogue produit
-
-```typescript
-// ============================================================
-// Application complete : Semantic Product Search
-// ============================================================
-
-import pg from 'pg';
-import pgvector from 'pgvector/pg';
-import OpenAI from 'openai';
-import express from 'express';
-
-const { Pool } = pg;
-
-// ────────────────────────────────────────────────────────────
-// Setup
-// ────────────────────────────────────────────────────────────
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-await pgvector.registerTypes(pool);
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-// ────────────────────────────────────────────────────────────
-// Schema
-// ────────────────────────────────────────────────────────────
-async function initSchema(): Promise<void> {
-    await pool.query(`
-        CREATE EXTENSION IF NOT EXISTS vector;
-
-        CREATE TABLE IF NOT EXISTS products (
-            id          SERIAL PRIMARY KEY,
-            name        TEXT NOT NULL,
-            description TEXT NOT NULL,
-            price       NUMERIC(10, 2) NOT NULL,
-            category    TEXT NOT NULL,
-            in_stock    BOOLEAN DEFAULT true,
-            embedding   vector(1536),
-            created_at  TIMESTAMPTZ DEFAULT now()
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_products_hnsw
-        ON products USING hnsw (embedding vector_cosine_ops)
-        WITH (m = 16, ef_construction = 128);
-
-        CREATE INDEX IF NOT EXISTS idx_products_category
-        ON products (category);
-    `);
-}
-
-// ────────────────────────────────────────────────────────────
-// Embedding
-// ────────────────────────────────────────────────────────────
-async function embed(text: string): Promise<number[]> {
-    const res = await openai.embeddings.create({
-        model: 'text-embedding-3-small',
-        input: text,
-    });
-    return res.data[0].embedding;
-}
-
-// ────────────────────────────────────────────────────────────
-// API Routes
-// ────────────────────────────────────────────────────────────
-const app = express();
-app.use(express.json());
-
-// POST /products — Ajouter un produit
-app.post('/products', async (req, res) => {
-    const { name, description, price, category } = req.body;
-    const embedding = await embed(`${name}: ${description}`);
-
-    const { rows } = await pool.query(`
-        INSERT INTO products (name, description, price, category, embedding)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING id, name, price, category
-    `, [name, description, price, category, pgvector.toSql(embedding)]);
-
-    res.status(201).json(rows[0]);
-});
-
-// GET /search?q=...&category=...&min_price=...&max_price=...&limit=...
-app.get('/search', async (req, res) => {
-    const { q, category, min_price, max_price, limit = '10' } = req.query;
-
-    if (!q || typeof q !== 'string') {
-        return res.status(400).json({ error: 'Query parameter "q" is required' });
-    }
-
-    const queryEmbedding = await embed(q);
-    const params: unknown[] = [pgvector.toSql(queryEmbedding)];
-    const conditions: string[] = ['embedding IS NOT NULL', 'in_stock = true'];
-
-    if (category) {
-        params.push(category);
-        conditions.push(`category = $${params.length}`);
-    }
-    if (min_price) {
-        params.push(Number(min_price));
-        conditions.push(`price >= $${params.length}`);
-    }
-    if (max_price) {
-        params.push(Number(max_price));
-        conditions.push(`price <= $${params.length}`);
-    }
-
-    params.push(Number(limit));
-
-    const sql = `
-        SELECT
-            id, name, description, price, category,
-            1 - (embedding <=> $1::vector) AS similarity
-        FROM products
-        WHERE ${conditions.join(' AND ')}
-        ORDER BY embedding <=> $1::vector
-        LIMIT $${params.length}
-    `;
-
-    const { rows } = await pool.query(sql, params);
-    res.json({ query: q, results: rows });
-});
-
-// ────────────────────────────────────────────────────────────
-// Start
-// ────────────────────────────────────────────────────────────
-await initSchema();
-app.listen(3000, () => console.log('Semantic search API on :3000'));
-```
-
----
-
-## 10. Exercices mentaux
-
-> **Exercice mental 1** : Vous avez 2 millions de produits avec des embeddings de dimension 1536. Un utilisateur lance la requete `SELECT * FROM products WHERE category = 'livres' ORDER BY embedding <=> $1 LIMIT 5`. La categorie "livres" ne contient que 500 produits. Pourquoi la requete est-elle plus lente que prevu, et comment l'optimiser ?
-
-<details>
-<summary>Reponse</summary>
-
-L'index HNSW retourne les voisins les plus proches **sur toute la table** (2M produits), puis PostgreSQL filtre sur `category = 'livres'`. Si les 5 plus proches globalement ne sont pas des livres, PostgreSQL doit recuperer beaucoup plus de candidats.
-
-Solutions :
-1. **Partitionner par categorie** : chaque partition a son propre index HNSW, la recherche ne se fait que sur 500 produits
-2. **Index partiel** : `CREATE INDEX ON products USING hnsw (embedding vector_cosine_ops) WHERE category = 'livres'`
-3. **Sur-recuperer** : `LIMIT 100` puis filtrer applicativement
-</details>
-
-> **Exercice mental 2** : Vous utilisez IVFFlat avec `lists = 100` et `probes = 1` (defaut). Votre recall est de 75%. Comment l'ameliorer sans reconstruire l'index ?
-
-<details>
-<summary>Reponse</summary>
-
-Augmenter le nombre de probes : `SET ivfflat.probes = 10` (ou meme `= 20`). Plus on sonde de clusters, plus le recall s'ameliore, au prix d'une latence de requete plus elevee. La regle empirique est `probes = sqrt(lists)`, donc pour 100 listes : probes = 10.
-
-Si le recall est toujours insuffisant, il faudra reconstruire l'index avec plus de listes ou migrer vers HNSW.
-</details>
-
-> **Exercice mental 3** : Vous stockez des embeddings OpenAI (`text-embedding-3-small`, dimension 1536) et des embeddings Cohere (`embed-v3`, dimension 1024) dans la meme table. Pouvez-vous comparer la distance entre un vecteur OpenAI et un vecteur Cohere ?
-
-<details>
-<summary>Reponse</summary>
-
-Non. Les vecteurs de modeles differents vivent dans des **espaces vectoriels differents**. Un vecteur OpenAI de dimension 1536 et un vecteur Cohere de dimension 1024 ne sont pas comparables — meme s'ils representaient le meme texte. D'ailleurs, pgvector refuserait l'operation car les dimensions ne correspondent pas (`ERROR: different vector dimensions`).
-
-Il faut toujours utiliser le **meme modele** pour generer tous les embeddings d'une colonne.
-</details>
-
----
-
-## Ce qu'il faut retenir
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                    A RETENIR                                  │
-│                                                               │
-│  1. pgvector = recherche vectorielle dans PostgreSQL.         │
-│     Pas besoin d'une base vectorielle dediee si < 10M        │
-│     vecteurs.                                                │
-│                                                               │
-│  2. Utilisez <=> (cosinus) comme operateur par defaut.       │
-│     C'est le choix recommande pour les embeddings textuels.  │
-│                                                               │
-│  3. HNSW > IVFFlat pour la plupart des cas.                  │
-│     Meilleur recall, supporte les insertions incrementales.  │
-│                                                               │
-│  4. Recherche hybride = vecteurs + WHERE + full-text.        │
-│     C'est l'avantage majeur de pgvector vs Pinecone.         │
-│                                                               │
-│  5. Un meme modele pour tous les vecteurs d'une colonne.     │
-│     Jamais de melange OpenAI + Cohere dans la meme colonne.  │
-│                                                               │
-│  6. Tuning : ef_search (HNSW) et probes (IVFFlat) sont      │
-│     les leviers les plus importants cote requete.            │
-│                                                               │
-│  7. Partitionnement + pgvector = scaling efficace.            │
-│     Chaque partition a son propre index vectoriel local.     │
-│                                                               │
-│  8. Batch les embeddings : l'API OpenAI accepte 2048 textes  │
-│     par requete. Ne generez jamais un embedding a la fois.   │
-└──────────────────────────────────────────────────────────────┘
-```
+> **Note — pas de lab dédié pour ce module.** C'est le dernier module du parcours `10-postgresql`. La pratique est intégrée aux worked examples ci-dessus : le schéma `souvenirs`, l'insertion avec embedding, la recherche de similarité et le pattern RAG sont des blocs complets, exécutables sur ta base locale. Lance une instance Docker avec `pgvector/pgvector:pg17` et rejoue les trois exemples de bout en bout.
 
 ---
 
 ## Navigation
 
-| Precedent | Suivant |
-|---|---|
-| [Module 18 — Partitioning & Scaling](./18-partitioning-et-scaling.md) | Fin du cours avance |
-
----
-
-> *"La recherche vectorielle ne remplace pas SQL — elle le complete. La vraie puissance, c'est de combiner la comprehension semantique des embeddings avec la precision chirurgicale des filtres relationnels."*
-
----
-
-<!-- parcours-recommande -->
-
-::: tip Parcours recommande
-Ce module n'a pas encore de lab ni de quiz associe. Revenez bientot !
-:::
+| Précédent | Suivant |
+|-----------|---------|
+| [Module 18 — Partitioning et Scaling](./18-partitioning-et-scaling.md) | Dernier module du parcours 10-postgresql |

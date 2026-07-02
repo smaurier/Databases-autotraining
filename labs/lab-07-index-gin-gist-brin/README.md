@@ -342,6 +342,65 @@ CREATE INDEX idx_posts_pub_date ON posts (created_at DESC) WHERE status = 'publi
 
 ---
 
+## Variante J+30 (fading)
+
+> Refais sans regarder tes notes ni le corrigé ci-dessus. Ferme ce README, ouvre un terminal psql frais.
+
+**Nouveau cas : table `comments` avec tags JSONB et horodatage.**
+
+```sql
+-- Setup du nouveau cas (coller tel quel)
+DROP TABLE IF EXISTS comments CASCADE;
+CREATE TABLE comments (
+  id         SERIAL PRIMARY KEY,
+  post_id    INT NOT NULL,
+  author_id  INT NOT NULL,
+  body       TEXT,
+  tags       JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO comments
+  SELECT i,
+    (random()*999+1)::int,
+    (random()*199+1)::int,
+    repeat('Commentaire TribuZen ', 5),
+    (ARRAY[
+      '{"humour": true}',
+      '{"question": true}',
+      '{"humour": true, "question": true}',
+      '{}'
+    ]::jsonb[])[((random()*3)::int + 1)],
+    now() - (random()*365 || ' days')::interval
+  FROM generate_series(1, 120000) i;
+ANALYZE;
+```
+
+**Sans regarder le lab, réponds à ces trois cas de requête et choisis l'index adapté :**
+
+1. Recherche par tag : `WHERE tags @> '{"humour": true}'` — quel type d'index ? Pourquoi pas B-tree ?
+2. Plage temporelle récente : `WHERE created_at >= now() - INTERVAL '14 days'` sur 120 000 lignes — BRIN ou B-tree ? Quand BRIN est-il préférable ?
+3. Feed par auteur trié par date : `WHERE author_id = $1 ORDER BY created_at DESC LIMIT 20` — index composite ou covering ? Quelles colonnes dans `INCLUDE` ?
+
+**Pour chaque cas :**
+
+```sql
+-- a. Mesurer sans index (Seq Scan)
+EXPLAIN (ANALYZE, BUFFERS)
+<ta requête>;
+
+-- b. Créer l'index que tu as choisi (de mémoire)
+CREATE INDEX ...;
+ANALYZE comments;
+
+-- c. Relancer et vérifier : Seq Scan disparu, Execution Time divisé par au moins ×50
+EXPLAIN (ANALYZE, BUFFERS)
+<ta requête>;
+```
+
+**Critère de réussite :** les trois EXPLAIN après index montrent un plan différent du Seq Scan initial, et tu as correctement justifié avant de regarder pourquoi B-tree ne sert pas `@>`.
+
+---
+
 ## Navigation
 
 | | Lien |

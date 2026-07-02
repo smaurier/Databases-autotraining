@@ -1,983 +1,502 @@
-# Module 13 — JSONB & Types avances
-
-> **Objectif** : Exploiter la puissance de JSONB, des arrays, des range types et du Full-Text Search pour aller au-dela du modèle relationnel classique.
->
-> **Difficulte** : ⭐⭐⭐
-
+---
+titre: JSONB et types avancés
+cours: 10-postgresql
+notions: [JSONB vs JSON, opérateurs jsonb flèche et contenance, jsonpath, index GIN sur jsonb, recherche plein texte tsvector et tsquery, tableaux PostgreSQL, types énumérés et composites, JSONB vs modèle relationnel]
+outcomes: [stocker et interroger du JSONB avec les bons opérateurs, indexer du JSONB en GIN, faire de la recherche plein texte, choisir JSONB ou relationnel selon le cas]
+prerequis: [12-fonctions-avancees-sql]
+next: 14-securite-et-administration
+libs: [{ name: postgresql, version: "17" }]
+tribuzen: stocker les métadonnées flexibles des posts TribuZen en JSONB et rechercher dans le journal (full-text)
+last-reviewed: 2026-07
 ---
 
-## 1. JSON vs JSONB dans PostgreSQL
+# JSONB et types avancés
 
-### 1.1 Deux types, deux philosophies
+> **Outcomes — tu sauras FAIRE :** stocker et interroger du JSONB avec les bons opérateurs (`->`, `->>`, `@>`, `?`), indexer une colonne JSONB avec GIN et mesurer le gain avec EXPLAIN ANALYZE, faire de la recherche plein texte en français avec `tsvector` et `tsquery`, choisir entre JSONB et colonnes relationnelles selon le cas d'usage.
+> **Difficulté :** :star::star::star:
 
-PostgreSQL propose **deux** types pour stocker du JSON :
+## 1. Cas concret d'abord
 
-| Critere | JSON | JSONB |
-|---------|------|-------|
-| Stockage | Texte brut | Binaire decompose |
-| Preservation du formatage | **Oui** (espaces, ordre des clés) | Non |
-| Doublons de clés | Conserves | Derniere valeur gagne |
-| Indexation (GIN) | **Non** | **Oui** |
-| Operateurs avances | Limites | **Complets** |
-| Vitesse d'écriture | Plus rapide (pas de parsing) | Legerement plus lent |
-| Vitesse de lecture | Plus lent (re-parsing à chaque lecture) | **Plus rapide** |
-
-> **Analogie** : JSON, c'est comme garder un document Word tel quel — avec sa mise en forme. JSONB, c'est comme le convertir dans une base de donnees structuree — on perd la mise en forme mais on peut chercher dedans instantanement.
-
-### 1.2 La regle d'or
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                                                               │
-│   TOUJOURS utiliser JSONB.                                   │
-│                                                               │
-│   Sauf si vous avez besoin de preserver                      │
-│   le formatage exact du JSON original                        │
-│   (cas tres rare : audit, conformite).                       │
-│                                                               │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### 1.3 Créer une table avec JSONB
+Dans TribuZen, chaque post peut avoir une structure différente selon la famille et l'usage : un post « événement » porte une date et un lieu, un post « épinglé » porte l'auteur et la date d'épinglage, un post « simple » porte des réactions. L'équipe a d'abord ajouté des colonnes séparées — `is_event`, `event_date`, `event_location`, `is_pinned`, `pinned_by`, `reaction_count` — et après trois migrations, la table `posts` avait onze colonnes nullable dont la grande majorité sont à `NULL` pour 90 % des lignes.
 
 ```sql
-CREATE TABLE produits (
-    id       SERIAL PRIMARY KEY,
-    nom      TEXT NOT NULL,
-    prix     NUMERIC(10,2) NOT NULL,
-    metadata JSONB DEFAULT '{}'::jsonb
-);
+-- Avant : colonnes clairsemées — signal d'un modèle mal ajusté
+SELECT is_event, event_date, event_location, is_pinned, pinned_by, reaction_count
+FROM posts WHERE id = 1;
+-- is_event | event_date | event_location | is_pinned | pinned_by | reaction_count
+--  NULL    |   NULL     |     NULL       |   NULL    |   NULL    |      NULL
 
-INSERT INTO produits (nom, prix, metadata) VALUES
-    ('Laptop Pro', 1299.99, '{
-        "marque": "TechCorp",
-        "specs": {
-            "ram": 16,
-            "stockage": "512GB SSD",
-            "processeur": "M2"
-        },
-        "tags": ["portable", "pro", "performant"],
-        "en_stock": true,
-        "note": 4.5
-    }'),
-    ('Clavier Ergo', 89.99, '{
-        "marque": "KeyMaster",
-        "specs": {
-            "type": "mecanique",
-            "switches": "Cherry MX Brown",
-            "retroeclairage": true
-        },
-        "tags": ["peripherique", "ergonomique"],
-        "en_stock": true,
-        "note": 4.2
-    }'),
-    ('Ecran 4K', 549.99, '{
-        "marque": "ViewPro",
-        "specs": {
-            "taille": "27 pouces",
-            "resolution": "3840x2160",
-            "dalle": "IPS"
-        },
-        "tags": ["ecran", "4k", "pro"],
-        "en_stock": false,
-        "note": 4.7
-    }');
+-- Après : une colonne metadata JSONB, chaque post porte ce dont il a besoin
+SELECT metadata FROM posts WHERE id = 1;
+-- {"type": "pinned", "pinned_by": 42, "reactions": {"heart": 3, "laugh": 1}}
 ```
 
----
+Deuxième problème : la page journal permet de chercher dans les posts par mots-clés. La requête `WHERE content ILIKE '%vacances%'` fonctionne sur 500 posts, pas sur 80 000 — Seq Scan systématique, aucun stemming (« vacancier » ne matche pas « vacances »), aucun classement par pertinence. Le **Full-Text Search** PostgreSQL résout les trois points avec `tsvector`, `tsquery` et un index GIN.
 
-## 2. Operateurs JSONB
+## 2. Théorie complète, concise
 
-### 2.1 Acceder aux valeurs
+### JSON vs JSONB
 
-| Operateur | Retourne | Exemple | Résultat |
-|-----------|---------|---------|----------|
-| `->` | JSONB | `metadata->'marque'` | `"TechCorp"` (avec guillemets) |
-| `->>` | TEXT | `metadata->>'marque'` | `TechCorp` (sans guillemets) |
-| `#>` | JSONB (chemin) | `metadata#>'{specs,ram}'` | `16` |
-| `#>>` | TEXT (chemin) | `metadata#>>'{specs,ram}'` | `16` (en texte) |
+PostgreSQL propose deux types pour stocker du JSON :
+
+| Critère | JSON | JSONB |
+|---|---|---|
+| Stockage | Texte brut (tel quel) | Binaire décomposé |
+| Ordre des clés / doublons | Préservés | Triés, dernier doublon gagne |
+| Indexation GIN | Non | **Oui** |
+| Opérateurs de contenance | Limités | **Complets** |
+| Vitesse de lecture | Re-parsing à chaque lecture | **Rapide** (déjà parsé) |
+| Vitesse d'écriture | Plus rapide | Légèrement plus lent |
+
+**Règle :** toujours utiliser **JSONB** sauf besoin exceptionnel de préserver le formatage exact (audit, conformité légale).
 
 ```sql
--- Acceder a une cle simple
-SELECT nom, metadata->>'marque' AS marque FROM produits;
+-- Différence visible : ordre des clés
+SELECT '{"b": 2, "a": 1}'::json;    -- {"b": 2, "a": 1}   (préservé)
+SELECT '{"b": 2, "a": 1}'::jsonb;   -- {"a": 1, "b": 2}   (trié alphabétiquement)
 
--- Acceder a une cle imbriquee
-SELECT nom, metadata#>>'{specs,ram}' AS ram FROM produits;
-
--- Acceder a un element de tableau (0-indexed)
-SELECT nom, metadata->'tags'->>0 AS premier_tag FROM produits;
+-- JSONB ignore les doublons : la dernière valeur gagne
+SELECT '{"x": 1, "x": 2}'::jsonb;  -- {"x": 2}
 ```
 
-> **Piege classique** : `->` retourne du JSONB, `->>` retourne du TEXT. Si vous voulez comparer avec un nombre, utilisez `#>>` et castez :
+### Opérateurs flèche (extraction)
 
-```sql
--- MAUVAIS : compare du JSONB avec un nombre
-SELECT * FROM produits WHERE metadata->'note' > 4;
--- ERROR: operator does not exist: jsonb > integer
-
--- BON : extraire en TEXT puis caster
-SELECT * FROM produits WHERE (metadata->>'note')::numeric > 4;
-
--- BON aussi : comparer avec un JSONB
-SELECT * FROM produits WHERE metadata->'note' > '4'::jsonb;
-```
-
-### 2.2 Operateurs de contenance et d'existence
-
-| Operateur | Signification | Exemple |
-|-----------|---------------|---------|
-| `@>` | Contient | `metadata @> '{"en_stock": true}'` |
-| `<@` | Est contenu dans | `'{"en_stock": true}' <@ metadata` |
-| `?` | Cle existe | `metadata ? 'marque'` |
-| `?\|` | Au moins une clé existe | `metadata ?\| array['marque','couleur']` |
-| `?&` | Toutes les clés existent | `metadata ?& array['marque','note']` |
-
-```sql
--- Produits en stock
-SELECT nom FROM produits
-WHERE metadata @> '{"en_stock": true}';
-
--- Produits qui ont un tag "pro"
-SELECT nom FROM produits
-WHERE metadata->'tags' ? 'pro';
-
--- Produits avec la cle "marque"
-SELECT nom FROM produits
-WHERE metadata ? 'marque';
-```
-
-### 2.3 Operateurs de modification
-
-```sql
--- Fusionner (||) : ajoute ou ecrase des cles
-UPDATE produits
-SET metadata = metadata || '{"garantie": "2 ans", "note": 4.8}'::jsonb
-WHERE nom = 'Laptop Pro';
--- note passe de 4.5 a 4.8, garantie est ajoutee
-
--- Supprimer une cle (-)
-UPDATE produits
-SET metadata = metadata - 'garantie'
-WHERE nom = 'Laptop Pro';
-
--- Supprimer par chemin (#-)
-UPDATE produits
-SET metadata = metadata #- '{specs,retroeclairage}'
-WHERE nom = 'Clavier Ergo';
-
--- Supprimer un element de tableau par index
-UPDATE produits
-SET metadata = metadata #- '{tags,0}'  -- supprime le premier tag
-WHERE nom = 'Laptop Pro';
-```
-
-### 2.4 Fonctions de modification
-
-```sql
--- jsonb_set : modifier une valeur a un chemin specifique
-UPDATE produits
-SET metadata = jsonb_set(
-    metadata,
-    '{specs,ram}',     -- chemin
-    '32'::jsonb,       -- nouvelle valeur
-    true               -- creer le chemin si absent
-)
-WHERE nom = 'Laptop Pro';
-
--- jsonb_insert : inserer dans un tableau
-UPDATE produits
-SET metadata = jsonb_insert(
-    metadata,
-    '{tags,0}',          -- position
-    '"nouveau-tag"'::jsonb,
-    false                -- false = inserer AVANT, true = APRES
-)
-WHERE nom = 'Laptop Pro';
-
--- jsonb_strip_nulls : supprimer les cles avec valeur null
-SELECT jsonb_strip_nulls('{"a": 1, "b": null, "c": 3}'::jsonb);
--- {"a": 1, "c": 3}
-```
-
-### 2.5 Decomposer du JSONB
-
-```sql
--- jsonb_each : decomposer en paires cle/valeur
-SELECT key, value
-FROM produits,
-     jsonb_each(metadata->'specs')
-WHERE nom = 'Laptop Pro';
-
---     key      │    value
--- ─────────────┼──────────────
---  ram         │ 32
---  stockage    │ "512GB SSD"
---  processeur  │ "M2"
-
--- jsonb_array_elements : decomposer un tableau
-SELECT value AS tag
-FROM produits,
-     jsonb_array_elements_text(metadata->'tags')
-WHERE nom = 'Laptop Pro';
-```
-
-### 2.6 Construire du JSONB
-
-```sql
--- jsonb_build_object : creer un objet
-SELECT jsonb_build_object(
-    'nom', p.nom,
-    'prix', p.prix,
-    'marque', p.metadata->>'marque'
-) AS json_simplifie
-FROM produits p;
-
--- jsonb_agg : agreger des lignes en tableau JSONB
-SELECT jsonb_agg(
-    jsonb_build_object('nom', nom, 'prix', prix)
-) AS tous_produits
-FROM produits;
-
--- jsonb_object_agg : agreger en objet
-SELECT jsonb_object_agg(nom, prix) AS prix_par_produit
-FROM produits;
--- {"Laptop Pro": 1299.99, "Clavier Ergo": 89.99, "Ecran 4K": 549.99}
-```
-
-### JSON_TABLE (PostgreSQL 17+)
-
-`JSON_TABLE` convertit des donnees JSON en lignes et colonnes relationnelles — c'est la fonction SQL standard (SQL:2016) la plus attendue :
-
-```sql
--- Extraire les items d'une commande JSON en table relationnelle
-SELECT jt.*
-FROM orders,
-  JSON_TABLE(
-    data, '$.items[*]'
-    COLUMNS (
-      product_name TEXT PATH '$.name',
-      quantity INT PATH '$.qty',
-      price NUMERIC PATH '$.price'
-    )
-  ) AS jt
-WHERE orders.id = 42;
-
--- Resultat :
--- product_name | quantity | price
--- Laptop       | 1        | 999.99
--- Mouse        | 2        | 29.99
-```
-
-> **Avant JSON_TABLE**, il fallait combiner `jsonb_array_elements()`, `->>'key'` et des casts manuels. JSON_TABLE est plus lisible et plus performant sur les structures complexes.
-
----
-
-## 3. GIN index sur JSONB
-
-### 3.1 Pourquoi indexer le JSONB
-
-Sans index, PostgreSQL doit lire **chaque ligne** et parser le JSONB pour trouver une correspondance. Avec un index GIN, la recherche est quasi-instantanee.
-
-### 3.2 jsonb_ops vs jsonb_path_ops
-
-```sql
--- jsonb_ops (defaut) : supporte tous les operateurs
-CREATE INDEX idx_produits_metadata
-    ON produits USING GIN (metadata);
--- Supporte : @>, ?, ?|, ?&
-
--- jsonb_path_ops : plus petit, plus rapide, mais seulement @>
-CREATE INDEX idx_produits_metadata_path
-    ON produits USING GIN (metadata jsonb_path_ops);
--- Supporte seulement : @>
-```
-
-| Classe d'operateur | Taille index | Operateurs supportes | Cas d'usage |
+| Opérateur | Retourne | Exemple | Résultat |
 |---|---|---|---|
-| `jsonb_ops` | Plus grand | @>, ?, ?\|, ?& | Usage général |
-| `jsonb_path_ops` | ~3x plus petit | @> seulement | Recherche par contenance |
-
-### 3.3 Index sur une expression JSONB
-
-```sql
--- Index sur une cle specifique (comme un index classique)
-CREATE INDEX idx_produits_marque
-    ON produits ((metadata->>'marque'));
-
--- Utilise pour :
-SELECT * FROM produits WHERE metadata->>'marque' = 'TechCorp';
-
--- Index sur une valeur numerique extraite
-CREATE INDEX idx_produits_note
-    ON produits (((metadata->>'note')::numeric));
-
--- Utilise pour :
-SELECT * FROM produits WHERE (metadata->>'note')::numeric > 4.5;
-```
-
-### 3.4 Node.js : requêtes JSONB
-
-```typescript
-import pg from 'pg';
-const { Pool } = pg;
-
-const pool = new Pool({ max: 10 });
-
-interface Produit {
-    id: number;
-    nom: string;
-    prix: number;
-    metadata: Record<string, unknown>;
-}
-
-// Rechercher par contenance (@>)
-async function rechercherProduits(criteres: Record<string, unknown>): Promise<Produit[]> {
-    const { rows } = await pool.query<Produit>(
-        `SELECT id, nom, prix, metadata
-         FROM produits
-         WHERE metadata @> $1::jsonb`,
-        [JSON.stringify(criteres)]
-    );
-    return rows;
-}
-
-// Exemples :
-await rechercherProduits({ en_stock: true });
-await rechercherProduits({ marque: 'TechCorp' });
-await rechercherProduits({ specs: { ram: 16 } });
-
-// Modifier du JSONB
-async function ajouterTag(produitId: number, tag: string): Promise<void> {
-    await pool.query(
-        `UPDATE produits
-         SET metadata = jsonb_set(
-             metadata,
-             '{tags}',
-             (metadata->'tags') || $1::jsonb
-         )
-         WHERE id = $2`,
-        [JSON.stringify(tag), produitId]
-    );
-}
-
-await ajouterTag(1, 'promotion');
-```
-
----
-
-## 4. Arrays PostgreSQL
-
-### 4.1 Declaration et insertion
+| `->` | JSONB | `metadata->'reactions'` | `{"heart": 3, "laugh": 1}` |
+| `->>` | TEXT | `metadata->>'type'` | `pinned` (sans guillemets) |
+| `#>` | JSONB (chemin) | `metadata#>'{reactions,heart}'` | `3` |
+| `#>>` | TEXT (chemin) | `metadata#>>'{reactions,heart}'` | `3` (texte) |
 
 ```sql
-CREATE TABLE articles (
-    id      SERIAL PRIMARY KEY,
-    titre   TEXT NOT NULL,
-    tags    TEXT[] NOT NULL DEFAULT '{}',
-    scores  INTEGER[]
-);
+-- Clé simple : extraire le type en texte
+SELECT metadata->>'type' AS type_post FROM posts LIMIT 5;
 
-INSERT INTO articles (titre, tags, scores) VALUES
-    ('Intro a PostgreSQL', ARRAY['sql', 'database', 'tutorial'], ARRAY[85, 92, 78]),
-    ('Node.js avance', ARRAY['javascript', 'node', 'backend'], ARRAY[90, 88]),
-    ('React et PostgreSQL', ARRAY['javascript', 'sql', 'fullstack'], ARRAY[75, 95, 82]),
-    ('DevOps 101', ARRAY['devops', 'docker', 'ci-cd'], NULL);
+-- Chemin imbriqué : nombre de cœurs
+SELECT id, metadata#>>'{reactions,heart}' AS hearts FROM posts;
+
+-- Piège : -> retourne JSONB, pas un entier — comparer avec un nombre exige un cast
+-- ❌ échoue : operator does not exist: jsonb > integer
+SELECT * FROM posts WHERE metadata->'reactions'->'heart' > 2;
+
+-- ✅ correct : extraire en TEXT puis caster
+SELECT * FROM posts WHERE (metadata#>>'{reactions,heart}')::int > 2;
 ```
 
-### 4.2 Operateurs sur les arrays
+### Opérateurs de contenance et d'existence
 
-| Operateur | Signification | Exemple |
-|-----------|---------------|---------|
-| `@>` | Contient | `tags @> ARRAY['sql']` |
-| `<@` | Est contenu dans | `ARRAY['sql'] <@ tags` |
-| `&&` | Intersection non vide | `tags && ARRAY['sql','node']` |
-| `\|\|` | Concatenation | `tags \|\| ARRAY['new']` |
-| `=` | Egalite | `tags = ARRAY['a','b']` |
+| Opérateur | Signification | Exemple |
+|---|---|---|
+| `@>` | Contient le document | `metadata @> '{"type": "event"}'` |
+| `<@` | Est contenu dans | `'{"type": "event"}' <@ metadata` |
+| `?` | Clé existe (toute valeur) | `metadata ? 'event_date'` |
+| `?\|` | Au moins une clé existe | `metadata ?\| array['event_date','location']` |
+| `?&` | Toutes les clés existent | `metadata ?& array['type','reactions']` |
 
 ```sql
--- Articles contenant le tag 'sql'
-SELECT titre FROM articles WHERE tags @> ARRAY['sql'];
--- Intro a PostgreSQL, React et PostgreSQL
+-- Posts de type 'event'
+SELECT id, content FROM posts WHERE metadata @> '{"type": "event"}';
 
--- Articles contenant 'sql' OU 'node'
-SELECT titre FROM articles WHERE tags && ARRAY['sql', 'node'];
--- Intro a PostgreSQL, Node.js avance, React et PostgreSQL
+-- Posts ayant la clé 'event_date' (peu importe la valeur)
+SELECT id FROM posts WHERE metadata ? 'event_date';
 
--- Nombre d'elements
-SELECT titre, array_length(tags, 1) AS nb_tags FROM articles;
+-- Posts ayant à la fois 'reactions' ET 'type'
+SELECT id FROM posts WHERE metadata ?& array['reactions', 'type'];
 ```
 
-### 4.3 unnest() et array_agg()
+### jsonpath (PostgreSQL 12+)
+
+`jsonpath` est un langage de chemin natif, plus expressif pour les conditions sur les valeurs.
+
+| Opérateur / fonction | Description |
+|---|---|
+| `@?` | Au moins un élément du chemin existe |
+| `@@` | Le chemin évalue à true (prédicat booléen) |
+| `jsonb_path_query(j, path)` | Retourne les éléments qui matchent |
+| `jsonb_path_exists(j, path)` | Booléen : au moins un élément existe |
 
 ```sql
--- Decomposer un array en lignes (unnest)
-SELECT titre, unnest(tags) AS tag
-FROM articles;
+-- @? : la clé reactions.heart existe-t-elle dans ce document ?
+SELECT id FROM posts WHERE metadata @? '$.reactions.heart';
 
---       titre          │    tag
--- ─────────────────────┼────────────
--- Intro a PostgreSQL   │ sql
--- Intro a PostgreSQL   │ database
--- Intro a PostgreSQL   │ tutorial
--- Node.js avance       │ javascript
--- ...
+-- @@ : le nombre de cœurs est-il supérieur à 5 ?
+SELECT id FROM posts WHERE metadata @@ '$.reactions.heart > 5';
 
--- Re-agreger en array (array_agg)
-SELECT tag, array_agg(titre) AS articles_avec_tag
-FROM (
-    SELECT titre, unnest(tags) AS tag
-    FROM articles
-) sub
-GROUP BY tag
-ORDER BY tag;
+-- jsonb_path_query : extraire tous les types de réactions disponibles
+SELECT jsonb_path_query(metadata, '$.reactions.keyvalue().key') AS reaction_type
+FROM posts WHERE metadata ? 'reactions'
+LIMIT 10;
 
--- Compter les tags les plus populaires
-SELECT tag, COUNT(*) AS nb_articles
-FROM articles, unnest(tags) AS tag
-GROUP BY tag
-ORDER BY nb_articles DESC;
+-- Filtre sur un tableau JSONB : posts ayant le tag 'voyage' dans metadata.tags
+-- (metadata = {"tags": ["voyage", "famille"]})
+SELECT id FROM posts WHERE metadata @? '$.tags[*] ? (@ == "voyage")';
 ```
 
-### 4.4 GIN sur les arrays
+### Index GIN sur JSONB
+
+Sans index, l'opérateur `@>` force un **Seq Scan** sur toute la table. Un index GIN stocke une entrée par clé/valeur de chaque document — les opérateurs de contenance deviennent quasi-instantanés.
 
 ```sql
-CREATE INDEX idx_articles_tags ON articles USING GIN (tags);
+-- GIN standard (jsonb_ops) : supporte @>, ?, ?|, ?&
+CREATE INDEX idx_posts_metadata ON posts USING GIN (metadata);
 
--- Utilise automatiquement pour @>, <@, &&
-EXPLAIN SELECT * FROM articles WHERE tags @> ARRAY['sql'];
--- Bitmap Index Scan on idx_articles_tags
+-- GIN path_ops : plus compact (~30 % moins grand), supporte @> uniquement
+CREATE INDEX idx_posts_metadata_path ON posts USING GIN (metadata jsonb_path_ops);
+
+-- Index sur expression extraite (B-tree classique, pour les comparaisons numériques)
+CREATE INDEX idx_posts_hearts ON posts (((metadata#>>'{reactions,heart}')::int));
 ```
 
----
+**Règle de choix :**
+- Seul `@>` est utilisé → `jsonb_path_ops` (plus compact, ~30 % plus petit)
+- `?`, `?|`, `?&` aussi → `jsonb_ops` (défaut)
+- Comparaison numérique/texte sur une clé précise → index sur expression B-tree
 
-## 5. Range types
+### Recherche plein texte — tsvector et tsquery
 
-### 5.1 Les types de ranges
-
-PostgreSQL offre des types natifs pour representer des **intervalles** :
-
-| Type | Contenu | Exemple |
-|------|---------|---------|
-| `int4range` | Entiers | `[1,10)` |
-| `int8range` | Grands entiers | `[1,1000000)` |
-| `numrange` | Numeriques | `[1.5,9.5]` |
-| `tsrange` | Timestamps (sans TZ) | `['2025-01-01','2025-02-01')` |
-| `tstzrange` | Timestamps (avec TZ) | `['2025-01-01 00:00+01','2025-02-01 00:00+01')` |
-| `daterange` | Dates | `[2025-01-01,2025-02-01)` |
-
-> **Analogie** : Un range, c'est comme un segment sur une droite numérique. Au lieu de stocker "debut" et "fin" dans deux colonnes, vous stockez le segment entier. PostgreSQL peut alors faire des operations geometriques : intersection, union, chevauchement...
-
-### 5.2 Notation
-
-```
-[  = borne incluse (inclusive)
-(  = borne exclue (exclusive)
-
-[1,5]  = 1, 2, 3, 4, 5
-[1,5)  = 1, 2, 3, 4
-(1,5]  = 2, 3, 4, 5
-(1,5)  = 2, 3, 4
-```
-
-### 5.3 Operateurs sur les ranges
-
-| Operateur | Signification | Exemple |
-|-----------|---------------|---------|
-| `@>` | Contient élément | `int4range(1,10) @> 5` → true |
-| `<@` | Est contenu dans | `5 <@ int4range(1,10)` → true |
-| `&&` | Se chevauchent | `int4range(1,5) && int4range(3,8)` → true |
-| `-\|-` | Adjacent | `int4range(1,5) -\|- int4range(5,10)` → true |
-| `<<` | Strictement a gauche | `int4range(1,3) << int4range(5,8)` → true |
-| `>>` | Strictement a droite | `int4range(5,8) >> int4range(1,3)` → true |
-| `*` | Intersection | `int4range(1,8) * int4range(3,12)` → [3,8) |
-| `+` | Union | `int4range(1,5) + int4range(3,8)` → [1,8) |
-
-### 5.4 Cas d'usage : creneaux horaires
+| Concept | Rôle |
+|---|---|
+| `tsvector` | Document indexé : lexèmes normalisés avec positions et poids |
+| `tsquery` | Requête : opérateurs logiques sur lexèmes normalisés |
+| `@@` | Match : `tsvector @@ tsquery` → booléen |
+| `to_tsvector(lang, text)` | Convertit du texte en tsvector avec stemming + stop words |
+| `to_tsquery(lang, expr)` | Convertit une expression formelle en tsquery |
+| `websearch_to_tsquery(lang, text)` | Syntaxe naturelle (Google-like) → tsquery |
 
 ```sql
-CREATE TABLE salles (
-    id  SERIAL PRIMARY KEY,
-    nom TEXT NOT NULL
-);
+-- to_tsvector : stemming + suppression des stop words
+SELECT to_tsvector('french', 'Les enfants partaient en vacances à la montagne');
+-- 'enfant':2 'montagne':9 'part':3 'vacanc':6
+-- "Les", "en", "à", "la" → stop words supprimés
+-- "partaient" → "part", "vacances" → "vacanc" (stemming français)
 
-CREATE TABLE reservations (
-    id         SERIAL PRIMARY KEY,
-    salle_id   INT REFERENCES salles(id),
-    creneau    TSTZRANGE NOT NULL,
-    reserve_par TEXT NOT NULL
-);
+-- to_tsquery : normalise aussi les termes de la requête
+SELECT to_tsquery('french', 'vacance & enfant');
+-- 'vacanc' & 'enfant'   ← normalisé côté requête aussi
 
-INSERT INTO salles (nom) VALUES ('Salle A'), ('Salle B');
-
-INSERT INTO reservations (salle_id, creneau, reserve_par) VALUES
-    (1, '[2025-03-07 09:00, 2025-03-07 10:00)', 'Alice'),
-    (1, '[2025-03-07 10:00, 2025-03-07 11:30)', 'Bob'),
-    (1, '[2025-03-07 14:00, 2025-03-07 16:00)', 'Charlie'),
-    (2, '[2025-03-07 09:00, 2025-03-07 12:00)', 'David');
-```
-
-```sql
--- Trouver les reservations qui chevauchent un creneau
-SELECT r.*, s.nom AS salle
-FROM reservations r
-JOIN salles s ON r.salle_id = s.id
-WHERE r.creneau && '[2025-03-07 09:30, 2025-03-07 10:30)'::tstzrange;
-
--- Extraire debut et fin
-SELECT
-    reserve_par,
-    lower(creneau) AS debut,
-    upper(creneau) AS fin,
-    upper(creneau) - lower(creneau) AS duree
-FROM reservations;
-```
-
-### 5.5 EXCLUDE constraint — Empecher les chevauchements
-
-```sql
--- Necessite l'extension btree_gist
-CREATE EXTENSION IF NOT EXISTS btree_gist;
-
--- Contrainte : pas de chevauchement pour la meme salle
-ALTER TABLE reservations
-ADD CONSTRAINT no_overlap
-EXCLUDE USING GIST (
-    salle_id WITH =,       -- meme salle
-    creneau WITH &&         -- creneaux qui se chevauchent
-);
-
--- Tentative d'insertion chevauchante
-INSERT INTO reservations (salle_id, creneau, reserve_par)
-VALUES (1, '[2025-03-07 09:30, 2025-03-07 10:30)', 'Eve');
--- ERROR: conflicting key value violates exclusion constraint "no_overlap"
--- DETAIL: Key (salle_id, creneau)=(1, ["2025-03-07 09:30","2025-03-07 10:30"))
--- conflicts with existing key (salle_id, creneau)=
--- (1, ["2025-03-07 09:00","2025-03-07 10:00")).
-```
-
-> **Point clé** : La contrainte EXCLUDE avec les ranges est **la** façon correcte d'empecher les doubles reservations. C'est plus fiable que n'importe quelle vérification applicative.
-
-### 5.6 GiST index sur les ranges
-
-```sql
--- Index GiST pour les requetes de chevauchement
-CREATE INDEX idx_reservations_creneau
-    ON reservations USING GIST (creneau);
-
--- Index composite (salle + creneau)
-CREATE INDEX idx_reservations_salle_creneau
-    ON reservations USING GIST (salle_id, creneau);
-```
-
----
-
-## 6. Full-Text Search
-
-### 6.1 Le problème
-
-```sql
--- LIKE est simple mais limite
-SELECT * FROM articles WHERE titre LIKE '%postgresql%';
--- Problemes :
--- 1. Pas d'index (sauf pg_trgm)
--- 2. Pas de stemming : "databases" ne matche pas "database"
--- 3. Pas de classement par pertinence
--- 4. Sensible a la casse (sans ILIKE)
-```
-
-### 6.2 tsvector et tsquery
-
-| Concept | Description | Exemple |
-|---------|-------------|---------|
-| `tsvector` | Document preprocesse (tokens, positions, poids) | `'introduct':1 'postgresql':3 'databas':4` |
-| `tsquery` | Requête de recherche (operateurs logiques) | `'postgresql & database'` |
-| `@@` | Operateur de correspondance | `tsvector @@ tsquery` |
-
-```sql
--- Creer un tsvector a partir de texte
-SELECT to_tsvector('french', 'Introduction aux bases de donnees PostgreSQL');
--- 'bas':3 'don':5 'introduct':1 'postgresql':6
-
--- Creer une tsquery
-SELECT to_tsquery('french', 'base & donnees');
--- 'bas' & 'don'
-
--- Verifier la correspondance
-SELECT to_tsvector('french', 'Introduction aux bases de donnees PostgreSQL')
-    @@ to_tsquery('french', 'base & donnees');
+-- Match : les deux côtés sont normalisés → "vacances" et "vacanc" matchent
+SELECT to_tsvector('french', 'Départ en vacances demain')
+    @@ to_tsquery('french', 'vacance');
 -- true
+
+-- websearch_to_tsquery : syntaxe naturelle pour les utilisateurs finaux
+-- 'vacances montagne'  →  'vacanc' & 'montagne'
+-- '"repas de famille"' →  'repas' <-> 'famil'   (phrase)
+-- 'vacances -plage'    →  'vacanc' & !'plage'
+SELECT id FROM posts
+WHERE search_vector @@ websearch_to_tsquery('french', 'vacances montagne');
 ```
 
-> **Analogie** : `tsvector` est comme un index de livre : il liste les mots importants avec leur position. `tsquery` est comme votre question : "je cherche les livres qui parlent de X ET Y". L'operateur `@@` cherche dans l'index.
-
-### 6.3 Configuration en français
+**Colonne TSVECTOR générée (recommandé) :**
 
 ```sql
--- Voir les configurations disponibles
-SELECT cfgname FROM pg_ts_config;
--- simple, danish, dutch, english, finnish, french, ...
-
--- Tester le francais
-SELECT to_tsvector('french', 'Les chevaux mangeaient dans les champs');
--- 'champ':6 'cheval':2 'mangeai':3
--- "Les" est un stop word (supprime)
--- "chevaux" est reduit a "cheval" (stemming)
--- "mangeaient" est reduit a "mangeai"
-
--- Comparer avec l'anglais
-SELECT to_tsvector('english', 'Les chevaux mangeaient dans les champs');
--- 'champ':6 'chevaux':2 'dan':4 'le':1,5 'mangeaient':3
--- Pas de stemming francais !
-```
-
-### 6.4 Créer une table avec Full-Text Search
-
-```sql
-CREATE TABLE evenements (
-    id          SERIAL PRIMARY KEY,
-    titre       TEXT NOT NULL,
-    description TEXT,
-    lieu        TEXT,
-    date_event  DATE,
-    -- Colonne generee pour le Full-Text Search
-    search_vector TSVECTOR GENERATED ALWAYS AS (
-        setweight(to_tsvector('french', coalesce(titre, '')), 'A') ||
-        setweight(to_tsvector('french', coalesce(description, '')), 'B') ||
-        setweight(to_tsvector('french', coalesce(lieu, '')), 'C')
-    ) STORED
-);
-
--- Index GIN sur le vecteur de recherche
-CREATE INDEX idx_evenements_search ON evenements USING GIN (search_vector);
-
-INSERT INTO evenements (titre, description, lieu, date_event) VALUES
-    ('Conference PostgreSQL France',
-     'Decouvrez les nouveautes de PostgreSQL 17 avec des experts de la communaute. Sessions techniques et retours d''experience.',
-     'Paris, Palais des Congres',
-     '2025-06-15'),
-    ('Atelier Node.js et bases de donnees',
-     'Apprenez a connecter Node.js a PostgreSQL et MongoDB. Travaux pratiques intensifs sur les requetes avancees.',
-     'Lyon, Campus Numerique',
-     '2025-07-20'),
-    ('Meetup DevOps et PostgreSQL',
-     'Haute disponibilite, replication, monitoring. Comment deployer PostgreSQL en production avec Docker et Kubernetes.',
-     'Marseille, La Cantine',
-     '2025-09-10');
-```
-
-### 6.5 Rechercher avec Full-Text
-
-```sql
--- Recherche simple
-SELECT titre, ts_rank(search_vector, q) AS rank
-FROM evenements,
-     to_tsquery('french', 'postgresql') q
-WHERE search_vector @@ q
-ORDER BY rank DESC;
-
--- Recherche avec operateurs logiques
--- & = ET, | = OU, ! = NON, <-> = suivi de
-SELECT titre
-FROM evenements
-WHERE search_vector @@ to_tsquery('french', 'postgresql & production');
--- Meetup DevOps et PostgreSQL
-
-SELECT titre
-FROM evenements
-WHERE search_vector @@ to_tsquery('french', 'node | react');
--- Atelier Node.js et bases de donnees
-
--- Recherche de phrase (mots adjacents)
-SELECT titre
-FROM evenements
-WHERE search_vector @@ to_tsquery('french', 'base <-> donnee');
-```
-
-### 6.6 ts_rank et ts_headline
-
-```sql
--- Scoring : classer par pertinence
-SELECT
-    titre,
-    ts_rank(search_vector, q) AS score,
-    -- Avec poids : A=1.0, B=0.4, C=0.2, D=0.1
-    ts_rank(search_vector, q, 32) AS score_normalise
-FROM evenements,
-     to_tsquery('french', 'postgresql') q
-WHERE search_vector @@ q
-ORDER BY score DESC;
-
--- Highlighting : mettre en evidence les mots trouves
-SELECT
-    titre,
-    ts_headline('french', description, to_tsquery('french', 'postgresql'),
-        'StartSel=<b>, StopSel=</b>, MaxWords=35, MinWords=15'
-    ) AS extrait
-FROM evenements
-WHERE search_vector @@ to_tsquery('french', 'postgresql');
-```
-
-```
- titre                          │ extrait
-────────────────────────────────┼───────────────────────────────────────────
- Conference PostgreSQL France   │ les nouveautes de <b>PostgreSQL</b> 17
-                                │ avec des experts de la communaute
- Meetup DevOps et PostgreSQL    │ deployer <b>PostgreSQL</b> en production
-                                │ avec Docker et Kubernetes
-```
-
-### 6.7 websearch_to_tsquery — Recherche user-friendly
-
-```sql
--- Les utilisateurs ne connaissent pas la syntaxe tsquery
--- websearch_to_tsquery accepte une syntaxe naturelle
-
-SELECT * FROM evenements
-WHERE search_vector @@ websearch_to_tsquery('french', 'postgresql production');
--- Equivalent a : 'postgresql' & 'production'
-
-SELECT * FROM evenements
-WHERE search_vector @@ websearch_to_tsquery('french', '"base de donnees"');
--- Recherche de phrase exacte
-
-SELECT * FROM evenements
-WHERE search_vector @@ websearch_to_tsquery('french', 'postgresql -docker');
--- PostgreSQL mais PAS docker
-
-SELECT * FROM evenements
-WHERE search_vector @@ websearch_to_tsquery('french', 'node OR react');
--- node OU react
-```
-
-### 6.8 Comparaison LIKE vs ILIKE vs Full-Text
-
-| Critere | LIKE/ILIKE | pg_trgm | Full-Text Search |
-|---------|-----------|---------|-----------------|
-| Stemming | Non | Non | **Oui** |
-| Stop words | Non | Non | **Oui** |
-| Scoring | Non | Similarite | **ts_rank** |
-| Index | B-tree (prefixe) | GIN/GiST | **GIN** |
-| Fautes de frappe | Non | **Oui** (similarite) | Non |
-| Performance | Mauvaise sans index | Bonne | **Excellente** |
-| Configuration langue | Non | Non | **Oui** |
-
-### 6.9 Node.js : Full-Text Search
-
-```typescript
-import pg from 'pg';
-const { Pool } = pg;
-
-const pool = new Pool({ max: 10 });
-
-interface SearchOptions {
-    limit?: number;
-    offset?: number;
-}
-
-interface EvenementResult {
-    id: number;
-    titre: string;
-    extrait: string;
-    lieu: string;
-    date_event: string;
-    score: number;
-}
-
-async function rechercherEvenements(
-    termeRecherche: string,
-    options: SearchOptions = {}
-): Promise<EvenementResult[]> {
-    const { limit = 20, offset = 0 } = options;
-
-    const { rows } = await pool.query<EvenementResult>(
-        `SELECT
-            id,
-            titre,
-            ts_headline('french', description,
-                websearch_to_tsquery('french', $1),
-                'StartSel=<mark>, StopSel=</mark>, MaxWords=50'
-            ) AS extrait,
-            lieu,
-            date_event,
-            ts_rank(search_vector, websearch_to_tsquery('french', $1)) AS score
-        FROM evenements
-        WHERE search_vector @@ websearch_to_tsquery('french', $1)
-        ORDER BY score DESC
-        LIMIT $2 OFFSET $3`,
-        [termeRecherche, limit, offset]
-    );
-
-    return rows;
-}
-
-// Utilisation
-const resultats: EvenementResult[] = await rechercherEvenements('PostgreSQL production');
-console.log(resultats);
-```
-
----
-
-## 7. Generated columns
-
-### 7.1 Colonnes calculees
-
-```sql
--- Colonne generee avec une expression
-CREATE TABLE factures (
-    id         SERIAL PRIMARY KEY,
-    montant_ht NUMERIC(10,2) NOT NULL,
-    taux_tva   NUMERIC(4,2) NOT NULL DEFAULT 20.00,
-    montant_ttc NUMERIC(10,2) GENERATED ALWAYS AS (
-        montant_ht * (1 + taux_tva / 100)
-    ) STORED
-);
-
-INSERT INTO factures (montant_ht) VALUES (100.00);
-SELECT * FROM factures;
--- id | montant_ht | taux_tva | montant_ttc
--- 1  | 100.00     | 20.00    | 120.00
-
--- Impossible de modifier directement une colonne generee
-UPDATE factures SET montant_ttc = 150;
--- ERROR: column "montant_ttc" can only be updated to DEFAULT
-```
-
-### 7.2 tsvector en colonne générée (rappel)
-
-```sql
--- Deja vu plus haut, c'est le pattern recommande
-ALTER TABLE articles ADD COLUMN search_vector TSVECTOR
+-- Colonne TSVECTOR générée : PostgreSQL la maintient automatiquement
+ALTER TABLE posts ADD COLUMN search_vector TSVECTOR
     GENERATED ALWAYS AS (
-        to_tsvector('french', coalesce(titre, '') || ' ' || coalesce(contenu, ''))
+        setweight(to_tsvector('french', coalesce(title, '')), 'A') ||
+        setweight(to_tsvector('french', coalesce(content, '')), 'B')
     ) STORED;
 
-CREATE INDEX idx_articles_fts ON articles USING GIN (search_vector);
+-- Index GIN sur la colonne générée
+CREATE INDEX idx_posts_fts ON posts USING GIN (search_vector);
 ```
 
----
+`setweight` donne un poids aux sources (`A` > `B` > `C` > `D`) — `ts_rank` en tient compte pour le classement. PostgreSQL met à jour `search_vector` à chaque INSERT/UPDATE sans trigger.
 
-## 8. Exercice mental
+**ts_rank et ts_headline :**
 
-> **Exercice mental** : Vous construisez un système de reservation de salles. Comment empecheriez-vous les doubles reservations en utilisant les types avances de PostgreSQL ? Quels types, contraintes et index utiliseriez-vous ?
+```sql
+-- Classement par pertinence
+SELECT id, content,
+    ts_rank(search_vector, websearch_to_tsquery('french', 'vacances')) AS score
+FROM posts
+WHERE search_vector @@ websearch_to_tsquery('french', 'vacances')
+ORDER BY score DESC
+LIMIT 20;
 
-<details>
-<summary>Reponse</summary>
+-- Extrait mis en forme pour l'UI
+SELECT id,
+    ts_headline('french', content,
+        websearch_to_tsquery('french', 'vacances'),
+        'StartSel=<mark>, StopSel=</mark>, MaxWords=30, MinWords=15'
+    ) AS extrait
+FROM posts
+WHERE search_vector @@ websearch_to_tsquery('french', 'vacances');
+```
 
-1. **Type** : `tstzrange` pour le creneau de reservation
-2. **Extension** : `btree_gist` pour les contraintes d'exclusion
-3. **Contrainte** : `EXCLUDE USING GIST (salle_id WITH =, creneau WITH &&)`
-   - "Pas deux reservations pour la même salle avec des creneaux qui se chevauchent"
-4. **Index** : GiST sur `(salle_id, creneau)` pour les requêtes de disponibilité
-5. **Recherche** : `WHERE creneau && '[2025-03-07 09:00, 2025-03-07 10:00)'::tstzrange` pour trouver les conflits
+### Tableaux PostgreSQL
 
-C'est exactement ce qu'on implementera dans le module 15 (projet final).
-</details>
+Pour les listes ordonnées de valeurs scalaires homogènes, PostgreSQL offre des colonnes tableau natives.
 
----
+```sql
+-- Colonne TEXT[]
+ALTER TABLE posts ADD COLUMN tag_list TEXT[] NOT NULL DEFAULT '{}';
 
-## 9. JSONB vs MongoDB : faut-il une base NoSQL ?
+-- Opérateurs sur tableau
+SELECT id FROM posts WHERE tag_list @> ARRAY['voyage'];          -- contient 'voyage'
+SELECT id FROM posts WHERE tag_list && ARRAY['voyage', 'sport']; -- au moins un des deux
 
-JSONB fait de PostgreSQL une base **document** au sein d'une base relationnelle. D'où la question légitime : **quand a-t-on encore besoin de MongoDB ?** Ce cours est PostgreSQL+Prisma — voici le cadrage pour décider en connaissance de cause (et répondre en entretien).
+-- unnest() : décomposer en lignes
+SELECT id, unnest(tag_list) AS tag FROM posts;
 
-### 9.1 Le même document, deux mondes
+-- array_agg() : agréger des lignes en tableau
+SELECT array_agg(DISTINCT tag ORDER BY tag) AS all_tags
+FROM posts, unnest(tag_list) AS tag;
 
-```js
-// ---- MongoDB ----
-db.users.insertOne({ name: 'Sylvain', prefs: { theme: 'dark' }, tags: ['dev', 'rgaa'] });
-db.users.find({ 'prefs.theme': 'dark', tags: 'rgaa' });
+-- GIN sur tableau (mêmes opérateurs @>, <@, &&)
+CREATE INDEX idx_posts_tag_list ON posts USING GIN (tag_list);
+```
+
+**JSONB vs tableau natif :** si les tags sont une liste plate de chaînes sans attributs, `TEXT[]` avec GIN est plus simple et plus compact. Si les tags ont des attributs ou des métadonnées (`{"voyage": {"region": "europe"}}`), JSONB.
+
+### Types énumérés et composites
+
+**Enum** — valeurs prédéfinies, contrôle strict, stockage compact :
+
+```sql
+CREATE TYPE post_status AS ENUM ('draft', 'published', 'archived', 'pinned');
+
+ALTER TABLE posts ADD COLUMN status post_status NOT NULL DEFAULT 'draft';
+
+-- PostgreSQL rejette les valeurs non définies
+UPDATE posts SET status = 'deleted';
+-- ERROR: invalid input value for enum post_status: "deleted"
+
+-- Tri naturel dans l'ordre de déclaration
+SELECT id FROM posts WHERE status > 'draft' ORDER BY status;
+-- retourne : published, archived, pinned (dans cet ordre)
+```
+
+**Type composite** — regrouper des champs apparentés en un seul type :
+
+```sql
+CREATE TYPE event_location AS (
+    city    TEXT,
+    country TEXT,
+    lat     NUMERIC(9,6),
+    lng     NUMERIC(9,6)
+);
+
+ALTER TABLE posts ADD COLUMN location event_location;
+
+INSERT INTO posts (content, location)
+VALUES ('Week-end à Lyon', ROW('Lyon', 'France', 45.7640, 4.8357));
+
+-- Accès avec la notation point (parenthèses obligatoires pour lever l'ambiguïté)
+SELECT (location).city, (location).lat FROM posts WHERE (location).country = 'France';
+```
+
+**Règle :** `ENUM` quand la liste de valeurs est fermée et rarement étendue (statuts, rôles, types) ; type composite pour des champs structurés qui voyagent ensemble et ne nécessitent pas de jointure.
+
+### JSONB vs modèle relationnel
+
+JSONB complète le modèle relationnel — il ne le remplace pas.
+
+| Situation | Recommandation |
+|---|---|
+| Données dont le schéma est **connu et stable** | Colonnes relationnelles |
+| Données qui **varient par enregistrement** | JSONB |
+| Données **liées** à d'autres tables via FK | Colonnes relationnelles |
+| Données **comparées ou triées** fréquemment | Colonnes relationnelles (index B-tree) |
+| Attributs **extensibles** reçus d'une API tierce | JSONB |
+| Tags ou liste de valeurs simples | `TEXT[]` ou table de liaison |
+
+Anti-patterns à éviter :
+- Mettre `user_id` ou `family_id` dans JSONB pour éviter une migration → perd les FK, rend les jointures impossibles.
+- Requêter JSONB sans index GIN → Seq Scan systématique dès que la table grossit.
+- Stocker dans JSONB des données mises à jour colonne par colonne → `jsonb_set` sur chaque clé est moins efficace qu'un UPDATE classique sur une colonne.
+
+## 3. Worked examples
+
+### Exemple A — Métadonnées flexibles des posts TribuZen
+
+Schéma et données :
+
+```sql
+CREATE TABLE posts (
+    id         BIGSERIAL PRIMARY KEY,
+    family_id  INT NOT NULL,
+    author_id  INT NOT NULL,
+    content    TEXT NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'published',
+    metadata   JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Trois types de posts avec des structures différentes
+INSERT INTO posts (family_id, author_id, content, metadata) VALUES
+    (1, 42, 'Week-end à Lyon ce samedi !',
+     '{"type": "event", "event_date": "2026-07-19", "location": "Lyon", "rsvp_count": 5}'),
+    (1, 7, 'Bon anniversaire Maman !',
+     '{"type": "simple", "reactions": {"heart": 12, "cake": 3}}'),
+    (1, 42, 'Règles de la tribu TribuZen',
+     '{"type": "pinned", "pinned_by": 42, "pinned_at": "2026-06-01T08:00:00Z"}');
 ```
 
 ```sql
--- ---- PostgreSQL JSONB ----
-INSERT INTO users (data) VALUES
-  ('{"name":"Sylvain","prefs":{"theme":"dark"},"tags":["dev","rgaa"]}');
+-- 1. Posts de type 'event' avec leur date
+SELECT id, content, metadata->>'event_date' AS date_ev
+FROM posts
+WHERE metadata @> '{"type": "event"}';
 
-SELECT * FROM users
-WHERE data->'prefs'->>'theme' = 'dark'
-  AND data->'tags' ? 'rgaa';
+-- 2. Posts avec plus de 5 cœurs (chemin imbriqué + cast)
+SELECT id, content, (metadata#>>'{reactions,heart}')::int AS hearts
+FROM posts
+WHERE (metadata#>>'{reactions,heart}')::int > 5;
+
+-- 3. Posts ayant une localisation (clé présente, quelle que soit la valeur)
+SELECT id FROM posts WHERE metadata ? 'location';
+
+-- 4. Mettre à jour une clé sans toucher les autres
+UPDATE posts
+SET metadata = jsonb_set(metadata, '{rsvp_count}', '6'::jsonb)
+WHERE metadata @> '{"type": "event"}' AND id = 1;
+
+-- 5. Fusionner des clés (|| : les clés existantes sont écrasées)
+UPDATE posts
+SET metadata = metadata || '{"reactions": {"heart": 13, "cake": 3}}'::jsonb
+WHERE id = 2;
+
+-- 6. jsonpath : posts avec un événement après le 1er août 2026
+SELECT id, content
+FROM posts
+WHERE metadata @? '$.event_date ? (@ >= "2026-08-01")';
 ```
 
-Même flexibilité de schéma. La différence est ailleurs.
+Ajout de l'index GIN et mesure du gain :
 
-### 9.2 Tableau de décision
+```sql
+-- Sans GIN : Seq Scan sur 80 000 posts
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id FROM posts WHERE metadata @> '{"type": "event"}';
+-- Seq Scan on posts  Filter: (metadata @> ...)  Execution Time: ~900 ms
 
-| Critère | PostgreSQL (+ JSONB) | MongoDB |
-|---------|----------------------|---------|
-| Schéma flexible | ✅ via JSONB | ✅ natif |
-| **Transactions ACID multi-documents** | ✅ robuste, natif | ✅ depuis v4, mais coûteux |
-| **Jointures / relations** | ✅ excellentes | ❌ faibles (`$lookup` limité) |
-| Intégrité référentielle (FK) | ✅ | ❌ applicative |
-| Scaling horizontal (sharding) | Possible (Citus) mais complexe | ✅ conçu pour |
-| Écritures massives non structurées | Correct | ✅ très bon |
-| Agrégations analytiques | ✅ SQL + window functions | `aggregation pipeline` |
-| Écosystème ORM (Prisma) | ✅ 1er choix | ✅ supporté |
+-- Créer le GIN (jsonb_path_ops : seul @> est utilisé)
+CREATE INDEX CONCURRENTLY idx_posts_metadata_gin
+    ON posts USING GIN (metadata jsonb_path_ops);
+ANALYZE posts;
 
-### 9.3 Règle pratique
-
-```
-Données RELATIONNELLES (users ↔ orders ↔ products), besoin de transactions,
-jointures, intégrité  ........................  PostgreSQL (défaut raisonnable)
-
-Documents hétérogènes, gros volume d'écritures, schéma très mouvant,
-sharding horizontal dès le départ  ...........  MongoDB
-
-Un peu de flexibilité dans un modèle relationnel  ...  PostgreSQL + JSONB
-                                                       (n'introduis PAS Mongo pour ça)
+-- Avec GIN : Bitmap Index Scan
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id FROM posts WHERE metadata @> '{"type": "event"}';
+-- Bitmap Index Scan on idx_posts_metadata_gin  Execution Time: ~2 ms
 ```
 
-> **Piège entretien** : « MongoDB scale mieux » est trop simpliste. Postgres tient des To et scale en lecture (réplicas) très bien (module 16). Le vrai discriminant = **modèle de données** (relationnel vs document) et **besoin transactionnel/jointures**, pas la volumétrie brute. Choisir Mongo « parce que NoSQL c'est moderne » est un anti-pattern (voir décision d'archi dans le cours `13-architecture`).
+Pas-à-pas : (1) `jsonb_path_ops` est choisi car seul `@>` est utilisé — index ~30 % plus compact que `jsonb_ops` ; (2) pour les opérateurs `?`, `?|`, `?&`, recréer sans la classe d'opérateur (défaut = `jsonb_ops`) ; (3) `jsonb_set` modifie une clé sans re-parser tout le document — troisième argument `true` crée le chemin s'il est absent ; (4) `||` fusionne les documents JSONB — les clés en conflit prennent la valeur du côté droit ; (5) `jsonpath @?` filtre sur les valeurs sans extraire en TEXT.
 
-> **YAGNI** : commence en PostgreSQL. Tu migres une collection précise vers Mongo (ou un store dédié) le jour où un besoin réel l'impose — pas avant.
+### Exemple B — Recherche plein texte dans le journal TribuZen
 
----
+Contexte : la barre de recherche du journal doit gérer le stemming français, classer par pertinence et surligner les extraits dans l'UI.
 
-## Ce qu'il faut retenir
+```sql
+-- Ajouter la colonne TSVECTOR générée
+ALTER TABLE posts ADD COLUMN search_vector TSVECTOR
+    GENERATED ALWAYS AS (
+        to_tsvector('french', coalesce(content, ''))
+    ) STORED;
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│                    A RETENIR                                  │
-│                                                               │
-│  1. JSONB > JSON (toujours, sauf preservation du formatage)  │
-│                                                               │
-│  2. -> retourne JSONB, ->> retourne TEXT                     │
-│     @> pour la contenance, ? pour l'existence                │
-│                                                               │
-│  3. GIN index sur JSONB : jsonb_ops (general)                │
-│     ou jsonb_path_ops (plus petit, seulement @>)             │
-│                                                               │
-│  4. Arrays : @> (contient), && (intersection), unnest()      │
-│                                                               │
-│  5. Range types : intervalles natifs avec operateurs          │
-│     EXCLUDE constraint pour empecher les chevauchements      │
-│                                                               │
-│  6. Full-Text Search : tsvector + tsquery + GIN              │
-│     to_tsvector('french', ...) pour le francais              │
-│     websearch_to_tsquery pour les utilisateurs               │
-│                                                               │
-│  7. Generated columns pour les colonnes calculees            │
-└──────────────────────────────────────────────────────────────┘
+-- Index GIN sur la colonne générée
+CREATE INDEX idx_posts_search ON posts USING GIN (search_vector);
+
+ANALYZE posts;
 ```
 
----
+```sql
+-- Données : posts avec du contenu en français
+INSERT INTO posts (family_id, author_id, content, metadata) VALUES
+    (1, 7, 'Nous partons en vacances à la montagne cet été. Les enfants sont impatients !',
+     '{"type": "simple"}'),
+    (1, 42, 'Organisation du repas familial de Noël. Qui apporte le dessert ?',
+     '{"type": "event"}'),
+    (1, 9, 'Photos des vacances à la plage. Quel beau soleil cet été !',
+     '{"type": "simple"}');
+```
 
-## Navigation
+```sql
+-- Recherche simple : "vacances" trouve aussi les formes voisines via stemming
+SELECT id, content,
+    ts_rank(search_vector, websearch_to_tsquery('french', 'vacances')) AS score
+FROM posts
+WHERE search_vector @@ websearch_to_tsquery('french', 'vacances')
+ORDER BY score DESC;
 
-| Précédent | Suivant |
-|---|---|
-| [Module 12 — Fonctions avancees SQL](./12-fonctions-avancees-sql.md) | [Module 14 — Sécurité & Administration](./14-securite-et-administration.md) |
+-- Opérateurs tsquery avancés
+-- & = ET,  | = OU,  ! = NON,  <-> = adjacence (phrase)
+SELECT id FROM posts
+WHERE search_vector @@ to_tsquery('french', 'vacanc & montagne');
 
-**Travaux pratiques** : [Lab 13 — JSONB, arrays, ranges et Full-Text Search](../labs/lab-13-types-avances.md)
+SELECT id FROM posts
+WHERE search_vector @@ to_tsquery('french', 'vacanc & !plage');
 
----
+-- websearch_to_tsquery : saisie utilisateur brute sans syntaxe formelle
+SELECT id FROM posts
+WHERE search_vector @@ websearch_to_tsquery('french', 'vacances -plage');
 
-> *"PostgreSQL n'est pas juste une base relationnelle. C'est une base relationnelle qui a absorbe le meilleur des bases documents, des bases clé-valeur et des moteurs de recherche."*
+-- Extrait mis en forme pour l'UI React
+SELECT
+    id,
+    ts_headline('french', content,
+        websearch_to_tsquery('french', 'vacances'),
+        'StartSel=<mark>, StopSel=</mark>, MaxWords=30, MinWords=15, HighlightAll=false'
+    ) AS extrait
+FROM posts
+WHERE search_vector @@ websearch_to_tsquery('french', 'vacances')
+ORDER BY ts_rank(search_vector, websearch_to_tsquery('french', 'vacances')) DESC;
+```
 
----
+Pas-à-pas : (1) `GENERATED ALWAYS AS ... STORED` — PostgreSQL met à jour `search_vector` à chaque INSERT/UPDATE sans trigger ; (2) `to_tsvector('french', ...)` réduit « vacances » → « vacanc » et « partaient » → « part » — la requête `websearch_to_tsquery` fait le même stemming côté requête, donc les deux côtés se rejoignent ; (3) `websearch_to_tsquery` tolère la saisie brute des utilisateurs (espaces = `&`, tiret = `!`, guillemets = phrase) — à préférer à `to_tsquery` pour les inputs UI ; (4) `ts_headline` s'appelle sur la colonne **texte** (`content`), pas sur `search_vector` — elle génère l'extrait à partir du texte original en ne balisant que les termes trouvés.
 
-<!-- parcours-recommande -->
+## 4. Pièges & misconceptions
 
-::: tip Parcours recommandé
-1. **Screencast** : [screencast 13 jsonb fulltext](../screencasts/screencast-13-jsonb-fulltext.md)
-2. **Lab** : [lab-13-jsonb-fulltext](../labs/lab-13-jsonb-fulltext/README)
-3. **Quiz** : [quiz 13 jsonb et types avances](../quizzes/quiz-13-jsonb-et-types-avances.html)
-:::
+- **`->` vs `->>` — type mismatch.** `metadata->'heart' > 2` échoue : `->` retourne du JSONB, pas un entier. *Correct* : extraire en TEXT et caster — `(metadata->>'heart')::int > 2` — ou utiliser jsonpath `metadata @@ '$.heart > 2'`.
+
+- **`@>` vs `?` — usage inversé.** `metadata @> '{"k": null}'` cherche la clé `k` avec la valeur `null`. `metadata ? 'k'` cherche la clé `k` quelle que soit sa valeur (y compris `null`). *Correct* : utiliser `?` pour tester l'existence d'une clé, `@>` pour tester une valeur précise.
+
+- **GIN sans `fastupdate` sur une table très écrite.** Un document JSONB à 10 clés génère 10 entrées d'index par INSERT. *Correct* : `fastupdate = on` (défaut) tamponne les entrées — vérifier que ce paramètre n'a pas été désactivé ; regrouper les INSERTs en batch en production.
+
+- **jsonpath `@?` non couvert par `jsonb_ops`.** `metadata @? '$.type'` n'utilise pas un GIN `jsonb_ops`. *Correct* : pour les opérateurs `@?` et `@@`, recréer l'index avec `jsonb_path_ops`; pour une clé précise, un index sur expression `((metadata->>'type'))` est souvent plus efficace.
+
+- **`tsvector` sans index GIN — Seq Scan.** Ajouter `search_vector TSVECTOR GENERATED` sans `CREATE INDEX ... USING GIN` ne change rien à la performance. *Correct* : toujours créer le GIN sur la colonne `tsvector` immédiatement après.
+
+- **Stocker dans JSONB des données relationnelles.** Mettre `family_id` ou `author_id` dans `metadata` pour éviter une migration perd les FK et rend les jointures impossibles (PostgreSQL ne peut pas indexer une relation entre un champ JSONB et une clé primaire). *Correct* : les clés étrangères restent en colonnes relationnelles ; JSONB = attributs extensibles non relationnels.
+
+- **`websearch_to_tsquery` vs `to_tsquery` — syntaxe incompatible.** `to_tsquery('french', 'vacances montagne')` échoue (pas d'opérateur entre les termes) ; il faut `to_tsquery('french', 'vacance & montagne')`. *Correct* : pour la saisie utilisateur brute, utiliser `websearch_to_tsquery` ; réserver `to_tsquery` quand on contrôle la syntaxe (côté serveur, requêtes internes).
+
+## 5. Ancrage TribuZen
+
+Couche fil-rouge : **schéma + requêtes** dans `smaurier/tribuzen`.
+
+- La table `posts` reçoit une colonne `metadata JSONB NOT NULL DEFAULT '{}'` — type de post, réactions, RSVP count, post épinglé. Chaque type de post porte uniquement ses clés. Aucune migration future pour ajouter un nouveau type de post.
+- L'index `CREATE INDEX CONCURRENTLY idx_posts_metadata_gin ON posts USING GIN (metadata jsonb_path_ops)` sert le filtre par type et par attribut sur la page d'accueil famille — l'opérateur `@>` est la requête la plus fréquente sur cette table.
+- La colonne `search_vector TSVECTOR GENERATED ALWAYS AS (to_tsvector('french', coalesce(content, ''))) STORED` avec index GIN `idx_posts_search` alimente la barre de recherche du journal : stemming français, classement `ts_rank`, extraits `ts_headline` pour l'UI React.
+- `ENUM post_status` (`draft`, `published`, `archived`, `pinned`) remplace la colonne `TEXT status` non contrainte — PostgreSQL rejette les valeurs invalides sans trigger, et le tri sur le statut est naturel.
+- Le choix `jsonb_path_ops` pour le GIN sur `metadata` réduit l'index de ~30 % et accélère les INSERTs — essentiel car `posts` est la table la plus écrite de TribuZen (chaque message publié = 1 INSERT).
+- En session : tous les `EXPLAIN ANALYZE` sont exécutés sur une base Docker locale avec 50 000 posts seedés — les timings sont mesurés, pas estimés.
+
+## 6. Points clés
+
+1. **JSONB toujours** (sauf preservation du formatage exact) : binaire, indexable avec GIN, opérateurs complets. `JSON` = texte brut, pas indexable.
+2. `->` retourne **JSONB** (type conservé) ; `->>` retourne **TEXT** (pour comparer avec des scalaires) ; `#>` / `#>>` = chemin multi-niveaux.
+3. `@>` teste la **contenance** (le document contient ce sous-document clé+valeur) ; `?` teste l'**existence** d'une clé quelle que soit sa valeur — ne pas les confondre.
+4. `jsonpath` (`@?`, `@@`) permet des filtres expressifs sur les valeurs (comparaisons numériques, `starts with`, `[*]`) sans extraire en TEXT.
+5. GIN sur JSONB : `jsonb_path_ops` si seul `@>` (index ~30 % plus compact) ; `jsonb_ops` si aussi `?`, `?|`, `?&`. Sans GIN, tout `@>` est un Seq Scan.
+6. Full-Text Search : `to_tsvector('french', text)` normalise via stemming et stop words ; `websearch_to_tsquery` pour la saisie utilisateur ; `@@` pour le match ; `ts_rank` pour le classement ; `ts_headline` pour les extraits HTML.
+7. Colonne `TSVECTOR GENERATED ALWAYS AS ... STORED` + GIN : maintenue automatiquement par PostgreSQL, aucun trigger. Toujours créer le GIN immédiatement après.
+8. JSONB **complète** le modèle relationnel — FK, jointures et clés étrangères restent en colonnes ; JSONB = attributs extensibles non relationnels, structures variables par enregistrement.
+
+## 7. Seeds Anki
+
+```
+Différence entre -> et ->> sur une colonne JSONB ?|-> retourne du JSONB (type conservé) ; ->> retourne du TEXT. Pour comparer avec un entier : (metadata->>'note')::int > 5 — pas metadata->'note' > 5 qui lève ERROR: operator does not exist: jsonb > integer
+Quand utiliser @> plutôt que ? sur du JSONB ?|@> teste la contenance clé+valeur (le document contient exactement ce sous-document) ; ? teste uniquement l'existence d'une clé quelle que soit sa valeur. Pour filtrer sur une valeur précise : @>. Pour vérifier la présence d'un champ : ?
+Quelle classe d'opérateur GIN choisir pour un index JSONB ?|jsonb_path_ops si seul @> est utilisé — index ~30 % plus compact, meilleures performances en lecture. jsonb_ops (défaut) si les opérateurs ?, ?|, ?& sont aussi nécessaires
+Comment maintenir automatiquement une colonne tsvector sans trigger ?|GENERATED ALWAYS AS (to_tsvector('french', coalesce(col, ''))) STORED — PostgreSQL la met à jour à chaque INSERT/UPDATE. Ajouter ensuite CREATE INDEX ... USING GIN sur cette colonne
+Différence entre to_tsquery et websearch_to_tsquery ?|to_tsquery exige la syntaxe formelle ('a & b', 'a | b', 'a <-> b') — un espace seul échoue. websearch_to_tsquery accepte la saisie naturelle ('a b' → 'a' & 'b', '"a b"' → phrase, 'a -b' → 'a' & !'b') — à préférer pour les inputs utilisateurs
+Que retourne ts_headline et sur quelle colonne l'appeler ?|ts_headline retourne un extrait du texte original avec les termes trouvés balisés (StartSel/StopSel). L'appeler sur la colonne TEXT (content, title) — pas sur search_vector. Paramètres utiles : MaxWords, MinWords, HighlightAll
+Pourquoi jsonpath @? ne profite pas toujours de l'index GIN jsonb_ops ?|jsonb_ops indexe les clés et valeurs scalaires pour @>, ?, etc. Les opérateurs @? et @@ de jsonpath sont couverts par jsonb_path_ops. Pour un filtrage jsonpath fréquent sur une clé précise, un index sur expression B-tree ((metadata->>'key')) est souvent plus efficace
+Quand JSONB est-il un anti-pattern par rapport aux colonnes relationnelles ?|Quand les données nécessitent des FK (jointures, intégrité référentielle), quand elles sont filtrées ou triées fréquemment sur leur valeur, ou quand elles participent à des contraintes UNIQUE/CHECK. JSONB convient aux attributs extensibles variables par enregistrement
+```
+
+## Pont vers le lab
+
+> Lab associé : `10-postgresql/labs/lab-13-jsonb-fulltext/`. Tu ajoutes une colonne `metadata JSONB` à la table `posts` TribuZen, tu mesures le Seq Scan sans index sur `@>`, tu crées le GIN et confirmes le gain avec EXPLAIN ANALYZE. Puis tu ajoutes une colonne `search_vector TSVECTOR GENERATED`, tu crées le GIN FTS et tu écris les requêtes de recherche avec classement `ts_rank` et extrait `ts_headline`. Corrigé SQL complet inline dans le README.

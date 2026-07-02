@@ -1,7 +1,8 @@
 # Lab 02 — CRUD et requêtes
 
-> **Ce que tu vas produire :** des requêtes CRUD complètes sur le schéma TribuZen (familles + posts) — INSERT avec RETURNING, feed paginé, agrégation GROUP BY / HAVING, UPDATE et DELETE avec RETURNING. Tout tourne sur une vraie base PostgreSQL 17 locale.
-> **Durée estimée :** 45 min
+> **Outcome :** à la fin, tu as écrit les requêtes CRUD complètes sur le schéma TribuZen (familles + posts) — INSERT avec RETURNING, feed paginé, agrégation GROUP BY / HAVING, UPDATE et DELETE avec RETURNING. Tout tourne sur une vraie base PostgreSQL 17 locale.
+> **Vrai outil :** psql / SQL réel (PostgreSQL 17 local via Docker). Aucune simulation.
+> **Feedback :** le coach valide en session.
 
 ## Pré-requis
 
@@ -25,11 +26,11 @@ Exécuter ce bloc une seule fois avant les exercices.
 
 ```sql
 -- Nettoyer si nécessaire
-DROP TABLE IF EXISTS post;
-DROP TABLE IF EXISTS family;
+DROP TABLE IF EXISTS posts;
+DROP TABLE IF EXISTS families;
 
 -- Schéma TribuZen simplifié
-CREATE TABLE family (
+CREATE TABLE families (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name          TEXT NOT NULL,
   created_by    TEXT NOT NULL,
@@ -37,22 +38,22 @@ CREATE TABLE family (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE post (
+CREATE TABLE posts (
   id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  family_id  UUID NOT NULL REFERENCES family(id),
+  family_id  UUID NOT NULL REFERENCES families(id),
   author_id  TEXT NOT NULL,
   content    TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- Seed : 3 familles
-INSERT INTO family (id, name, created_by, members_count) VALUES
+INSERT INTO families (id, name, created_by, members_count) VALUES
   ('fam-1', 'Les Maurier',  'u-1', 3),
   ('fam-2', 'Les Dupont',   'u-4', 2),
   ('fam-3', 'Les Martin',   'u-7', 1);
 
 -- Seed : posts variés
-INSERT INTO post (family_id, author_id, content, created_at) VALUES
+INSERT INTO posts (family_id, author_id, content, created_at) VALUES
   ('fam-1', 'u-1', 'Bienvenue dans l''espace famille !',    now() - INTERVAL '10 days'),
   ('fam-1', 'u-2', 'Première photo de vacances partagée',   now() - INTERVAL '8 days'),
   ('fam-1', 'u-3', 'Rappel : repas dimanche 14h',           now() - INTERVAL '5 days'),
@@ -81,7 +82,7 @@ Récupère id, name et created_at dans la même requête.
 ### Corrigé 1
 
 ```sql
-INSERT INTO family (name, created_by)
+INSERT INTO families (name, created_by)
 VALUES ('Les Bernard', 'u-10')
 RETURNING id, name, created_at;
 
@@ -115,7 +116,7 @@ Récupère id, author_id et created_at pour les trois lignes.
 
 ```sql
 -- Remplace 'fam-bernard-uuid' par l'uuid retourné en exercice 1
-INSERT INTO post (family_id, author_id, content) VALUES
+INSERT INTO posts (family_id, author_id, content) VALUES
   ('fam-bernard-uuid', 'u-10', 'Bienvenue dans notre espace Bernard !'),
   ('fam-bernard-uuid', 'u-11', 'Contente de rejoindre la famille !'),
   ('fam-bernard-uuid', 'u-10', 'Premier album partagé')
@@ -147,7 +148,7 @@ limités à 3 résultats.
 
 ```sql
 SELECT id, content, author_id, created_at
-FROM post
+FROM posts
 WHERE family_id = 'fam-1'
 ORDER BY created_at DESC
 LIMIT 3;
@@ -177,7 +178,7 @@ Récupère la liste des author_id distincts pour family_id = 'fam-1'.
 
 ```sql
 SELECT DISTINCT author_id
-FROM post
+FROM posts
 WHERE family_id = 'fam-1'
 ORDER BY author_id;
 
@@ -209,13 +210,13 @@ Récupère id et content après la modification.
 
 ```sql
 -- Étape 1 (recommandé en prod) : vérifier la cible avec SELECT
-SELECT id, content FROM post
+SELECT id, content FROM posts
 WHERE family_id = 'fam-1'
   AND author_id = 'u-3'
   AND content = 'Rappel : repas dimanche 14h';
 
 -- Étape 2 : exécuter l'UPDATE avec RETURNING
-UPDATE post
+UPDATE posts
 SET content = 'Rappel : repas dimanche 13h (heure changée)'
 WHERE family_id = 'fam-1'
   AND author_id = 'u-3'
@@ -225,7 +226,7 @@ RETURNING id, content;
 -- RETURNING confirme que la ligne a bien été modifiée.
 -- Si RETURNING retourne 0 lignes → la clause WHERE ne matchait rien.
 
--- Piège à éviter : UPDATE post SET content = '...' sans WHERE modifie TOUTES les lignes.
+-- Piège à éviter : UPDATE posts SET content = '...' sans WHERE modifie TOUTES les lignes.
 ```
 
 ---
@@ -245,7 +246,7 @@ Récupère id et content des lignes supprimées.
 ### Corrigé 6
 
 ```sql
-DELETE FROM post
+DELETE FROM posts
 WHERE family_id = 'fam-1'
   AND created_at < now() - INTERVAL '9 days'
 RETURNING id, content;
@@ -254,7 +255,7 @@ RETURNING id, content;
 --  Bienvenue dans l'espace famille ! | now() - 10 days
 
 -- RETURNING indique exactement ce qui a été supprimé.
--- Sans WHERE → DELETE FROM post supprime toutes les lignes de toute la table.
+-- Sans WHERE → DELETE FROM posts supprime toutes les lignes de toute la table.
 ```
 
 ---
@@ -278,7 +279,7 @@ SELECT
   family_id,
   COUNT(*)          AS nb_posts,
   MAX(created_at)   AS dernier_post
-FROM post
+FROM posts
 GROUP BY family_id
 ORDER BY nb_posts DESC;
 
@@ -315,8 +316,8 @@ SELECT
   f.name,
   COUNT(p.id)       AS nb_posts,
   MAX(p.created_at) AS dernier_post
-FROM family f
-JOIN post p ON p.family_id = f.id
+FROM families f
+JOIN posts p ON p.family_id = f.id
 GROUP BY f.id, f.name
 HAVING COUNT(p.id) >= 2
 ORDER BY nb_posts DESC;
@@ -343,8 +344,8 @@ Exécute cette requête de contrôle — elle doit retourner les familles avec l
 
 ```sql
 SELECT f.name, COUNT(p.id) AS posts
-FROM family f
-LEFT JOIN post p ON p.family_id = f.id
+FROM families f
+LEFT JOIN posts p ON p.family_id = f.id
 GROUP BY f.id, f.name
 ORDER BY f.name;
 ```
@@ -364,3 +365,14 @@ Reviens dans 30 jours et refais sans regarder le corrigé :
 5. Supprime tous les commentaires d'un auteur donné avec RETURNING.
 
 Objectif : écrire les 5 requêtes en moins de 10 minutes sans aide.
+
+---
+
+## Application TribuZen
+
+Porte ce lab dans le vrai repo `smaurier/tribuzen` :
+
+1. Ouvre `schema.prisma` de TribuZen. Identifie les models `Family` et `Post`. Vérifie que les types correspondent à ce que tu as pratiqué (`String`, `DateTime`, `@default(now())`, `@relation`).
+2. Dans psql sur ta base de développement TribuZen (`npx prisma db pull` si besoin), reproduis les exercices 1 et 7 avec les vraies tables (`Family`, `FamilyMember`, `Post`).
+3. Écris la requête GROUP BY de l'exercice 7 dans un service NestJS (via `prisma.$queryRaw` ou un Repository), retourne le résultat en JSON dans un endpoint `GET /families/stats`.
+4. Commit `smaurier/tribuzen` : `feat(db): CRUD queries families + posts feed`.

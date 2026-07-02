@@ -436,11 +436,10 @@ Illustration du vecteur d'injection et sa prévention en SQL pur et en Node.js.
 -- SELECT * FROM posts WHERE family_id = 0 OR 1=1 --
 -- L'opérateur -- commente le reste → toutes les lignes retournées
 
--- SÛR : requête paramétrée en psql (syntaxe \set + requête avec $1)
--- En pratique, on utilise le driver qui gère les paramètres
+-- Note psql : \set/:fam_id est une interpolation client (psql substitue la valeur avant envoi au serveur) —
+-- ce n'est pas une requête paramétrée au niveau protocole ; la vraie protection contre l'injection vient du $1 Node.js ci-dessous.
 \set fam_id 1
 SELECT id, content FROM posts WHERE family_id = :fam_id;
--- $1 est toujours traité comme scalaire entier, jamais comme SQL
 ```
 
 Avec le driver `pg` en Node.js (contexte RLS + requête paramétrée combinés) :

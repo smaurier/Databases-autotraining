@@ -116,6 +116,8 @@ ADD CONSTRAINT pas_overlap
 EXCLUDE USING GIST (salle WITH =, creneau WITH &&);
 ```
 
+GiST supporte aussi `tsvector` pour la recherche plein-texte (opérateur `@@`) — ce cas d'usage est développé au module 13.
+
 **GiST vs GIN pour `tsvector`** :
 
 | Critère | GIN | GiST |

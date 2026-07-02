@@ -36,10 +36,11 @@ INSERT INTO families VALUES ('fam-1', 'Famille Dupont'), ('fam-2', 'Famille Mart
 
 INSERT INTO posts (family_id, content, created_at)
 SELECT
-  'fam-' || (i % 2 + 1),
+  'fam-1',
   'Post numéro ' || i,
   now() - (random() * interval '365 days')
 FROM generate_series(1, 200000) i;
+-- Tous les posts sont dans fam-1 : fam-2 reste sans posts (nécessaire pour l'étape 5).
 
 INSERT INTO family_members (family_id, user_id)
 SELECT 'fam-1', 'user-' || i FROM generate_series(1, 5000) i;
@@ -79,7 +80,7 @@ Mission : appliquer les bons index pour que le feed TribuZen et les opérations 
 
    Est-ce que `idx_posts_family_created` est utilisé ? Pourquoi ? Quel index faudrait-il créer pour couvrir cette requête ?
 
-5. **FK non indexée — DELETE.** Lance `EXPLAIN ANALYZE DELETE FROM families WHERE id = 'fam-2'` (il n'y a pas de posts pour fam-2, mais la vérification FK a quand même lieu). Observe le scan sur `family_members`. Crée `idx_members_family_id ON family_members(family_id)`. Réinsère `fam-2` et relance le DELETE. Le plan change-t-il ?
+5. **FK non indexée — DELETE.** Lance `EXPLAIN ANALYZE DELETE FROM families WHERE id = 'fam-2'` (fam-2 n'a pas de posts — le seed cible uniquement fam-1 — mais PostgreSQL vérifie quand même toutes les FK pointant vers `families`). Le check sur `posts` est rapide grâce à `idx_posts_family_id` (étape 2) ; observe en revanche le Seq Scan sur `family_members` (pas d'index). Crée `idx_members_family_id ON family_members(family_id)`. Réinsère `fam-2` et relance le DELETE. Le plan change-t-il ?
 
 6. **Index unique.** Crée `UNIQUE INDEX idx_family_member_uniq ON family_members(family_id, user_id)`. Tente d'insérer deux fois `('fam-1', 'user-1')` et note l'erreur exacte retournée par PostgreSQL.
 
@@ -158,17 +159,24 @@ CREATE INDEX idx_posts_created ON posts(created_at DESC);
 -- Relance EXPLAIN : Index Scan using idx_posts_created.
 
 -- ── Étape 5 : FK non indexée — DELETE ───────────────────────────────────────
+-- fam-2 n'a pas de posts (seed = fam-1 uniquement). PostgreSQL vérifie quand
+-- même toutes les FK qui référencent families(id) : posts ET family_members.
+-- idx_posts_family_id (étape 2) couvre déjà la FK sur posts.
 -- Avant index sur family_members.family_id :
 EXPLAIN (ANALYZE, BUFFERS)
 DELETE FROM families WHERE id = 'fam-2';
 -- Attendu :
 --   Delete on families
 --     -> Index Scan using families_pkey on families
---   Trigger for constraint fk_family_members_family_id:
---     -> Seq Scan on family_members
+--   Trigger for constraint posts_family_id_fkey:
+--     -> Index Scan using idx_posts_family_id on posts    ← rapide (étape 2)
+--          Index Cond: (family_id = 'fam-2')
+--          Rows Removed by Filter: 0
+--   Trigger for constraint family_members_family_id_fkey:
+--     -> Seq Scan on family_members                       ← lent, pas d'index
 --          Filter: (family_id = 'fam-2')
 --          Rows Removed by Filter: 0 (mais les 5 000 lignes ont été lues)
--- PostgreSQL vérifie que fam-2 n'est référencée nulle part → scan complet.
+-- Diagnostic : la FK sur posts est couverte ; celle sur family_members ne l'est pas.
 
 CREATE INDEX idx_members_family_id ON family_members(family_id);
 
@@ -179,7 +187,7 @@ EXPLAIN (ANALYZE, BUFFERS)
 DELETE FROM families WHERE id = 'fam-2';
 -- Attendu : Index Scan using idx_members_family_id on family_members
 --   Index Cond: (family_id = 'fam-2')
--- Plus de Seq Scan sur 5 000 lignes.
+-- Plus de Seq Scan sur 5 000 lignes — les deux FK sont maintenant couvertes par un index.
 
 -- ── Étape 6 : index unique ───────────────────────────────────────────────────
 CREATE UNIQUE INDEX idx_family_member_uniq

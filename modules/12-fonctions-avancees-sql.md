@@ -328,6 +328,7 @@ INSERT INTO members (id, family_id, user_id, parent_id) VALUES
   (4, 1, 4, 2),      -- Diana,  petite-fille (enfant de Bob)
   (5, 1, 5, 2),      -- Eve,    petite-fille (enfant de Bob)
   (6, 1, 1, 3);      -- (autre branche, enfant de Charlie)
+-- même user (user_id 1 = Alice), IDs de membres différents (1 vs 6) — pas un cycle au sens graphe
 ```
 
 ```sql

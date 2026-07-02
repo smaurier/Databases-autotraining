@@ -327,3 +327,7 @@ Qu'est-ce que la 3NF ?|Troisième forme normale : aucun attribut non-clé ne dé
 Pourquoi utiliser UUID comme clé primaire sur une API publique ?|Un id entier auto-incrémenté (1, 2, 3…) permet l'énumération des ressources (IDOR). Un UUID est opaque et non devinable. gen_random_uuid() génère un UUID v4 aléatoire dans PostgreSQL 13+.
 Que se passe-t-il si on insère NULL dans une colonne UNIQUE ?|PostgreSQL autorise plusieurs NULL dans une colonne UNIQUE (NULL ≠ NULL selon le standard SQL). Pour interdire les NULL ET garantir l'unicité, combiner UNIQUE et NOT NULL.
 ```
+
+## Pont vers le lab
+
+> Module conceptuel : la pratique SQL sur ce schéma commence au lab suivant. **Lab associé :** `10-postgresql/labs/lab-02-crud-complet/`. Tu y crées les quatre tables TribuZen en DDL (`families`, `family_members`, `users`, `posts`), insères les données de test et écris les premières requêtes CRUD — pour valider que le schéma conçu ici est cohérent et fonctionnel.

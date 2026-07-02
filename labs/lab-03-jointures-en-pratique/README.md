@@ -260,9 +260,18 @@ WHERE id NOT IN (
     SELECT invited_by FROM users WHERE invited_by IS NOT NULL
 );
 
--- Approche B retourne correctement :
--- Eva, Alice (personne n'a cited leur id dans invited_by)
--- Bob, Claire, David ont des utilisateurs qui ont leur id dans invited_by
+-- Approche B (NOT EXISTS) retourne : Eva, Claire, David
+-- Détail par utilisateur :
+--   Alice (u-1) : Bob (invited_by='u-1') et Claire (invited_by='u-1') → Alice A invité → exclue
+--   Bob   (u-2) : David (invited_by='u-2') → Bob A invité → exclu
+--   Claire(u-3) : personne n'a invited_by='u-3' → Claire N'A PAS invité → incluse
+--   David (u-4) : personne n'a invited_by='u-4' → David N'A PAS invité → inclus
+--   Eva   (u-5) : personne n'a invited_by='u-5' → Eva N'A PAS invité → incluse
+-- Résultat final : Eva, Claire, David (3 lignes)
+
+-- Attention : ne pas confondre
+--   invited_by IS NULL   = "n'a pas été invité" (pas de parrain)
+--   NOT EXISTS (SELECT 1 FROM users WHERE invited_by = u.id) = "n'a invité personne"
 ```
 
 **Règle** : `NOT EXISTS` est immunisé aux NULL. `NOT IN` avec une sous-requête pouvant contenir NULL donne des résultats silencieusement incorrects — toujours filtrer `WHERE colonne IS NOT NULL` ou préférer `NOT EXISTS`.
@@ -379,6 +388,17 @@ Les FK en PostgreSQL ne créent **pas** automatiquement d'index — c'est à toi
 
 ---
 
+## Application TribuZen
+
+Porte ce lab dans le vrai repo `smaurier/tribuzen` :
+
+1. Dans psql sur ta base de développement TribuZen, exécute la jointure 3 tables de l'exercice 6 (posts avec auteur et nom de famille) en adaptant les noms de tables Prisma (`Post`, `User`, `Family`).
+2. Écris la requête de l'exercice 2 (membres + nb_posts) dans un service NestJS via `prisma.$queryRaw` et retourne-la dans `GET /families/:id/members`.
+3. Reproduis l'exercice 5 (NOT EXISTS vs NOT IN) sur la table `users` réelle et note le résultat dans un commentaire de code.
+4. Commit `smaurier/tribuzen` : `feat(db): jointures membres + posts feed`.
+
+---
+
 ## Variante J+30
 
 Reviens dans 30 jours et fais les exercices sans ouvrir le corrigé. Si tu bloque, lis seulement la section **Points clés** du module 03, puis retente.
@@ -419,5 +439,5 @@ ORDER BY s.nb_posts DESC;
 | | Lien |
 |---|---|
 | Module associé | [Module 03 — Relations et jointures](../../modules/03-relations-et-jointures.md) |
-| Lab précédent | [Lab 02 — CRUD en pratique](../lab-02-crud-en-pratique/README.md) |
+| Lab précédent | [Lab 02 — CRUD complet](../lab-02-crud-complet/README.md) |
 | Lab suivant | [Lab 04 — Transactions](../lab-04-transactions/README.md) |

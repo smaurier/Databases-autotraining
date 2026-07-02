@@ -21,11 +21,11 @@ Dans TribuZen, quand un utilisateur crée une famille, le serveur doit enchaîne
 
 ```sql
 -- Sans RETURNING : deux requêtes, fenêtre de race condition entre les deux
-INSERT INTO family (name, created_by) VALUES ('Les Maurier', 'u-1');
-SELECT id FROM family WHERE name = 'Les Maurier' AND created_by = 'u-1'; -- non atomique !
+INSERT INTO families (name, created_by) VALUES ('Les Maurier', 'u-1');
+SELECT id FROM families WHERE name = 'Les Maurier' AND created_by = 'u-1'; -- non atomique !
 
 -- Avec RETURNING : une seule requête, l'id est disponible immédiatement
-INSERT INTO family (name, created_by)
+INSERT INTO families (name, created_by)
 VALUES ('Les Maurier', 'u-1')
 RETURNING id, name, created_at;
 -- → { id: 'fam-abc', name: 'Les Maurier', created_at: '2026-07-01T10:00:00Z' }
@@ -38,7 +38,7 @@ Même logique pour un `UPDATE` ou `DELETE` : `RETURNING` évite le `SELECT` de c
 ### Schéma de référence
 
 ```sql
-CREATE TABLE family (
+CREATE TABLE families (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name          TEXT NOT NULL,
   created_by    UUID NOT NULL,
@@ -46,9 +46,9 @@ CREATE TABLE family (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE post (
+CREATE TABLE posts (
   id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  family_id  UUID NOT NULL REFERENCES family(id),
+  family_id  UUID NOT NULL REFERENCES families(id),
   author_id  UUID NOT NULL,
   content    TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -59,18 +59,18 @@ CREATE TABLE post (
 
 ```sql
 -- Insertion simple
-INSERT INTO family (name, created_by)
+INSERT INTO families (name, created_by)
 VALUES ('Les Dupont', 'u-42');
 
 -- Insertion multiple (batch) — bien plus rapide que N INSERT individuels
 -- Un seul cycle parse / plan / WAL write pour toutes les lignes
-INSERT INTO post (family_id, author_id, content) VALUES
+INSERT INTO posts (family_id, author_id, content) VALUES
   ('fam-1', 'u-1', 'Bonjour famille !'),
   ('fam-1', 'u-2', 'Heureux d''être ici'),
   ('fam-1', 'u-1', 'Premier album partagé');
 
 -- RETURNING : récupère les colonnes de la ou des lignes insérées
-INSERT INTO family (name, created_by)
+INSERT INTO families (name, created_by)
 VALUES ('Les Martin', 'u-9')
 RETURNING id, name, created_at;
 ```
@@ -81,17 +81,17 @@ RETURNING id, name, created_at;
 
 ```sql
 -- Toutes les colonnes
-SELECT * FROM post WHERE family_id = 'fam-1';
+SELECT * FROM posts WHERE family_id = 'fam-1';
 
 -- Colonnes choisies + alias
-SELECT content, created_at AS posted_at FROM post WHERE family_id = 'fam-1';
+SELECT content, created_at AS posted_at FROM posts WHERE family_id = 'fam-1';
 
 -- Opérateurs courants
-SELECT * FROM family WHERE members_count >= 3;
-SELECT * FROM post WHERE family_id IN ('fam-1', 'fam-2');
-SELECT * FROM post WHERE content ILIKE '%photo%';          -- insensible à la casse
-SELECT * FROM post WHERE created_at >= now() - INTERVAL '7 days';
-SELECT * FROM post WHERE author_id IS NOT NULL;            -- jamais = NULL !
+SELECT * FROM families WHERE members_count >= 3;
+SELECT * FROM posts WHERE family_id IN ('fam-1', 'fam-2');
+SELECT * FROM posts WHERE content ILIKE '%photo%';          -- insensible à la casse
+SELECT * FROM posts WHERE created_at >= now() - INTERVAL '7 days';
+SELECT * FROM posts WHERE author_id IS NOT NULL;            -- jamais = NULL !
 ```
 
 **Règle NULL** : toute comparaison avec `NULL` retourne `NULL`, pas `false`. `WHERE col = NULL` ne retourne jamais rien. Toujours `IS NULL` / `IS NOT NULL`.
@@ -101,13 +101,13 @@ SELECT * FROM post WHERE author_id IS NOT NULL;            -- jamais = NULL !
 ```sql
 -- Posts les plus récents en premier
 SELECT id, content, created_at
-FROM post
+FROM posts
 WHERE family_id = 'fam-1'
 ORDER BY created_at DESC;
 
 -- Pagination classique : page 1, 20 résultats
 SELECT id, content, created_at
-FROM post
+FROM posts
 WHERE family_id = 'fam-1'
 ORDER BY created_at DESC
 LIMIT 20 OFFSET 0;
@@ -115,7 +115,7 @@ LIMIT 20 OFFSET 0;
 -- Pagination keyset (performante sur les grandes tables)
 -- Le client mémorise le dernier created_at vu et l'envoie comme curseur
 SELECT id, content, created_at
-FROM post
+FROM posts
 WHERE family_id = 'fam-1'
   AND created_at < '2026-06-30T12:00:00Z'   -- curseur = dernier vu
 ORDER BY created_at DESC
@@ -128,13 +128,13 @@ LIMIT 20;
 
 ```sql
 -- Modifier un post + récupérer le résultat
-UPDATE post
+UPDATE posts
 SET content = 'Photo de famille mise à jour'
 WHERE id = 'post-7'
 RETURNING id, content;
 
 -- Danger : sans WHERE, toutes les lignes sont modifiées
--- UPDATE post SET content = '';  ← détruit tout le contenu de toute la table
+-- UPDATE posts SET content = '';  ← détruit tout le contenu de toute la table
 ```
 
 Toujours vérifier la clause `WHERE` avec un `SELECT` avant d'exécuter un `UPDATE` en production, ou utiliser `BEGIN` / `ROLLBACK`.
@@ -143,28 +143,28 @@ Toujours vérifier la clause `WHERE` avec un `SELECT` avant d'exécuter un `UPDA
 
 ```sql
 -- Supprimer un post précis
-DELETE FROM post
+DELETE FROM posts
 WHERE id = 'post-7'
 RETURNING id, author_id;
 
 -- Supprimer les vieux posts d'une famille
-DELETE FROM post
+DELETE FROM posts
 WHERE family_id = 'fam-1'
   AND created_at < now() - INTERVAL '1 year'
 RETURNING id;
 
 -- Danger : sans WHERE, toute la table est vidée
--- DELETE FROM post;  ← supprime tous les posts de toutes les familles
+-- DELETE FROM posts;  ← supprime tous les posts de toutes les familles
 ```
 
 ### DISTINCT
 
 ```sql
 -- Familles ayant au moins un post (sans doublons)
-SELECT DISTINCT family_id FROM post;
+SELECT DISTINCT family_id FROM posts;
 
 -- Auteurs uniques d'une famille
-SELECT DISTINCT author_id FROM post WHERE family_id = 'fam-1';
+SELECT DISTINCT author_id FROM posts WHERE family_id = 'fam-1';
 ```
 
 `DISTINCT` déclenche un tri implicite pour éliminer les doublons — coûteux sur les grandes tables. Si tu en as besoin souvent, c'est souvent un signal de modèle à revoir.
@@ -173,14 +173,14 @@ SELECT DISTINCT author_id FROM post WHERE family_id = 'fam-1';
 
 ```sql
 -- Compter les posts d'une famille
-SELECT COUNT(*) AS nb_posts FROM post WHERE family_id = 'fam-1';
+SELECT COUNT(*) AS nb_posts FROM posts WHERE family_id = 'fam-1';
 
 -- Statistiques temporelles
 SELECT
   COUNT(*)          AS total_posts,
   MIN(created_at)   AS premier_post,
   MAX(created_at)   AS dernier_post
-FROM post
+FROM posts
 WHERE family_id = 'fam-1';
 ```
 
@@ -193,7 +193,7 @@ WHERE family_id = 'fam-1';
 SELECT
   family_id,
   COUNT(*) AS nb_posts
-FROM post
+FROM posts
 GROUP BY family_id
 ORDER BY nb_posts DESC;
 
@@ -201,7 +201,7 @@ ORDER BY nb_posts DESC;
 SELECT
   family_id,
   COUNT(*) AS nb_posts
-FROM post
+FROM posts
 GROUP BY family_id
 HAVING COUNT(*) > 5
 ORDER BY nb_posts DESC;
@@ -221,13 +221,13 @@ Objectif : insérer la famille, chaîner sur son `id` retourné par `RETURNING`,
 
 ```sql
 -- Étape 1 : créer la famille, récupérer son id immédiatement
-INSERT INTO family (name, created_by)
+INSERT INTO families (name, created_by)
 VALUES ('Les Bertrand', 'u-55')
 RETURNING id, name, created_at;
 -- → { id: 'fam-b3c9', name: 'Les Bertrand', created_at: '2026-07-01T10:00:00Z' }
 
 -- Étape 2 : insérer trois posts en batch avec l'id récupéré
-INSERT INTO post (family_id, author_id, content) VALUES
+INSERT INTO posts (family_id, author_id, content) VALUES
   ('fam-b3c9', 'u-55', 'Bienvenue dans notre espace !'),
   ('fam-b3c9', 'u-55', 'Première photo de famille ajoutée'),
   ('fam-b3c9', 'u-56', 'Contente d''être dans ce groupe')
@@ -247,7 +247,7 @@ SELECT
   p.content,
   p.author_id,
   p.created_at
-FROM post p
+FROM posts p
 WHERE p.family_id = 'fam-1'
 ORDER BY p.created_at DESC
 LIMIT 20;
@@ -257,8 +257,8 @@ SELECT
   f.name,
   COUNT(p.id)       AS nb_posts,
   MAX(p.created_at) AS dernier_post
-FROM family f
-JOIN post p ON p.family_id = f.id
+FROM families f
+JOIN posts p ON p.family_id = f.id
 GROUP BY f.id, f.name
 HAVING COUNT(p.id) >= 3
 ORDER BY nb_posts DESC
@@ -269,13 +269,13 @@ Pas-à-pas : (1) `ORDER BY created_at DESC LIMIT 20` avec un index sur `(family_
 
 ## 4. Pièges & misconceptions
 
-- **UPDATE / DELETE sans WHERE.** `UPDATE post SET content = ''` vide le contenu de **tous** les posts. `DELETE FROM post` supprime **toute** la table. *Correct* : tester avec `SELECT * FROM post WHERE <condition>` avant d'exécuter, ou ouvrir un `BEGIN` et vérifier les lignes affectées avant `COMMIT` / `ROLLBACK`.
+- **UPDATE / DELETE sans WHERE.** `UPDATE posts SET content = ''` vide le contenu de **tous** les posts. `DELETE FROM posts` supprime **toute** la table. *Correct* : tester avec `SELECT * FROM posts WHERE <condition>` avant d'exécuter, ou ouvrir un `BEGIN` et vérifier les lignes affectées avant `COMMIT` / `ROLLBACK`.
 
 - **Comparer à NULL avec `=`.** `WHERE author_id = NULL` ne retourne jamais rien — `NULL = NULL` retourne `NULL`, pas `true`. *Correct* : `WHERE author_id IS NULL` / `IS NOT NULL`.
 
 - **`HAVING` à la place de `WHERE`.** Mettre `HAVING family_id = 'fam-1'` force PostgreSQL à agréger **toutes** les lignes puis à filtrer. *Correct* : `WHERE family_id = 'fam-1'` filtre **avant** le regroupement — beaucoup plus efficace et est planifiable via un index.
 
-- **Colonne SELECT non agrégée absente du GROUP BY.** `SELECT family_id, content, COUNT(*) FROM post GROUP BY family_id` déclenche `ERROR: column "post.content" must appear in the GROUP BY clause or be used in an aggregate function`. *Correct* : inclure `content` dans `GROUP BY` ou l'envelopper dans `STRING_AGG(content, ', ')`.
+- **Colonne SELECT non agrégée absente du GROUP BY.** `SELECT family_id, content, COUNT(*) FROM posts GROUP BY family_id` déclenche `ERROR: column "post.content" must appear in the GROUP BY clause or be used in an aggregate function`. *Correct* : inclure `content` dans `GROUP BY` ou l'envelopper dans `STRING_AGG(content, ', ')`.
 
 - **`OFFSET` lent sur les grandes tables.** `OFFSET 50000 LIMIT 20` force PostgreSQL à lire et ignorer 50 000 lignes — O(N). À page 2500 la requête peut dépasser 10 secondes. *Correct* : pagination keyset `WHERE created_at < $cursor ORDER BY created_at DESC LIMIT 20` — O(1) par index.
 
@@ -283,12 +283,12 @@ Pas-à-pas : (1) `ORDER BY created_at DESC LIMIT 20` avec un index sur `(family_
 
 ## 5. Ancrage TribuZen
 
-Couche fil-rouge : **schéma + requêtes CRUD** dans `smaurier/tribuzen`. INSERT, SELECT, UPDATE et DELETE sur `family` et `post` sont les requêtes les plus fréquentes du produit :
+Couche fil-rouge : **schéma + requêtes CRUD** dans `smaurier/tribuzen`. INSERT, SELECT, UPDATE et DELETE sur `families` et `posts` sont les requêtes les plus fréquentes du produit :
 
-- `INSERT INTO family ... RETURNING id` (Exemple A) est le point d'entrée de toute création de famille : l'`id` UUID sert immédiatement pour le `family_member` du créateur — `RETURNING` n'est pas optionnel dans ce flux, il évite la race condition.
+- `INSERT INTO families ... RETURNING id` (Exemple A) est le point d'entrée de toute création de famille : l'`id` UUID sert immédiatement pour le `family_member` du créateur — `RETURNING` n'est pas optionnel dans ce flux, il évite la race condition.
 - Le feed `ORDER BY created_at DESC LIMIT 20` (Exemple B) est la requête la plus fréquente de TribuZen : l'index `(family_id, created_at)` posé au module 05 (Index fondamentaux) la rend sous-milliseconde même à grande échelle.
 - `GROUP BY f.id HAVING COUNT(p.id) >= 3` produit la base du tableau de bord d'activité — données des notifications de relance ("ta famille n'a pas posté depuis 7 jours").
-- `DELETE FROM post WHERE id = $1 RETURNING id` confirme la suppression sans SELECT supplémentaire : le serveur peut répondre 204 uniquement si la ligne existait bien.
+- `DELETE FROM posts WHERE id = $1 RETURNING id` confirme la suppression sans SELECT supplémentaire : le serveur peut répondre 204 uniquement si la ligne existait bien.
 - En session, toutes ces requêtes s'écrivent sur une vraie base PostgreSQL 17 locale (Docker), pas un sandbox — elles servent de base aux modules suivants (jointures, index, transactions).
 
 ## 6. Points clés

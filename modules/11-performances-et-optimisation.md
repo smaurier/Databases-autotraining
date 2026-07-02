@@ -207,7 +207,7 @@ GROUP BY state, wait_event_type, wait_event
 ORDER BY COUNT(*) DESC;
 ```
 
-Règle empirique : `max_connections` PostgreSQL ≤ `(CPUs × 2) + disques`. Pool par instance Node = `max_connections / nb_instances`.
+Règle empirique (point de départ indicatif — heuristique datée) : `max_connections` PostgreSQL ≤ `(CPUs × 2) + disques` ; la recommandation moderne est de pooler via PgBouncer et de maintenir `max_connections` à 100-200 indépendamment des CPUs. Pool par instance Node = `max_connections / nb_instances`.
 
 ### Dénormalisation raisonnée
 

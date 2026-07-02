@@ -104,8 +104,8 @@ ALTER TABLE bookings ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY family_isolation ON bookings
     FOR ALL TO reservation_app
-    USING      (family_id = current_setting('app.family_id')::int)
-    WITH CHECK (family_id = current_setting('app.family_id')::int);
+    USING      (family_id = current_setting('app.family_id', true)::int)
+    WITH CHECK (family_id = current_setting('app.family_id', true)::int);
 ```
 
 Piège : un superuser et les rôles `BYPASSRLS` contournent silencieusement RLS. Tester uniquement en se connectant avec `SET ROLE reservation_app` pour voir les vraies restrictions.
@@ -255,16 +255,16 @@ ALTER TABLE slots      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE bookings   ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY family_isolation ON activities FOR ALL TO reservation_app
-    USING      (family_id = current_setting('app.family_id')::int)
-    WITH CHECK (family_id = current_setting('app.family_id')::int);
+    USING      (family_id = current_setting('app.family_id', true)::int)
+    WITH CHECK (family_id = current_setting('app.family_id', true)::int);
 
 CREATE POLICY family_isolation ON slots FOR ALL TO reservation_app
-    USING      (family_id = current_setting('app.family_id')::int)
-    WITH CHECK (family_id = current_setting('app.family_id')::int);
+    USING      (family_id = current_setting('app.family_id', true)::int)
+    WITH CHECK (family_id = current_setting('app.family_id', true)::int);
 
 CREATE POLICY family_isolation ON bookings FOR ALL TO reservation_app
-    USING      (family_id = current_setting('app.family_id')::int)
-    WITH CHECK (family_id = current_setting('app.family_id')::int);
+    USING      (family_id = current_setting('app.family_id', true)::int)
+    WITH CHECK (family_id = current_setting('app.family_id', true)::int);
 
 -- Vérification : se connecter en tant que rôle applicatif
 -- SET ROLE reservation_app;
@@ -373,7 +373,7 @@ Pas-à-pas : (1) `search_vector @@` exploite l'index GIN `idx_activities_fts` �
 
 - **Compter les places disponibles hors transaction.** Lire `COUNT(bookings)` dans une requête séparée puis insérer dans une autre laisse une fenêtre de race condition — deux sessions lisent « 2 dispo », insèrent toutes les deux. *Correct* : lire et insérer dans **une seule** transaction Serializable via `book_slot()` ; le moteur lève `40001` si un concurrent a écrit entre les deux, et l'appelant réessaie.
 
-- **Tester RLS avec le superuser.** Par défaut, le superuser et les rôles `BYPASSRLS` court-circuitent silencieusement toutes les policies — les tests passent, la sécurité est fictive. *Correct* : tester systématiquement avec `SET ROLE reservation_app` et `select_config('app.family_id', ...)` pour voir les vraies restrictions.
+- **Tester RLS avec le superuser.** Par défaut, le superuser et les rôles `BYPASSRLS` court-circuitent silencieusement toutes les policies — les tests passent, la sécurité est fictive. *Correct* : tester systématiquement avec `SET ROLE reservation_app` et `set_config('app.family_id', ...)` pour voir les vraies restrictions.
 
 - **UNIQUE (slot_id, user_id) sans exclure les annulations.** Avec une contrainte table-level simple, un utilisateur qui annule sa réservation ne peut jamais re-réserver le même créneau — la ligne annulée occupe toujours la contrainte unique. *Correct* : un index partiel `WHERE status = 'confirmed'` n'interdit que les doublons actifs et autorise la re-réservation après annulation.
 

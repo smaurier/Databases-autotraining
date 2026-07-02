@@ -5,7 +5,7 @@ notions: [transaction, ACID, atomicity, consistency, isolation, durability, BEGI
 outcomes: [délimiter une unité de travail atomique en SQL et avec Prisma, expliquer chaque lettre d'ACID sur un cas réel, choisir le niveau d'isolation selon l'anomalie à éviter, écrire une transaction interactive et séquentielle avec Prisma, éviter une transaction trop longue qui tient les locks]
 prerequis: [crud-et-requetes, relations-et-jointures, contraintes]
 next: 05-index-fondamentaux
-libs: [{ name: prisma, version: ^6 }, { name: "@prisma/client", version: ^6 }, { name: postgresql, version: "16" }]
+libs: [{ name: prisma, version: ^6 }, { name: "@prisma/client", version: ^6 }, { name: postgresql, version: "17" }]
 tribuzen: schéma + requêtes (PostgreSQL + Prisma) — acceptation d'invitation famille atomique
 last-reviewed: 2026-06
 ---

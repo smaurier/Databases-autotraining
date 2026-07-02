@@ -1,6 +1,8 @@
 # Lab 06 — Query Planner Deep Dive
 
-> Analyser et optimiser la requête du feed famille TribuZen avec `EXPLAIN ANALYZE`.
+> **Outcome :** à la fin, tu as analysé et optimisé la requête du feed famille TribuZen avec `EXPLAIN ANALYZE` — tu identifies les Seq Scan, tu crées les index composites, tu lis les métriques `Buffers` pour prouver chaque amélioration, et tu diagnostiques un index ignoré par un prédicat fonctionnel.
+> **Vrai outil :** psql / SQL réel (PostgreSQL 17 local via Docker). Aucune simulation.
+> **Feedback :** le coach valide en session.
 
 ## Prérequis · Durée
 
@@ -240,6 +242,17 @@ EXPLAIN SELECT * FROM posts WHERE family_id = 1;
 - Teste `SET random_page_cost = 1.1;` avant `EXPLAIN` : le planner préfère-t-il davantage les Index Scan ?
 - Tente un **covering index** `(family_id, created_at DESC, author_id, content)` et vérifie si un **Index Only Scan** apparaît pour les colonnes couvertes.
 - Utilise `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` depuis Node.js (`pg.Pool`) et inspecte le champ `"Execution Time"` pour logguer automatiquement les plans lents.
+
+---
+
+## Application TribuZen
+
+Porte ce lab dans le vrai repo `smaurier/tribuzen` :
+
+1. Lance psql sur ta base de développement TribuZen. Exécute `EXPLAIN (ANALYZE, BUFFERS)` sur la requête de feed famille (20 derniers posts d'une famille avec auteur et compteur de réactions).
+2. Identifie les Seq Scan. Crée l'index composite `@@index([familyId, createdAt(sort: Desc)])` sur le model `Post` dans `schema.prisma`. Lance `npx prisma migrate dev --name add-feed-index`. Relance `EXPLAIN ANALYZE` et confirme la disparition du Sort node.
+3. Si ta table `users` a une recherche case-insensitive sur `displayName`, crée l'index fonctionnel `LOWER(display_name)` et vérifie qu'il est utilisé.
+4. Commit `smaurier/tribuzen` : `perf(db): index composite feed family + index fonctionnel users`.
 
 ---
 

@@ -127,7 +127,20 @@ LEFT JOIN family_member fm ON u.id = fm.user_id AND fm.family_id = 'fam-1';
 Retourne toutes les lignes des deux tables ; `NULL` là où il n'y a pas de correspondance.
 
 ```sql
--- Réconcilier deux snapshots d'utilisateurs (utile pour migration, diff)
+-- Setup reproductible : deux snapshots d'emails avant/après migration TribuZen
+CREATE TEMP TABLE users_snapshot_a (email TEXT PRIMARY KEY);
+INSERT INTO users_snapshot_a VALUES
+    ('alice@tribu.fr'),   -- email avant migration
+    ('bob@tribu.fr'),
+    ('claire@tribu.fr');
+
+CREATE TEMP TABLE users_snapshot_b (email TEXT PRIMARY KEY);
+INSERT INTO users_snapshot_b VALUES
+    ('alice.moreau@tribu.fr'),  -- email changé après migration
+    ('bob@tribu.fr'),
+    ('diana@tribu.fr');         -- nouvel utilisateur ajouté
+
+-- Détecter les écarts entre les deux snapshots
 SELECT
     COALESCE(a.email, b.email) AS email,
     CASE
@@ -138,6 +151,14 @@ SELECT
 FROM users_snapshot_a a
 FULL OUTER JOIN users_snapshot_b b ON a.email = b.email
 WHERE a.email IS NULL OR b.email IS NULL;
+
+-- Résultat (bob@tribu.fr est dans les deux → exclu par le WHERE) :
+-- email                    | statut
+-- -------------------------+------------------
+-- alice@tribu.fr           | seulement dans A
+-- claire@tribu.fr          | seulement dans A
+-- alice.moreau@tribu.fr    | seulement dans B
+-- diana@tribu.fr           | seulement dans B
 ```
 
 Cas d'usage réel : détecter les écarts lors d'une migration de données ou d'un audit.

@@ -356,16 +356,16 @@ ALTER TABLE slots      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE bookings   ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY family_isolation ON activities FOR ALL TO reservation_app
-    USING      (family_id = current_setting('app.family_id')::int)
-    WITH CHECK (family_id = current_setting('app.family_id')::int);
+    USING      (family_id = current_setting('app.family_id', true)::int)
+    WITH CHECK (family_id = current_setting('app.family_id', true)::int);
 
 CREATE POLICY family_isolation ON slots FOR ALL TO reservation_app
-    USING      (family_id = current_setting('app.family_id')::int)
-    WITH CHECK (family_id = current_setting('app.family_id')::int);
+    USING      (family_id = current_setting('app.family_id', true)::int)
+    WITH CHECK (family_id = current_setting('app.family_id', true)::int);
 
 CREATE POLICY family_isolation ON bookings FOR ALL TO reservation_app
-    USING      (family_id = current_setting('app.family_id')::int)
-    WITH CHECK (family_id = current_setting('app.family_id')::int);
+    USING      (family_id = current_setting('app.family_id', true)::int)
+    WITH CHECK (family_id = current_setting('app.family_id', true)::int);
 ```
 
 **Test d'isolation :**

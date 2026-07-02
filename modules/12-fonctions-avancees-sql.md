@@ -1,910 +1,443 @@
-# Module 12 — Fonctions avancees SQL
-
-> **Objectif** : Maîtriser les Window Functions, les CTEs (y compris recursives), les LATERAL joins et les outils analytiques avances de PostgreSQL.
->
-> **Difficulte** : ⭐⭐⭐
-
+---
+titre: Fonctions avancées SQL
+cours: 10-postgresql
+notions: [fonctions fenêtre ROW_NUMBER RANK DENSE_RANK, LAG et LEAD, PARTITION BY et frame, CTE avec WITH, CTE récursive, GROUPING SETS ROLLUP CUBE, LATERAL, agrégats filtrés FILTER]
+outcomes: [classer et comparer des lignes avec les fonctions fenêtre, structurer une requête avec des CTE, écrire une CTE récursive, utiliser LATERAL et FILTER]
+prerequis: [11-performances-et-optimisation]
+next: 13-jsonb-et-types-avances
+libs: [{ name: postgresql, version: "17" }]
+tribuzen: classer les posts d'une famille par popularité et parcourir l'arbre familial (CTE récursive)
+last-reviewed: 2026-07
 ---
 
-## 1. Window Functions — La revolution analytique
+# Fonctions avancées SQL
 
-### 1.1 Le concept
+> **Outcomes — tu sauras FAIRE :** classer et comparer des lignes avec les fonctions fenêtre (ROW\_NUMBER, RANK, LAG, LEAD), structurer une requête complexe avec des CTE, écrire une CTE récursive pour traverser un arbre, et filtrer des agrégats avec FILTER.
+> **Difficulté :** :star::star::star:
 
-Les **Window Functions** (fonctions de fenetrage) permettent de faire des calculs sur un ensemble de lignes **sans reduire le nombre de lignes** du résultat. Contrairement a GROUP BY qui agrege les lignes, une Window Function les **enrichit**.
+## 1. Cas concret d'abord
 
-> **Analogie** : Imaginez un classement de marathon. Avec GROUP BY, vous obtenez le temps moyen par categorie. Avec une Window Function, chaque coureur garde sa ligne **et** voit son rang, le temps du précédent, le cumul des temps, etc.
+Dans TribuZen, deux besoins arrivent le même sprint :
 
-```
-GROUP BY (agrege) :                 Window Function (enrichit) :
+**Besoin 1 — Dashboard famille :** afficher les 10 posts les plus aimés de la semaine dans une famille, avec le rang de chaque post et la variation de popularité par rapport au post précédent (↑ ou ↓).
 
-│ categorie │ avg_time │            │ nom    │ time  │ rank │ avg_cat │
-├───────────┼──────────┤            ├────────┼───────┼──────┼─────────┤
-│ Senior    │ 3:45:00  │            │ Alice  │ 3:30  │ 1    │ 3:45    │
-│ Junior    │ 4:10:00  │            │ Bob    │ 3:50  │ 2    │ 3:45    │
-                                    │ Charlie│ 3:55  │ 3    │ 3:45    │
-  3 lignes → 2 lignes              │ David  │ 4:00  │ 1    │ 4:10    │
-                                    │ Eve    │ 4:20  │ 2    │ 4:10    │
+**Besoin 2 — Arbre généalogique :** parcourir l'arbre familial depuis un membre racine jusqu'aux feuilles, profondeur inconnue à l'avance.
 
-                                     5 lignes → 5 lignes (enrichies)
-```
-
-### 1.2 Syntaxe générale
+Approche naïve — besoin 1 :
 
 ```sql
-fonction_fenetre() OVER (
-    PARTITION BY colonne_partitionnement
-    ORDER BY colonne_tri
-    frame_clause
+-- Sous-requête corrélée par ligne : une exécution par post → N+1 interne
+SELECT
+  p.id,
+  p.content,
+  (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) AS nb_reactions
+FROM posts p
+WHERE p.family_id = 1
+ORDER BY nb_reactions DESC
+LIMIT 10;
+-- La variation par rapport au post précédent exige un deuxième aller-retour.
+-- ORDER BY sur une sous-requête scalaire : non indexable, full scan à chaque ligne.
+```
+
+Approche naïve — besoin 2 :
+
+```sql
+-- Impossible sans récursion : autant de jointures que de niveaux,
+-- profondeur inconnue → boucle Node.js avec une requête par niveau.
+-- 5 niveaux = 5 round-trips ; pas de garantie sur la profondeur max.
+```
+
+Les fonctions fenêtre et les CTEs récursives résolvent les deux en **une seule requête**.
+
+## 2. Théorie complète, concise
+
+### Fonctions fenêtre — le principe
+
+Une fonction fenêtre calcule une valeur pour chaque ligne en utilisant un **ensemble de lignes voisines** (la "fenêtre"), sans réduire le nombre de lignes du résultat. Contrairement à `GROUP BY` qui agrège, une fonction fenêtre **enrichit**.
+
+```sql
+fonction() OVER (
+    PARTITION BY col_partition   -- découpe en groupes indépendants
+    ORDER BY col_tri             -- ordre dans chaque groupe
+    ROWS BETWEEN ... AND ...     -- délimite les lignes incluses (frame)
 )
 ```
 
-| Élément | Role | Analogie |
-|---------|------|----------|
-| `OVER (...)` | Definit la "fenêtre" | Le cadre de la photo |
-| `PARTITION BY` | Regroupe (comme GROUP BY mais sans agreger) | Les categories |
-| `ORDER BY` | Trie a l'interieur de chaque partition | L'ordre de classement |
-| Frame clause | Delimite les lignes a considerer | Le zoom |
+La clause `OVER (...)` peut être nommée avec `WINDOW w AS (...)` pour éviter la répétition.
 
-### 1.3 Preparation des donnees d'exemple
+### ROW_NUMBER, RANK, DENSE_RANK
 
-```sql
-CREATE TABLE ventes (
-    id         SERIAL PRIMARY KEY,
-    vendeur    TEXT NOT NULL,
-    region     TEXT NOT NULL,
-    montant    NUMERIC(10,2) NOT NULL,
-    date_vente DATE NOT NULL
-);
+Les trois classent les lignes selon `ORDER BY`. La différence apparaît sur les **ex-aequo** :
 
-INSERT INTO ventes (vendeur, region, montant, date_vente) VALUES
-    ('Alice',   'Nord',  1500, '2025-01-15'),
-    ('Alice',   'Nord',  2000, '2025-02-10'),
-    ('Alice',   'Nord',  1800, '2025-03-05'),
-    ('Bob',     'Nord',  1200, '2025-01-20'),
-    ('Bob',     'Nord',  1600, '2025-02-15'),
-    ('Charlie', 'Sud',   2200, '2025-01-10'),
-    ('Charlie', 'Sud',   1900, '2025-02-20'),
-    ('Charlie', 'Sud',   2500, '2025-03-15'),
-    ('David',   'Sud',   1100, '2025-01-25'),
-    ('David',   'Sud',   1400, '2025-02-28'),
-    ('David',   'Sud',   1700, '2025-03-20');
-```
-
----
-
-### 1.4 ROW_NUMBER() — Numérotation
-
-Attribue un numéro unique à chaque ligne dans la partition.
+| Fonction | Ex-aequo (score = 5) | Rang suivant |
+|---|---|---|
+| ROW_NUMBER | 3, 4 (unique, arbitraire) | 5 |
+| RANK | 3, 3 (même rang) | **5** (saute le 4) |
+| DENSE_RANK | 3, 3 (même rang) | **4** (pas de saut) |
 
 ```sql
--- Numerotation par region, tri par montant decroissant
 SELECT
-    vendeur,
-    region,
-    montant,
-    ROW_NUMBER() OVER (
-        PARTITION BY region
-        ORDER BY montant DESC
-    ) AS rang
-FROM ventes;
+  p.id,
+  nb_reactions,
+  ROW_NUMBER() OVER (ORDER BY nb_reactions DESC) AS row_num,
+  RANK()       OVER (ORDER BY nb_reactions DESC) AS rnk,
+  DENSE_RANK() OVER (ORDER BY nb_reactions DESC) AS dense_rnk
+FROM post_stats;
 ```
 
-```
- vendeur  │ region │ montant │ rang
-──────────┼────────┼─────────┼──────
- Alice    │ Nord   │ 2000.00 │  1
- Alice    │ Nord   │ 1800.00 │  2
- Bob      │ Nord   │ 1600.00 │  3
- Alice    │ Nord   │ 1500.00 │  4
- Bob      │ Nord   │ 1200.00 │  5
- Charlie  │ Sud    │ 2500.00 │  1
- Charlie  │ Sud    │ 2200.00 │  2
- Charlie  │ Sud    │ 1900.00 │  3
- David    │ Sud    │ 1700.00 │  4
- David    │ Sud    │ 1400.00 │  5
- David    │ Sud    │ 1100.00 │  6
-```
+`ROW_NUMBER` est préféré pour la **pagination** (numéros uniques). `RANK` et `DENSE_RANK` pour les **classements** avec ex-aequo significatifs (top 3 podium).
 
-**Cas d'usage : pagination keyset**
+### LAG et LEAD
+
+Accèdent à la valeur d'une ligne **précédente** (`LAG`) ou **suivante** (`LEAD`) dans la partition ordonnée.
 
 ```sql
--- Page 1 (10 premiers)
-SELECT * FROM (
-    SELECT
-        *,
-        ROW_NUMBER() OVER (ORDER BY created_at DESC, id DESC) AS rn
-    FROM articles
-) sub
-WHERE rn BETWEEN 1 AND 10;
-
--- Page 2 (11-20)
--- ... WHERE rn BETWEEN 11 AND 20;
+LAG(expression, offset, défaut) OVER (PARTITION BY ... ORDER BY ...)
+-- offset : nombre de lignes en arrière (défaut 1)
+-- défaut : valeur si la ligne n'existe pas (défaut NULL)
 ```
 
-### 1.5 RANK() et DENSE_RANK() — Classements
-
 ```sql
--- Comparaison RANK vs DENSE_RANK vs ROW_NUMBER
 SELECT
-    vendeur,
-    montant,
-    ROW_NUMBER() OVER (ORDER BY montant DESC) AS row_num,
-    RANK()       OVER (ORDER BY montant DESC) AS rank,
-    DENSE_RANK() OVER (ORDER BY montant DESC) AS dense_rank
-FROM ventes;
+  p.id,
+  nb_reactions,
+  LAG(nb_reactions, 1, 0) OVER (ORDER BY created_at) AS reactions_precedent,
+  nb_reactions - LAG(nb_reactions, 1, 0) OVER (ORDER BY created_at) AS variation
+FROM post_stats
+ORDER BY created_at;
 ```
 
-| Fonction | Ex-aequo a 1500 | Prochain rang |
-|----------|-----------------|---------------|
-| ROW_NUMBER() | 7, 8 | 9 |
-| RANK() | 7, 7 | **9** (saute le 8) |
-| DENSE_RANK() | 7, 7 | **8** (pas de saut) |
+`LEAD` fonctionne de manière symétrique, vers les lignes suivantes.
 
-### 1.6 LAG() et LEAD() — Lignes précédente/suivante
+### PARTITION BY et frame
+
+`PARTITION BY` découpe le résultat en **groupes indépendants** — les fonctions fenêtre s'appliquent séparément dans chaque groupe (comme un `GROUP BY` mais sans agréger).
+
+La **frame clause** contrôle quelles lignes de la partition sont incluses dans le calcul :
+
+| Frame | Lignes incluses | Utilisation typique |
+|---|---|---|
+| `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` | Du début à la ligne courante | Total cumulé (running total) |
+| `ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING` | Ligne précédente + courante + suivante | Moyenne mobile 3 périodes |
+| `ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING` | Toutes les lignes de la partition | Valeur globale de la partition |
+
+**Piège `LAST_VALUE` :** le frame par défaut est `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`, donc `LAST_VALUE` retourne souvent la ligne courante. Toujours spécifier `ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING` avec `LAST_VALUE`.
+
+### CTE avec WITH
+
+Une CTE (**Common Table Expression**) nomme un sous-résultat temporaire, réutilisable dans la requête principale ou dans les CTEs suivantes.
 
 ```sql
--- Comparer chaque vente avec la precedente du meme vendeur
-SELECT
-    vendeur,
-    date_vente,
-    montant,
-    LAG(montant) OVER (
-        PARTITION BY vendeur ORDER BY date_vente
-    ) AS montant_precedent,
-    montant - LAG(montant) OVER (
-        PARTITION BY vendeur ORDER BY date_vente
-    ) AS variation
-FROM ventes
-ORDER BY vendeur, date_vente;
+WITH
+  cte_a AS (SELECT ...),    -- calculée en premier
+  cte_b AS (SELECT ... FROM cte_a ...)  -- peut référencer cte_a
+SELECT * FROM cte_b WHERE ...;
 ```
 
-```
- vendeur │ date_vente │ montant │ montant_precedent │ variation
-─────────┼────────────┼─────────┼───────────────────┼──────────
- Alice   │ 2025-01-15 │ 1500.00 │            NULL   │    NULL
- Alice   │ 2025-02-10 │ 2000.00 │         1500.00   │  500.00
- Alice   │ 2025-03-05 │ 1800.00 │         2000.00   │ -200.00
- Bob     │ 2025-01-20 │ 1200.00 │            NULL   │    NULL
- Bob     │ 2025-02-15 │ 1600.00 │         1200.00   │  400.00
-```
+Depuis **PostgreSQL 12**, une CTE utilisée **une seule fois** est inlinée (`NOT MATERIALIZED` par défaut) : le planner peut pousser les filtres dedans. Une CTE référencée **plusieurs fois** est matérialisée une seule fois (`MATERIALIZED`). Tu peux forcer le comportement :
 
 ```sql
--- LEAD : voir la vente suivante
-SELECT
-    vendeur,
-    date_vente,
-    montant,
-    LEAD(montant, 1, 0) OVER (
-        PARTITION BY vendeur ORDER BY date_vente
-    ) AS montant_suivant
-    -- LEAD(valeur, offset, defaut)
-FROM ventes;
-```
-
-### 1.7 SUM() OVER — Totaux cumules (Running totals)
-
-```sql
--- Total cumule des ventes par vendeur
-SELECT
-    vendeur,
-    date_vente,
-    montant,
-    SUM(montant) OVER (
-        PARTITION BY vendeur
-        ORDER BY date_vente
-        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-    ) AS cumul
-FROM ventes
-ORDER BY vendeur, date_vente;
-```
-
-```
- vendeur │ date_vente │ montant │  cumul
-─────────┼────────────┼─────────┼─────────
- Alice   │ 2025-01-15 │ 1500.00 │ 1500.00
- Alice   │ 2025-02-10 │ 2000.00 │ 3500.00
- Alice   │ 2025-03-05 │ 1800.00 │ 5300.00
- Bob     │ 2025-01-20 │ 1200.00 │ 1200.00
- Bob     │ 2025-02-15 │ 1600.00 │ 2800.00
-```
-
-### 1.8 FIRST_VALUE / LAST_VALUE / NTH_VALUE
-
-```sql
--- Premier et dernier montant par vendeur
-SELECT DISTINCT ON (vendeur)
-    vendeur,
-    FIRST_VALUE(montant) OVER w AS premiere_vente,
-    LAST_VALUE(montant) OVER w AS derniere_vente,
-    NTH_VALUE(montant, 2) OVER w AS deuxieme_vente
-FROM ventes
-WINDOW w AS (
-    PARTITION BY vendeur
-    ORDER BY date_vente
-    ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
-);
-```
-
-> **Piege classique** : `LAST_VALUE` retourne souvent la ligne courante car le frame par defaut est `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`. Il faut explicitement spécifier `ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING`.
-
-### 1.9 Window frames
-
-```sql
--- Moyenne mobile sur 3 periodes
-SELECT
-    vendeur,
-    date_vente,
-    montant,
-    ROUND(AVG(montant) OVER (
-        PARTITION BY vendeur
-        ORDER BY date_vente
-        ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING
-    ), 2) AS moyenne_mobile_3
-FROM ventes;
-```
-
-| Frame | Signification |
-|-------|---------------|
-| `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` | Du debut à la ligne courante |
-| `ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING` | 1 avant + courante + 1 après |
-| `ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING` | Toutes les lignes de la partition |
-| `ROWS BETWEEN 3 PRECEDING AND CURRENT ROW` | 3 precedentes + courante |
-
-```
-Frame ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING :
-
-  Ligne 1  ←─ precedente
-  Ligne 2  ←─ COURANTE        ──► AVG(ligne1, ligne2, ligne3)
-  Ligne 3  ←─ suivante
-  Ligne 4
-  Ligne 5
-```
-
----
-
-## 2. CTEs (Common Table Expressions)
-
-### 2.1 WITH ... AS — Sous-requêtes nommees
-
-```sql
--- SANS CTE (sous-requete imbriquee, difficile a lire)
-SELECT v.vendeur, v.total, m.moy_region
-FROM (
-    SELECT vendeur, region, SUM(montant) AS total
-    FROM ventes GROUP BY vendeur, region
-) v
-JOIN (
-    SELECT region, AVG(total) AS moy_region
-    FROM (
-        SELECT vendeur, region, SUM(montant) AS total
-        FROM ventes GROUP BY vendeur, region
-    ) sub
-    GROUP BY region
-) m ON v.region = m.region;
-
--- AVEC CTE (lisible, maintenable)
-WITH totaux_vendeur AS (
-    SELECT vendeur, region, SUM(montant) AS total
-    FROM ventes
-    GROUP BY vendeur, region
-),
-moyenne_region AS (
-    SELECT region, AVG(total) AS moy_region
-    FROM totaux_vendeur
-    GROUP BY region
+WITH stats AS MATERIALIZED (     -- force l'exécution une seule fois
+  SELECT family_id, COUNT(*) AS nb FROM posts GROUP BY family_id
 )
-SELECT
-    tv.vendeur,
-    tv.total,
-    mr.moy_region
-FROM totaux_vendeur tv
-JOIN moyenne_region mr ON tv.region = mr.region;
+SELECT * FROM stats WHERE nb > 10;
 ```
 
-### 2.2 Materialisee vs non-materialisee
+### CTE récursive
+
+La CTE récursive traverse les **structures hiérarchiques** (arbres, graphes) en répétant un terme jusqu'à épuisement.
 
 ```sql
--- PostgreSQL 12+ : controle de la materialisation
-
--- MATERIALIZED : la CTE est executee une seule fois,
--- le resultat est stocke en memoire temporaire
-WITH stats AS MATERIALIZED (
-    SELECT region, COUNT(*) AS nb, SUM(montant) AS total
-    FROM ventes
-    GROUP BY region
-)
-SELECT * FROM stats WHERE nb > 3;
-
--- NOT MATERIALIZED : la CTE est "inlinee" dans la requete principale
--- (le planner peut la fusionner et optimiser)
-WITH stats AS NOT MATERIALIZED (
-    SELECT region, COUNT(*) AS nb, SUM(montant) AS total
-    FROM ventes
-    GROUP BY region
-)
-SELECT * FROM stats WHERE nb > 3;
-```
-
-| Mode | Comportement | Cas d'usage |
-|------|-------------|-------------|
-| MATERIALIZED | Execute une fois, résultat en mémoire | CTE utilisee plusieurs fois, ou pour forcer un plan |
-| NOT MATERIALIZED | Inlinee (comme une sous-requête) | CTE utilisee une fois, pour que le planner optimise |
-| (par defaut PG 12+) | NOT MATERIALIZED si utilisee une seule fois | - |
-
----
-
-## 3. CTEs recursives
-
-### 3.1 WITH RECURSIVE — Le concept
-
-> **Analogie** : Imaginez un arbre genealogique. Pour trouver tous les descendants d'une personne, vous devez regarder ses enfants, puis les enfants de ses enfants, etc. C'est une operation **recursive** : chaque étape découvre de nouvelles lignes qui alimentent l'étape suivante.
-
-```sql
-WITH RECURSIVE nom_cte AS (
-    -- Terme initial (anchor) : le point de depart
+WITH RECURSIVE nom AS (
+    -- Terme initial (anchor) : point de départ, exécuté une fois
     SELECT ... FROM ... WHERE ...
-
     UNION ALL
-
-    -- Terme recursif : reference nom_cte (lui-meme)
-    SELECT ... FROM ... JOIN nom_cte ON ...
+    -- Terme récursif : référence nom, exécuté sur les résultats de l'étape précédente
+    SELECT ... FROM ... JOIN nom ON ...
 )
-SELECT * FROM nom_cte;
+SELECT * FROM nom;
 ```
 
-```
-Execution :
+Exécution : étape 0 (anchor) → étape 1 (terme récursif sur l'étape 0) → étape 2 → … → étape N (résultat vide → STOP). Résultat final = union de toutes les étapes.
 
-Etape 0 : Terme initial → resultats R0
-Etape 1 : Terme recursif avec R0 → nouveaux resultats R1
-Etape 2 : Terme recursif avec R1 → nouveaux resultats R2
-...
-Etape N : Terme recursif avec R(N-1) → ensemble vide → STOP
+**Condition d'arrêt :** le terme récursif doit produire zéro ligne à un moment — sinon boucle infinie. Ajouter une condition `WHERE` sur la profondeur ou détecter les cycles avec `CYCLE` (PostgreSQL 14+).
 
-Resultat final = R0 ∪ R1 ∪ R2 ∪ ... ∪ R(N-1)
-```
+### LATERAL
 
-### 3.2 Cas d'usage : Organigramme (employe → manager)
+Un join `LATERAL` permet à une sous-requête dans `FROM` de **référencer les colonnes des tables précédentes** — impossible dans un `JOIN` ordinaire.
 
 ```sql
-CREATE TABLE employes (
-    id         SERIAL PRIMARY KEY,
-    nom        TEXT NOT NULL,
-    manager_id INT REFERENCES employes(id)
-);
-
-INSERT INTO employes (id, nom, manager_id) VALUES
-    (1, 'CEO Pierre',     NULL),
-    (2, 'CTO Marie',      1),
-    (3, 'CFO Jean',       1),
-    (4, 'Dev Alice',      2),
-    (5, 'Dev Bob',        2),
-    (6, 'DevOps Charlie', 2),
-    (7, 'Compta David',   3),
-    (8, 'Compta Eve',     3),
-    (9, 'Junior Frank',   4);
-```
-
-```
-Organigramme :
-
-          CEO Pierre (1)
-          ├── CTO Marie (2)
-          │   ├── Dev Alice (4)
-          │   │   └── Junior Frank (9)
-          │   ├── Dev Bob (5)
-          │   └── DevOps Charlie (6)
-          └── CFO Jean (3)
-              ├── Compta David (7)
-              └── Compta Eve (8)
-```
-
-```sql
--- Trouver tous les subordonnes (directs et indirects) de Marie (id=2)
-WITH RECURSIVE subordonnes AS (
-    -- Anchor : Marie elle-meme
-    SELECT id, nom, manager_id, 0 AS niveau
-    FROM employes
-    WHERE id = 2
-
-    UNION ALL
-
-    -- Recursif : les employes dont le manager est dans les subordonnes
-    SELECT e.id, e.nom, e.manager_id, s.niveau + 1
-    FROM employes e
-    JOIN subordonnes s ON e.manager_id = s.id
-)
-SELECT
-    REPEAT('  ', niveau) || nom AS hierarchie,
-    niveau
-FROM subordonnes
-ORDER BY niveau, nom;
-```
-
-```
-    hierarchie      │ niveau
-────────────────────┼────────
-CTO Marie           │      0
-  Dev Alice         │      1
-  Dev Bob           │      1
-  DevOps Charlie    │      1
-    Junior Frank    │      2
-```
-
-### 3.3 Cas d'usage : Categories hierarchiques
-
-```sql
-CREATE TABLE categories (
-    id        SERIAL PRIMARY KEY,
-    nom       TEXT NOT NULL,
-    parent_id INT REFERENCES categories(id)
-);
-
-INSERT INTO categories (id, nom, parent_id) VALUES
-    (1, 'Electronique', NULL),
-    (2, 'Ordinateurs', 1),
-    (3, 'Portables', 2),
-    (4, 'Fixes', 2),
-    (5, 'Smartphones', 1),
-    (6, 'Apple', 5),
-    (7, 'Samsung', 5),
-    (8, 'Vetements', NULL),
-    (9, 'Homme', 8),
-    (10, 'Femme', 8);
-
--- Chemin complet de chaque categorie (breadcrumb)
-WITH RECURSIVE chemin AS (
-    SELECT id, nom, parent_id,
-           nom::TEXT AS chemin_complet,
-           ARRAY[id] AS path
-    FROM categories
-    WHERE parent_id IS NULL
-
-    UNION ALL
-
-    SELECT c.id, c.nom, c.parent_id,
-           ch.chemin_complet || ' > ' || c.nom,
-           ch.path || c.id
-    FROM categories c
-    JOIN chemin ch ON c.parent_id = ch.id
-)
-SELECT chemin_complet FROM chemin ORDER BY path;
-```
-
-```
- chemin_complet
-─────────────────────────────────────
- Electronique
- Electronique > Ordinateurs
- Electronique > Ordinateurs > Portables
- Electronique > Ordinateurs > Fixes
- Electronique > Smartphones
- Electronique > Smartphones > Apple
- Electronique > Smartphones > Samsung
- Vetements
- Vetements > Homme
- Vetements > Femme
-```
-
-### 3.4 Detection de boucles infinies (CYCLE)
-
-```sql
--- PostgreSQL 14+ : clause CYCLE
-WITH RECURSIVE graph AS (
-    SELECT id, nom, parent_id, ARRAY[id] AS visited
-    FROM categories
-    WHERE parent_id IS NULL
-
-    UNION ALL
-
-    SELECT c.id, c.nom, c.parent_id, g.visited || c.id
-    FROM categories c
-    JOIN graph g ON c.parent_id = g.id
-    WHERE c.id != ALL(g.visited)  -- Eviter les boucles !
-)
-SELECT * FROM graph;
-
--- PostgreSQL 14+ : syntaxe CYCLE native
-WITH RECURSIVE graph AS (
-    SELECT id, nom, parent_id
-    FROM categories
-    WHERE parent_id IS NULL
-
-    UNION ALL
-
-    SELECT c.id, c.nom, c.parent_id
-    FROM categories c
-    JOIN graph g ON c.parent_id = g.id
-)
-CYCLE id SET is_cycle USING path
-SELECT * FROM graph WHERE NOT is_cycle;
-```
-
-### 3.5 Génération de series avec CTE recursive
-
-```sql
--- Generer les dates d'un mois
-WITH RECURSIVE dates AS (
-    SELECT DATE '2025-03-01' AS jour
-
-    UNION ALL
-
-    SELECT jour + 1
-    FROM dates
-    WHERE jour < '2025-03-31'
-)
-SELECT jour, TO_CHAR(jour, 'Day') AS jour_semaine
-FROM dates;
-
--- Equivalent plus simple :
-SELECT generate_series('2025-03-01'::date, '2025-03-31'::date, '1 day')::date;
-```
-
----
-
-## 4. LATERAL joins
-
-### 4.1 Principe
-
-Un **LATERAL join** permet à une sous-requête dans FROM de **referencer** des colonnes des tables precedentes (ce qu'un JOIN normal ne peut pas faire).
-
-> **Analogie** : Imaginez un formulaire ou chaque champ depend du précédent. Un LATERAL join, c'est comme un champ "ville" qui depend du champ "pays" selectionne juste avant. La sous-requête peut "voir" les valeurs de la table de gauche.
-
-```sql
--- IMPOSSIBLE sans LATERAL :
-SELECT v.vendeur, top3.*
-FROM (SELECT DISTINCT vendeur FROM ventes) v
-JOIN (
-    SELECT montant FROM ventes
-    WHERE vendeur = v.vendeur  -- ERREUR : v n'est pas visible ici !
-    LIMIT 3
-) top3 ON true;
-
--- POSSIBLE avec LATERAL :
-SELECT v.vendeur, top3.*
-FROM (SELECT DISTINCT vendeur FROM ventes) v
-JOIN LATERAL (
-    SELECT montant, date_vente
-    FROM ventes
-    WHERE vendeur = v.vendeur  -- v est visible grace a LATERAL !
-    ORDER BY montant DESC
-    LIMIT 3
-) top3 ON true;
-```
-
-### 4.2 Cas d'usage : Top-N par groupe
-
-```sql
--- Les 2 meilleures ventes par region
-SELECT
-    r.region,
-    top.vendeur,
-    top.montant,
-    top.date_vente
-FROM (SELECT DISTINCT region FROM ventes) r
+SELECT f.id, top_post.*
+FROM families f
 CROSS JOIN LATERAL (
-    SELECT vendeur, montant, date_vente
-    FROM ventes v
-    WHERE v.region = r.region
-    ORDER BY montant DESC
-    LIMIT 2
-) top;
+    SELECT p.id, COUNT(r.id) AS nb_reactions
+    FROM posts p
+    LEFT JOIN reactions r ON r.post_id = p.id
+    WHERE p.family_id = f.id           -- f.id visible grâce à LATERAL
+    GROUP BY p.id
+    ORDER BY nb_reactions DESC
+    LIMIT 3
+) top_post;
+-- Retourne les 3 posts les plus aimés pour chaque famille, une ligne par post.
 ```
 
-```
- region │ vendeur  │ montant │ date_vente
-────────┼──────────┼─────────┼────────────
- Nord   │ Alice    │ 2000.00 │ 2025-02-10
- Nord   │ Alice    │ 1800.00 │ 2025-03-05
- Sud    │ Charlie  │ 2500.00 │ 2025-03-15
- Sud    │ Charlie  │ 2200.00 │ 2025-01-10
-```
+Cas `LEFT JOIN LATERAL … ON true` : inclut les familles sans aucun post (lignes NULL du côté latéral).
 
-### 4.3 LATERAL vs Window Function vs sous-requête
+### GROUPING SETS, ROLLUP, CUBE
 
-| Approche | Top-N par groupe | Performance | Lisibilite |
-|----------|-----------------|-------------|------------|
-| ROW_NUMBER() + WHERE | Oui | Bonne | Moyenne |
-| LATERAL + LIMIT | Oui | **Excellente** (utilise les index) | Bonne |
-| Sous-requête correlee | Oui | Mauvaise | Mauvaise |
+Produisent plusieurs niveaux d'agrégation en une seule requête, évitant plusieurs `UNION ALL`.
 
 ```sql
--- Approche Window Function (equivalent)
-SELECT * FROM (
-    SELECT
-        vendeur, region, montant, date_vente,
-        ROW_NUMBER() OVER (
-            PARTITION BY region ORDER BY montant DESC
-        ) AS rn
-    FROM ventes
-) sub
-WHERE rn <= 2;
+-- GROUPING SETS : liste explicite des combinaisons
+GROUP BY GROUPING SETS ((family_id, week), (family_id), ())
+-- Equivalent à :  GROUP BY family_id, week
+--           UNION GROUP BY family_id
+--           UNION (total général)
+
+-- ROLLUP(a, b) : sous-totaux hiérarchiques (a,b) → (a) → ()
+GROUP BY ROLLUP (family_id, week)
+
+-- CUBE(a, b) : toutes les combinaisons (a,b) → (a) → (b) → ()
+GROUP BY CUBE (family_id, week)
 ```
 
-### 4.4 LATERAL pour la denormalisation
+`GROUPING(col)` retourne 1 si la colonne est agrégée (NULL de sous-total), 0 si c'est une vraie valeur — utile pour distinguer un NULL réel d'un sous-total.
+
+### Agrégats filtrés avec FILTER
+
+`FILTER` conditionne un agrégat sans recourir à `CASE WHEN` :
 
 ```sql
--- Enrichir chaque commande avec le dernier commentaire
 SELECT
-    o.id AS order_id,
-    o.total,
-    latest_comment.body,
-    latest_comment.created_at
-FROM orders o
-LEFT JOIN LATERAL (
-    SELECT body, created_at
-    FROM comments c
-    WHERE c.order_id = o.id
-    ORDER BY created_at DESC
-    LIMIT 1
-) latest_comment ON true;
+  family_id,
+  COUNT(*)                                          AS total_posts,
+  COUNT(*) FILTER (WHERE nb_reactions >= 10)        AS posts_populaires,
+  SUM(nb_reactions) FILTER (WHERE created_at > now() - INTERVAL '7 days') AS reactions_semaine
+FROM post_stats
+GROUP BY family_id;
 ```
 
----
+Plus lisible que `SUM(CASE WHEN ... THEN 1 ELSE 0 END)`, et optimisé de la même façon par le planner.
 
-## 5. UNION / INTERSECT / EXCEPT
+## 3. Worked examples
 
-### 5.1 Les operateurs ensemblistes
+### Exemple A — Classement des posts TribuZen par popularité (fenêtre + LAG)
+
+Objectif : retourner les 10 posts de la famille 1 classés par nombre de réactions, avec leur rang, la variation vs le post précédent dans le temps, et le rang par auteur.
 
 ```sql
--- UNION : combine (elimine les doublons)
-SELECT vendeur FROM ventes WHERE region = 'Nord'
-UNION
-SELECT vendeur FROM ventes WHERE region = 'Sud';
+-- Schéma minimal TribuZen pour cet exemple
+CREATE TABLE families  (id SERIAL PRIMARY KEY, name TEXT NOT NULL);
+CREATE TABLE users     (id SERIAL PRIMARY KEY, display_name TEXT NOT NULL);
+CREATE TABLE posts (
+  id         SERIAL PRIMARY KEY,
+  family_id  INT NOT NULL REFERENCES families(id),
+  author_id  INT NOT NULL REFERENCES users(id),
+  content    TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE reactions (
+  id      SERIAL PRIMARY KEY,
+  post_id INT NOT NULL REFERENCES posts(id),
+  user_id INT NOT NULL REFERENCES users(id)
+);
 
--- UNION ALL : combine (garde les doublons, plus rapide)
-SELECT vendeur FROM ventes WHERE region = 'Nord'
-UNION ALL
-SELECT vendeur FROM ventes WHERE region = 'Sud';
-
--- INTERSECT : elements communs
-SELECT vendeur FROM ventes WHERE region = 'Nord'
-INTERSECT
-SELECT vendeur FROM ventes WHERE montant > 2000;
-
--- EXCEPT : elements dans A mais pas dans B
-SELECT vendeur FROM ventes WHERE region = 'Nord'
-EXCEPT
-SELECT vendeur FROM ventes WHERE montant < 1300;
+-- Données de test
+INSERT INTO families VALUES (1, 'Famille Dupont'), (2, 'Famille Martin');
+INSERT INTO users VALUES
+  (1,'Alice'),(2,'Bob'),(3,'Charlie'),(4,'Diana'),(5,'Eve');
+INSERT INTO posts VALUES
+  (1,1,1,'Premier post',  now() - INTERVAL '10 days'),
+  (2,1,2,'Deuxième post', now() - INTERVAL '8 days'),
+  (3,1,1,'Troisième post',now() - INTERVAL '5 days'),
+  (4,1,3,'Quatrième post',now() - INTERVAL '3 days'),
+  (5,1,2,'Cinquième post',now() - INTERVAL '1 day'),
+  (6,2,4,'Post famille 2',now() - INTERVAL '2 days');
+INSERT INTO reactions (post_id, user_id)
+  SELECT p, u FROM (VALUES
+    (1,2),(1,3),(1,4),
+    (2,1),(2,3),(2,4),(2,5),
+    (3,2),(3,4),
+    (4,1),(4,2),(4,3),(4,4),(4,5),
+    (5,1)
+  ) AS v(p, u);
 ```
-
-| Operateur | Doublons | Performance |
-|-----------|----------|-------------|
-| UNION | Elimines (DISTINCT implicite) | Plus lent |
-| UNION ALL | Conserves | Plus rapide |
-| INTERSECT | Elimines | - |
-| EXCEPT | Elimines | - |
-
----
-
-## 6. CASE WHEN / COALESCE / NULLIF
-
-### 6.1 CASE WHEN — Le switch SQL
 
 ```sql
--- Classification des ventes
-SELECT
-    vendeur,
-    montant,
-    CASE
-        WHEN montant >= 2000 THEN 'Excellent'
-        WHEN montant >= 1500 THEN 'Bon'
-        WHEN montant >= 1000 THEN 'Moyen'
-        ELSE 'Faible'
-    END AS performance
-FROM ventes;
-
--- CASE simple (comparaison d'egalite)
-SELECT
-    region,
-    CASE region
-        WHEN 'Nord' THEN 'Regions septentrionales'
-        WHEN 'Sud'  THEN 'Regions meridionales'
-        ELSE 'Autre'
-    END AS description
-FROM ventes;
-```
-
-### 6.2 COALESCE — Premiere valeur non-NULL
-
-```sql
--- Remplacer les NULLs
-SELECT
-    nom,
-    COALESCE(telephone, email, 'Aucun contact') AS contact
-FROM clients;
-
--- Equivalent a :
--- CASE WHEN telephone IS NOT NULL THEN telephone
---      WHEN email IS NOT NULL THEN email
---      ELSE 'Aucun contact' END
-```
-
-### 6.3 NULLIF — Retourner NULL si egal
-
-```sql
--- Eviter la division par zero
-SELECT
-    region,
-    total_ventes / NULLIF(nombre_vendeurs, 0) AS moyenne
-FROM stats_region;
--- Si nombre_vendeurs = 0, NULLIF retourne NULL
--- et la division retourne NULL au lieu d'une erreur
-```
-
----
-
-## 7. FILTER clause avec agregats
-
-```sql
--- Compter conditionnellement (PostgreSQL 9.4+)
-SELECT
-    region,
-    COUNT(*) AS total_ventes,
-    COUNT(*) FILTER (WHERE montant >= 2000) AS ventes_excellentes,
-    COUNT(*) FILTER (WHERE montant < 1500) AS ventes_faibles,
-    SUM(montant) FILTER (WHERE date_vente >= '2025-03-01') AS total_mars
-FROM ventes
-GROUP BY region;
-```
-
-```
- region │ total │ excellentes │ faibles │ total_mars
-────────┼───────┼─────────────┼─────────┼────────────
- Nord   │     5 │           1 │       1 │    1800.00
- Sud    │     6 │           2 │       1 │    4200.00
-```
-
-| Ancienne syntaxe (CASE) | Nouvelle syntaxe (FILTER) |
-|---|---|
-| `SUM(CASE WHEN x > 10 THEN 1 ELSE 0 END)` | `COUNT(*) FILTER (WHERE x > 10)` |
-| Plus verbeux, moins clair | Concis, intention claire |
-
----
-
-## 8. GROUPING SETS, CUBE, ROLLUP
-
-### 8.1 GROUPING SETS — Plusieurs GROUP BY en une requête
-
-```sql
--- Au lieu de 3 requetes separees :
-SELECT region, vendeur, SUM(montant) FROM ventes GROUP BY region, vendeur
-UNION ALL
-SELECT region, NULL, SUM(montant) FROM ventes GROUP BY region
-UNION ALL
-SELECT NULL, NULL, SUM(montant) FROM ventes;
-
--- Utilisez GROUPING SETS :
-SELECT
-    region,
-    vendeur,
-    SUM(montant) AS total
-FROM ventes
-GROUP BY GROUPING SETS (
-    (region, vendeur),  -- Detail par region + vendeur
-    (region),           -- Sous-total par region
-    ()                  -- Total general
+WITH post_stats AS (
+  -- 1. Agréger les réactions : une ligne par post
+  SELECT
+    p.id,
+    p.author_id,
+    u.display_name,
+    p.content,
+    p.created_at,
+    COUNT(r.id) AS nb_reactions
+  FROM posts p
+  JOIN users u ON u.id = p.author_id
+  LEFT JOIN reactions r ON r.post_id = p.id
+  WHERE p.family_id = 1
+  GROUP BY p.id, p.author_id, u.display_name, p.content, p.created_at
 )
-ORDER BY region NULLS LAST, vendeur NULLS LAST;
+SELECT
+  id,
+  display_name,
+  content,
+  nb_reactions,
+  -- 2. Rang global par popularité (RANK pour les ex-aequo)
+  RANK()       OVER (ORDER BY nb_reactions DESC)                         AS rang_global,
+  -- 3. Rang de l'auteur dans ses propres posts (popularité relative)
+  ROW_NUMBER() OVER (PARTITION BY author_id ORDER BY nb_reactions DESC)  AS rang_auteur,
+  -- 4. Tendance : variation vs le post chronologiquement précédent
+  nb_reactions - LAG(nb_reactions, 1, 0)
+                OVER (ORDER BY created_at)                               AS variation
+FROM post_stats
+ORDER BY nb_reactions DESC
+LIMIT 10;
 ```
 
 ```
- region │ vendeur  │   total
-────────┼──────────┼──────────
- Nord   │ Alice    │  5300.00
- Nord   │ Bob      │  2800.00
- Nord   │ NULL     │  8100.00  ← sous-total Nord
- Sud    │ Charlie  │  6600.00
- Sud    │ David    │  4200.00
- Sud    │ NULL     │ 10800.00  ← sous-total Sud
- NULL   │ NULL     │ 18900.00  ← TOTAL GENERAL
+ id │ display_name │ content        │ nb_reactions │ rang_global │ rang_auteur │ variation
+────┼──────────────┼────────────────┼──────────────┼─────────────┼─────────────┼──────────
+  4 │ Charlie      │ Quatrième post │ 5            │ 1           │ 1           │ 3
+  2 │ Bob          │ Deuxième post  │ 4            │ 2           │ 1           │ 1
+  1 │ Alice        │ Premier post   │ 3            │ 3           │ 2           │ 3
+  3 │ Alice        │ Troisième post │ 2            │ 4           │ 1           │ -1
+  5 │ Bob          │ Cinquième post │ 1            │ 5           │ 2           │ -1
 ```
 
-### 8.2 ROLLUP — Sous-totaux hierarchiques
+Pas-à-pas : (1) la CTE `post_stats` isole l'agrégation des réactions — résultat matérialisé une seule fois ; (2) `RANK()` sur `nb_reactions DESC` donne le classement global : si deux posts avaient 4 réactions, ils partageraient le rang 2 et le suivant serait rang 4 ; (3) `ROW_NUMBER()` avec `PARTITION BY author_id` crée un classement **indépendant par auteur** — les fonctions fenêtre dans la même requête peuvent avoir des `OVER` différents ; (4) `LAG(..., 1, 0)` récupère les réactions du post précédent dans le temps (0 par défaut pour le premier) — `variation` positive = le post a reçu plus de réactions que le précédent.
+
+### Exemple B — Arbre généalogique TribuZen (CTE récursive)
+
+Objectif : parcourir l'arbre des membres d'une famille depuis un ancêtre donné, calculer le niveau de chaque membre, et générer le chemin complet.
 
 ```sql
--- ROLLUP(a, b) = GROUPING SETS((a,b), (a), ())
-SELECT
-    region,
-    vendeur,
-    SUM(montant) AS total
-FROM ventes
-GROUP BY ROLLUP (region, vendeur)
-ORDER BY region NULLS LAST, vendeur NULLS LAST;
--- Meme resultat que ci-dessus
-```
+-- Table membres avec lien parent (arbre généalogique)
+CREATE TABLE members (
+  id        SERIAL PRIMARY KEY,
+  family_id INT NOT NULL REFERENCES families(id),
+  user_id   INT NOT NULL REFERENCES users(id),
+  parent_id INT REFERENCES members(id)  -- NULL = racine de l'arbre
+);
 
-### 8.3 CUBE — Toutes les combinaisons
+INSERT INTO members (id, family_id, user_id, parent_id) VALUES
+  (1, 1, 1, NULL),   -- Alice, racine (grand-parent)
+  (2, 1, 2, 1),      -- Bob,    enfant d'Alice
+  (3, 1, 3, 1),      -- Charlie, enfant d'Alice
+  (4, 1, 4, 2),      -- Diana,  petite-fille (enfant de Bob)
+  (5, 1, 5, 2),      -- Eve,    petite-fille (enfant de Bob)
+  (6, 1, 1, 3);      -- (autre branche, enfant de Charlie)
+```
 
 ```sql
--- CUBE(a, b) = GROUPING SETS((a,b), (a), (b), ())
+-- Parcourir tous les descendants d'Alice (id = 1), niveau et chemin
+WITH RECURSIVE arbre AS (
+    -- Anchor : Alice elle-même
+    SELECT
+      m.id,
+      u.display_name,
+      m.parent_id,
+      0                              AS niveau,
+      ARRAY[m.id]                    AS chemin,
+      u.display_name::TEXT           AS chemin_noms
+    FROM members m
+    JOIN users u ON u.id = m.user_id
+    WHERE m.id = 1
+
+    UNION ALL
+
+    -- Récursif : enfants directs des membres déjà dans l'arbre
+    SELECT
+      m.id,
+      u.display_name,
+      m.parent_id,
+      a.niveau + 1,
+      a.chemin || m.id,
+      a.chemin_noms || ' → ' || u.display_name
+    FROM members m
+    JOIN users u ON u.id = m.user_id
+    JOIN arbre a ON m.parent_id = a.id
+    WHERE NOT (m.id = ANY(a.chemin))   -- protection anti-cycle (données corrompues)
+)
 SELECT
-    region,
-    vendeur,
-    SUM(montant) AS total
-FROM ventes
-GROUP BY CUBE (region, vendeur)
-ORDER BY region NULLS LAST, vendeur NULLS LAST;
--- Inclut aussi les totaux par vendeur (toutes regions)
+  REPEAT('  ', niveau) || display_name  AS arbre_affiche,
+  niveau,
+  chemin_noms
+FROM arbre
+ORDER BY chemin;
 ```
 
-### 8.4 GROUPING() — Distinguer NULL réel vs sous-total
-
-```sql
-SELECT
-    CASE WHEN GROUPING(region) = 1 THEN 'TOUTES' ELSE region END AS region,
-    CASE WHEN GROUPING(vendeur) = 1 THEN 'TOUS' ELSE vendeur END AS vendeur,
-    SUM(montant) AS total
-FROM ventes
-GROUP BY ROLLUP (region, vendeur)
-ORDER BY GROUPING(region), region, GROUPING(vendeur), vendeur;
+```
+ arbre_affiche  │ niveau │ chemin_noms
+────────────────┼────────┼─────────────────────────────
+Alice           │      0 │ Alice
+  Bob           │      1 │ Alice → Bob
+    Diana       │      2 │ Alice → Bob → Diana
+    Eve         │      2 │ Alice → Bob → Eve
+  Charlie       │      1 │ Alice → Charlie
+    Alice       │      2 │ Alice → Charlie → Alice
 ```
 
----
+Pas-à-pas : (1) le terme anchor sélectionne la racine avec `niveau = 0` et initialise `chemin` comme un tableau d'IDs — `ARRAY[m.id]` est un tableau PostgreSQL ; (2) le terme récursif joint les membres dont `parent_id` est dans le résultat courant (`arbre.id`) — c'est la définition de "descendant direct" ; (3) `chemin_noms || ' → ' || display_name` concatène le chemin textuel à chaque étape grâce à la valeur portée par la récursion ; (4) `WHERE NOT (m.id = ANY(a.chemin))` empêche une boucle infinie si les données ont un cycle (ex. un enfant est en même temps ancêtre) ; (5) `ORDER BY chemin` trie par tableau d'IDs — PostgreSQL compare les tableaux lexicographiquement, ce qui produit un parcours en profondeur naturel.
 
-## 9. Exercice mental
+## 4. Pièges & misconceptions
 
-> **Exercice mental** : Vous avez une table `logs` avec des millions de lignes. Vous devez trouver, pour chaque utilisateur, sa session la plus longue (ecart maximum entre deux actions consecutives inferieur a 30 minutes). Quelles fonctions utiliseriez-vous ?
+- **`RANK()` crée des trous, `DENSE_RANK()` non.** Deux posts ex-aequo rang 2 font que le suivant est rang 4 avec `RANK()`, rang 3 avec `DENSE_RANK()`. *Correct* : choisir en fonction du besoin métier — `RANK()` pour "le 3ᵉ de podium", `DENSE_RANK()` pour "le 3ᵉ niveau de popularité distinct".
 
-<details>
-<summary>Reponse</summary>
+- **`LAST_VALUE` retourne souvent la ligne courante.** Le frame par défaut est `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`, donc `LAST_VALUE` dans ce frame = la ligne courante. *Correct* : toujours spécifier `ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING` avec `LAST_VALUE` pour obtenir la dernière ligne de la partition.
 
-1. **LAG()** pour calculer le temps entre chaque action et la précédente
-2. **CASE WHEN** pour détecter les debuts de session (ecart > 30 min)
-3. **SUM() OVER** pour créer un identifiant de session (cumul des debuts)
-4. **GROUP BY** session_id pour calculer la duree de chaque session
-5. **ROW_NUMBER()** ou **MAX()** pour trouver la plus longue
+- **CTE récursive sans condition d'arrêt → boucle infinie.** Si le terme récursif ne produit jamais zéro ligne, PostgreSQL tourne jusqu'à l'erreur mémoire. *Correct* : toujours inclure une condition `WHERE` qui converge (profondeur max, `NOT (id = ANY(chemin))`, ou clause `CYCLE` de PG 14+). Tester sur de petits jeux de données avant de lancer sur la production.
 
-C'est le pattern classique de **sessionization** en analytics.
-</details>
+- **`CROSS JOIN LATERAL` vs `LEFT JOIN LATERAL … ON true`.** `CROSS JOIN LATERAL` ne retourne rien pour les lignes de gauche dont la sous-requête est vide (comportement `INNER JOIN`). *Correct* : utiliser `LEFT JOIN LATERAL … ON true` pour inclure les familles sans aucun post (la sous-requête latérale retourne NULL).
 
----
+- **Fonctions fenêtre dans WHERE ou HAVING.** `SELECT rank() OVER (...) AS r FROM t WHERE r < 3` échoue : les fonctions fenêtre sont évaluées après `WHERE` et `HAVING`. *Correct* : encapsuler dans une sous-requête ou une CTE, puis filtrer dans la requête externe.
 
-## Ce qu'il faut retenir
+- **CTE pas toujours plus rapide qu'une sous-requête.** En PG 12+, une CTE utilisée une seule fois est `NOT MATERIALIZED` par défaut : le planner peut pousser les prédicats dedans et utiliser des index. Mais `WITH stats AS MATERIALIZED (...)` force la matérialisation — utile pour éviter de recalculer une CTE lourde appelée deux fois, contre-productif pour une CTE simple filtrée ensuite.
+
+- **`FILTER` ne remplace pas les index.** `COUNT(*) FILTER (WHERE family_id = 1)` dans une grosse agrégation scanne quand même toutes les lignes — `FILTER` conditionne l'agrégation, pas la lecture. *Correct* : filtrer en amont avec `WHERE` ou sur une CTE pré-filtrée.
+
+## 5. Ancrage TribuZen
+
+Couche fil-rouge : **classement des posts et arbre généalogique** dans `smaurier/tribuzen`.
+
+- **`ROW_NUMBER()` pour la pagination du feed** : numéroter les posts par date décroissante dans une famille et paginer avec `WHERE rn BETWEEN 11 AND 20` — pattern keyset plus fiable que `OFFSET` sur un flux qui change en temps réel.
+
+- **`RANK()` pour le dashboard "top posts"** : le dashboard famille affiche le top 10 hebdomadaire. Deux posts ex-aequo méritent le même rang — `RANK()` est le bon choix ; `ROW_NUMBER()` donnerait un rang arbitraire pour des popularités identiques.
+
+- **`LAG()` pour la tendance** : l'indicateur ↑/↓ (variation de réactions vs le post précédent) est calculé en une seule fenêtre sans sous-requête supplémentaire. La colonne `variation` dans l'Exemple A pilote directement le composant Vue `<TrendBadge>`.
+
+- **CTE récursive pour l'arbre familial** : la page profil d'un membre affiche ses ancêtres et descendants directs. La CTE récursive (Exemple B) est exécutée avec un `LIMIT 200` de sécurité et un filtre `WHERE niveau <= 5` pour éviter de traverser des arbres trop profonds. En session, la requête tourne sur Docker avec les seeds TribuZen.
+
+- **`LATERAL` pour les tops par famille** : la page admin liste les 3 posts les plus aimés de chaque famille en une seule requête `CROSS JOIN LATERAL (... LIMIT 3)` — sans `LATERAL`, il faudrait une requête par famille ou une sous-requête corrélée plus lente.
+
+- **`GROUPING SETS` pour les stats admin** : le tableau de bord admin affiche `posts par famille`, `posts par semaine`, et `total général` en une seule requête — évitant trois `UNION ALL`. `GROUPING(family_id) = 1` détecte les lignes de sous-total vs les lignes normales avec `family_id` NULL réel.
+
+## 6. Points clés
+
+1. Une fonction fenêtre enrichit chaque ligne sans réduire le résultat — `OVER (...)` distingue la fenêtre d'un agrégat `GROUP BY`.
+2. `ROW_NUMBER()` : numéros uniques sans ex-aequo (pagination). `RANK()` : ex-aequo + trous. `DENSE_RANK()` : ex-aequo sans trous (classements).
+3. `LAG(expr, offset, défaut)` / `LEAD(expr, offset, défaut)` : accéder aux lignes voisines sans jointure.
+4. `PARTITION BY` découpe la fenêtre en groupes indépendants ; la **frame clause** (`ROWS BETWEEN …`) délimite les lignes incluses dans le calcul.
+5. CTE (`WITH …`) : nommer des sous-résultats pour la lisibilité. PG 12+ : `NOT MATERIALIZED` par défaut si utilisée une fois, `MATERIALIZED` si plusieurs fois ou forcé.
+6. CTE récursive : terme anchor + `UNION ALL` + terme récursif référençant la CTE. Toujours prévoir une condition d'arrêt ; protection anti-cycle avec `NOT (id = ANY(chemin))` ou `CYCLE` (PG 14+).
+7. `LATERAL` : sous-requête dans `FROM` qui voit les colonnes des tables précédentes — idéal pour le top-N par groupe. `LEFT JOIN LATERAL … ON true` pour conserver les lignes sans résultat latéral.
+8. `FILTER (WHERE …)` : agrégation conditionnelle, plus lisible que `CASE WHEN` ; `GROUPING SETS / ROLLUP / CUBE` : multi-niveaux d'agrégation en une requête.
+
+## 7. Seeds Anki
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    A RETENIR                                  │
-│                                                               │
-│  1. Window Functions : enrichissent sans agreger             │
-│     ROW_NUMBER, RANK, LAG, LEAD, SUM OVER                   │
-│                                                               │
-│  2. CTEs : sous-requetes nommees, lisibilite ++              │
-│     MATERIALIZED vs NOT MATERIALIZED                         │
-│                                                               │
-│  3. WITH RECURSIVE : hierarchies, arbres, graphes            │
-│     Anchor + terme recursif + condition d'arret              │
-│                                                               │
-│  4. LATERAL : sous-requete correlee dans FROM                │
-│     Top-N par groupe, denormalisation                        │
-│                                                               │
-│  5. FILTER : agregats conditionnels elegants                 │
-│                                                               │
-│  6. GROUPING SETS / ROLLUP / CUBE : multi-niveaux           │
-│     d'agregation en une seule requete                        │
-└──────────────────────────────────────────────────────────────┘
+Différence ROW_NUMBER / RANK / DENSE_RANK sur les ex-aequo ?|ROW_NUMBER : numéros uniques arbitraires (pas d'ex-aequo). RANK : même rang + trous (deux 2ᵉ → le suivant est 4ᵉ). DENSE_RANK : même rang sans trou (deux 2ᵉ → le suivant est 3ᵉ)
+Comment récupérer la valeur de la ligne précédente dans une fenêtre ?|LAG(expression, offset, défaut) OVER (PARTITION BY … ORDER BY …). Offset = 1 par défaut. Défaut = NULL si non fourni, sinon la valeur spécifiée quand la ligne précédente n'existe pas
+Quelle frame clause utiliser pour un total cumulé (running total) ?|ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW — accumule du début de la partition jusqu'à la ligne courante
+Pourquoi LAST_VALUE retourne-t-il souvent la ligne courante ?|Le frame par défaut est RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW. Solution : spécifier ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING pour que LAST_VALUE voie toutes les lignes
+Comment écrire une CTE récursive en PostgreSQL ?|WITH RECURSIVE nom AS (terme_anchor UNION ALL terme_recursif_qui_reference_nom) SELECT * FROM nom. La récursion s'arrête quand le terme récursif produit zéro ligne
+Que se passe-t-il si une CTE récursive n'a pas de condition d'arrêt ?|Boucle infinie jusqu'à l'erreur mémoire. Prévenir avec : condition WHERE qui converge (profondeur max, NOT (id = ANY(chemin))), ou clause CYCLE (PG 14+)
+Différence CROSS JOIN LATERAL et LEFT JOIN LATERAL … ON true ?|CROSS JOIN LATERAL = INNER JOIN : exclut les lignes de gauche sans résultat latéral. LEFT JOIN LATERAL … ON true = inclut ces lignes avec NULL côté latéral
+Pourquoi ne peut-on pas filtrer sur une fonction fenêtre dans WHERE ?|Les fonctions fenêtre sont évaluées après WHERE et HAVING. Encapsuler dans une sous-requête ou une CTE, puis filtrer dans la requête externe
+Comment calculer plusieurs agrégations conditionnelles dans un GROUP BY ?|COUNT(*) FILTER (WHERE condition) — plus lisible que SUM(CASE WHEN ... THEN 1 ELSE 0 END) et optimisé de façon identique par le planner
 ```
 
----
+## Pont vers le lab
 
-## Navigation
-
-| Précédent | Suivant |
-|---|---|
-| [Module 11 — Performances & Optimisation](./11-performances-et-optimisation.md) | [Module 13 — JSONB & Types avances](./13-jsonb-et-types-avances.md) |
-
-**Travaux pratiques** : [Lab 12 — Window Functions et CTEs recursives](../labs/lab-12-fonctions-avancees.md)
-
----
-
-> *"SQL n'est pas un langage de programmation imperatif. C'est un langage declaratif : dites QUOI, pas COMMENT. Les Window Functions en sont la plus belle illustration."*
-
----
-
-<!-- parcours-recommande -->
-
-::: tip Parcours recommandé
-1. **Screencast** : [screencast 12 fonctions avancees sql](../screencasts/screencast-12-fonctions-avancees-sql.md)
-2. **Lab** : [lab-12-window-functions-cte](../labs/lab-12-window-functions-cte/README)
-3. **Quiz** : [quiz 12 fonctions avancees sql](../quizzes/quiz-12-fonctions-avancees-sql.html)
-:::
+> Lab associé : `10-postgresql/labs/lab-12-window-functions-cte/`. Tu y écris les requêtes du feed TribuZen classé par popularité (RANK + LAG), tu traverses l'arbre généalogique avec une CTE récursive, et tu génères les stats admin en une seule requête GROUPING SETS. Corrigé SQL inline dans le README, aucun fichier séparé.

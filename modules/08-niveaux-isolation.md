@@ -1,1067 +1,304 @@
-# Module 08 — Niveaux d'isolation & MVCC
-
-> **Objectif** : Comprendre comment PostgreSQL géré la concurrence sans que les transactions ne se marchent sur les pieds, grâce à MVCC et aux niveaux d'isolation.
->
-> **Difficulte** : ⭐⭐⭐
-
+---
+titre: Niveaux d'isolation
+cours: 10-postgresql
+notions: [isolation dans ACID, Read Committed, Repeatable Read, Serializable, anomalies dirty read non-repeatable read phantom, erreurs de sérialisation, MVCC, SET TRANSACTION ISOLATION LEVEL, défauts PostgreSQL]
+outcomes: [expliquer les niveaux d'isolation et leurs anomalies, choisir le bon niveau selon le besoin, gérer une erreur de sérialisation, comprendre MVCC]
+prerequis: [07-index-avances]
+next: 09-verrous-et-locks
+libs: [{ name: postgresql, version: "17" }]
+tribuzen: isolation d'une invitation concurrente TribuZen (deux parents invitent en même temps)
+last-reviewed: 2026-07
 ---
 
-> **⚠️ Les modules 08, 09 et 10 forment un bloc difficile** (isolation, locks, deadlocks). C'est le passage le plus abstrait du cours. Si tu galeres, c'est normal — la concurrence est un sujet difficile même pour des devs seniors. Fais les labs, utilise les diagrammes, et ne reste pas bloque plus de 30 min sur un concept. Tu peux aussi les faire en mode "lecture + quiz" sans deep dive — tu y reviendras quand tu en auras besoin en production.
+# Niveaux d'isolation
 
-## 1. Le problème de la concurrence
+> **Outcomes — tu sauras FAIRE :** expliquer les quatre niveaux d'isolation et les anomalies qu'ils préviennent, choisir le bon niveau selon ton besoin, gérer une erreur de sérialisation avec un retry, et comprendre comment MVCC rend tout ça possible sans verrou de lecture.
+> **Difficulté :** :star::star::star:
 
-Imaginez une bibliotheque universitaire. Des dizaines d'etudiants lisent des livres en même temps, certains annotent des exemplaires, d'autres en empruntent. Si chaque etudiant devait attendre que tous les autres aient fini avant de toucher un livre, la bibliotheque serait inutilisable.
+## 1. Cas concret d'abord
 
-> **Analogie** : Une base de donnees est cette bibliotheque. Les **lecteurs** (SELECT) veulent consulter des donnees, les **ecrivains** (INSERT, UPDATE, DELETE) veulent les modifier. Le defi : permettre a tout le monde de travailler simultanement sans corrompre les donnees.
-
-Dans un système naif, on pourrait poser un **verrou global** : "personne ne lit tant que quelqu'un écrit". Mais c'est catastrophique pour les performances.
-
-PostgreSQL a choisi une approche radicalement différente : **MVCC** (Multi-Version Concurrency Control).
-
-### Le principe fondamental
-
-```
-┌─────────────────────────────────────────────────────┐
-│           REGLE D'OR DE POSTGRESQL                   │
-│                                                       │
-│   Les lecteurs ne bloquent JAMAIS les ecrivains.     │
-│   Les ecrivains ne bloquent JAMAIS les lecteurs.     │
-│                                                       │
-│   Seuls les ecrivains peuvent bloquer               │
-│   d'autres ecrivains (sur la MEME ligne).           │
-└─────────────────────────────────────────────────────┘
-```
-
-C'est cette propriété qui rend PostgreSQL si performant en environnement concurrent.
-
----
-
-## 2. MVCC — Multi-Version Concurrency Control
-
-### 2.1 Le concept : des versions multiples
-
-Au lieu de modifier une ligne "en place" (comme dans un fichier texte classique), PostgreSQL **créé une nouvelle version** de la ligne à chaque modification.
-
-> **Analogie** : Imaginez un document Google Docs. Quand vous modifiez un paragraphe, Google conserve l'historique des versions. Vous pouvez toujours revenir à une version anterieure. PostgreSQL fait exactement la même chose, mais au niveau de chaque ligne de chaque table.
-
-```
-Etat de la table "comptes" au fil du temps :
-
-Version 1 (xmin=100, xmax=105)  ← ancienne version (morte)
-┌──────────┬──────────┐
-│ id = 1   │ solde=500│
-└──────────┴──────────┘
-
-Version 2 (xmin=105, xmax=∞)    ← version courante (vivante)
-┌──────────┬──────────┐
-│ id = 1   │ solde=700│
-└──────────┴──────────┘
-
-Les DEUX versions coexistent physiquement dans la table !
-```
-
-### 2.2 xmin et xmax : les colonnes cachees
-
-Chaque ligne (tuple) dans PostgreSQL possede des **colonnes système invisibles** :
-
-| Colonne | Signification | Valeur |
-|---------|---------------|--------|
-| `xmin` | Transaction qui a **créé** cette version | ID de transaction (XID) |
-| `xmax` | Transaction qui a **supprime/remplace** cette version | XID ou 0 si vivante |
-| `ctid` | Position physique dans la page | (page, offset) |
-| `cmin` | Numero de commande dans la transaction (création) | Entier |
-| `cmax` | Numero de commande dans la transaction (suppression) | Entier |
+Dans TribuZen, un enfant reçoit une invitation (`status = 'pending'`) à rejoindre la famille Dupont. **Deux parents** ouvrent l'app simultanément et appuient tous les deux sur "Accepter". Chacun lit `status = 'pending'`, décide que l'invitation est valide, et procède. Sans isolation suffisante, les deux transactions passent : deux lignes `family_member` sont insérées pour le même enfant, et `members_count` est incrémenté deux fois.
 
 ```sql
--- Observer les colonnes systeme
-SELECT xmin, xmax, ctid, * FROM comptes;
+-- Session A (Parent 1)                  -- Session B (Parent 2)
+BEGIN;                                    BEGIN;
+SELECT status FROM invitation             SELECT status FROM invitation
+  WHERE id = 'inv-42';                      WHERE id = 'inv-42';
+-- 'pending'                              -- 'pending'  (vue identique)
 
---  xmin  | xmax | ctid  | id | nom     | solde
--- -------+------+-------+----+---------+-------
---  12345 |    0 | (0,1) |  1 | Alice   |   500
---  12346 |    0 | (0,2) |  2 | Bob     |   300
---  12350 | 12355| (0,3) |  3 | Charlie |   100  ← en cours de modification
+UPDATE invitation                         -- bloquée : attend le COMMIT de A
+  SET status = 'accepted'
+  WHERE id = 'inv-42';
+COMMIT;   -- A committe en premier
+                                          -- débloquée
+                                          UPDATE invitation
+                                            SET status = 'accepted'
+                                            WHERE id = 'inv-42';
+                                          COMMIT;   -- B committe aussi !
+-- Résultat : deux family_member pour le même enfant, members_count +2
 ```
 
-### 2.3 Le cycle de vie d'un tuple
+Le niveau d'isolation décide si la session B peut voir la modification de A avant son propre commit, et si un conflit d'écriture est détecté et refusé. La suite explique MVCC (le mécanisme sous-jacent), les trois niveaux utilisables dans PostgreSQL, leurs anomalies respectives, et comment réagir à une erreur de sérialisation.
 
-```
-       INSERT (tx 100)           UPDATE (tx 105)          VACUUM
-            │                         │                      │
-            ▼                         ▼                      ▼
-     ┌─────────────┐          ┌─────────────┐        ┌─────────────┐
-     │ xmin = 100  │          │ xmin = 100  │        │             │
-     │ xmax = 0    │    ───►  │ xmax = 105  │  ───►  │  SUPPRIME   │
-     │ solde = 500 │          │ solde = 500 │        │  (espace    │
-     │ (VIVANTE)   │          │ (MORTE)     │        │   libere)   │
-     └─────────────┘          └─────────────┘        └─────────────┘
-                                     +
-                              ┌─────────────┐
-                              │ xmin = 105  │
-                              │ xmax = 0    │
-                              │ solde = 700 │
-                              │ (VIVANTE)   │
-                              └─────────────┘
-```
+## 2. Théorie complète, concise
 
-Etapes :
-1. **INSERT** : créé un tuple avec `xmin = tx_courante`, `xmax = 0`
-2. **UPDATE** : marque l'ancien tuple (`xmax = tx_courante`), créé un **nouveau** tuple
-3. **DELETE** : marque le tuple (`xmax = tx_courante`), pas de nouveau tuple
-4. **VACUUM** : nettoie les tuples morts que plus aucune transaction ne peut voir
+### MVCC — pourquoi les lecteurs ne bloquent jamais
 
-### 2.4 Snapshots et visibilite
+PostgreSQL ne modifie pas une ligne « en place ». À chaque `UPDATE` ou `DELETE`, il **crée une nouvelle version** du tuple et marque l'ancienne comme expirée. Deux colonnes système invisibles pilotent cette visibilité :
 
-Un **snapshot** est une "photographie" de l'état de la base à un instant donne.
-
-> **Analogie** : Photographier la base à un instant T. Quand vous prenez une photo d'un paysage, les voitures qui arrivent APRES le declenchement ne sont pas sur la photo. De même, les modifications faites APRES la prise du snapshot sont invisibles.
-
-Un snapshot contient :
-- `xmin` : le plus petit XID encore en cours au moment du snapshot
-- `xmax` : le prochain XID a etre attribue
-- `xip_list` : la liste des transactions en cours
-
-**Regle de visibilite d'un tuple** :
-
-```
-Un tuple est VISIBLE dans un snapshot si :
-  1. xmin du tuple est committe ET avant le snapshot
-  2. xmax du tuple est 0 (pas supprime)
-     OU xmax n'est pas encore committe
-     OU xmax est apres le snapshot
-```
-
-```sql
--- Visualiser le snapshot courant
-SELECT txid_current_snapshot();
--- Resultat : '100:105:102,103'
---             │    │    └── transactions en cours : 102 et 103
---             │    └── prochain XID
---             └── plus ancien XID en cours
-```
-
-### 2.5 Quand le snapshot est-il pris ?
-
-C'est LA question cruciale, et la réponse depend du **niveau d'isolation** :
-
-| Niveau d'isolation | Moment du snapshot |
+| Colonne | Rôle |
 |---|---|
-| Read Committed | A chaque **instruction** (SELECT, UPDATE...) |
-| Repeatable Read | Au **debut de la transaction** (1er statement) |
-| Serializable | Au **debut de la transaction** + detection SSI |
-
----
-
-## 3. Les phenomenes de concurrence
-
-Avant de comprendre les niveaux d'isolation, il faut connaître les **problèmes** qu'ils resolvent.
-
-### 3.1 Dirty Read (lecture sale)
-
-**Definition** : Lire des donnees modifiees par une transaction qui n'a **pas encore fait COMMIT**.
-
-```
-Transaction A                    Transaction B
-─────────────                    ─────────────
-BEGIN;
-UPDATE comptes SET solde = 0
-  WHERE id = 1;
-                                 BEGIN;
-                                 SELECT solde FROM comptes
-                                   WHERE id = 1;
-                                 -- Dirty Read : voit solde = 0
-                                 -- alors que A n'a pas committe !
-ROLLBACK;
--- Le solde est toujours 500
-                                 -- B a pris une decision basee
-                                 -- sur une donnee FANTOME
-```
-
-> **Piege classique** : Dans PostgreSQL, le Dirty Read est **IMPOSSIBLE**, quel que soit le niveau d'isolation. Même si vous demandez `READ UNCOMMITTED`, PostgreSQL applique `READ COMMITTED`. C'est un choix de conception.
-
-### 3.2 Non-Repeatable Read (lecture non-repetable)
-
-**Definition** : Relire la même ligne dans la même transaction et obtenir un résultat **différent**.
-
-```
-Transaction A                    Transaction B
-─────────────                    ─────────────
-BEGIN;
-SELECT solde FROM comptes
-  WHERE id = 1;
--- Resultat : 500
-                                 BEGIN;
-                                 UPDATE comptes SET solde = 300
-                                   WHERE id = 1;
-                                 COMMIT;
-
-SELECT solde FROM comptes
-  WHERE id = 1;
--- Resultat : 300  ← DIFFERENT !
--- Non-Repeatable Read
-COMMIT;
-```
-
-### 3.3 Phantom Read (lecture fantome)
-
-**Definition** : Une requête retourne des **lignes supplementaires** qui n'existaient pas lors de la première exécution.
-
-```
-Transaction A                    Transaction B
-─────────────                    ─────────────
-BEGIN;
-SELECT COUNT(*) FROM comptes
-  WHERE solde > 200;
--- Resultat : 2
-                                 BEGIN;
-                                 INSERT INTO comptes (nom, solde)
-                                   VALUES ('David', 400);
-                                 COMMIT;
-
-SELECT COUNT(*) FROM comptes
-  WHERE solde > 200;
--- Resultat : 3  ← Un fantome est apparu !
-COMMIT;
-```
-
-### 3.4 Serialization Anomaly (anomalie de serialisation)
-
-**Definition** : Le résultat de l'exécution concurrente est **impossible** a obtenir par une exécution serie (l'un après l'autre) des transactions.
-
-```
-Table: compteurs (id, valeur)
-Initialement : (1, 10), (2, 20)
-
-Transaction A                    Transaction B
-─────────────                    ─────────────
-BEGIN;                           BEGIN;
-SELECT valeur FROM compteurs     SELECT valeur FROM compteurs
-  WHERE id = 1;  -- 10            WHERE id = 2;  -- 20
-
-UPDATE compteurs                 UPDATE compteurs
-  SET valeur = 20 + 1              SET valeur = 10 + 1
-  WHERE id = 2;                    WHERE id = 1;
-
-COMMIT;                          COMMIT;
-
--- Resultat : (1, 11), (2, 21)
--- IMPOSSIBLE en execution serie !
--- Si A puis B : (1, 11), (2, 11)
--- Si B puis A : (1, 21), (2, 21)
-```
-
-### 3.5 Tableau récapitulatif des phenomenes
-
-```
-┌─────────────────────────┬───────────────────────────────────────┐
-│ Phenomene               │ Description courte                    │
-├─────────────────────────┼───────────────────────────────────────┤
-│ Dirty Read              │ Lire du non-committe                  │
-│ Non-Repeatable Read     │ Relire ≠ resultat                     │
-│ Phantom Read            │ Nouvelles lignes apparaissent         │
-│ Serialization Anomaly   │ Resultat impossible en serie          │
-└─────────────────────────┴───────────────────────────────────────┘
-```
-
----
-
-## 4. Les 3 niveaux d'isolation de PostgreSQL
-
-Le standard SQL définit 4 niveaux d'isolation. PostgreSQL en implemente **3** (car Read Uncommitted est traite comme Read Committed).
-
-### 4.1 Table comparative
-
-| Phenomene | Read Uncommitted | Read Committed | Repeatable Read | Serializable |
-|---|---|---|---|---|
-| Dirty Read | ~~Possible~~ **Non (PG)** | Non | Non | Non |
-| Non-Repeatable Read | ~~Possible~~ **Non (PG)** | **Possible** | Non | Non |
-| Phantom Read | ~~Possible~~ **Non (PG)** | **Possible** | Non* | Non |
-| Serialization Anomaly | ~~Possible~~ **Non (PG)** | **Possible** | **Possible** | Non |
-
-> \* PostgreSQL previent aussi les Phantom Reads en Repeatable Read, ce qui va au-dela du standard SQL.
-
-### 4.2 Comparaison rapide
-
-| Critere | Read Committed | Repeatable Read | Serializable |
-|---|---|---|---|
-| Snapshot | Par statement | Par transaction | Par transaction + SSI |
-| Performance | Excellente | Très bonne | Bonne (overhead SSI) |
-| Risque d'erreur | Aucun retry | Retry serialization | Retry serialization |
-| Cas d'usage | 90% des cas | Rapports coherents | Integrite critique |
-| Defaut PG ? | **Oui** | Non | Non |
-
----
-
-## 5. SET TRANSACTION ISOLATION LEVEL — Syntaxe
+| `xmin` | XID de la transaction qui a **créé** cette version du tuple |
+| `xmax` | XID de la transaction qui l'a **supprimée/remplacée** (0 = encore vivante) |
 
 ```sql
--- Methode 1 : Au debut de la transaction
-BEGIN;
-SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
--- ... vos requetes ...
-COMMIT;
-
--- Methode 2 : Dans le BEGIN
-BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
--- ... vos requetes ...
-COMMIT;
-
--- Methode 3 : Par defaut pour la session
-SET default_transaction_isolation = 'serializable';
-
--- Methode 4 : Par defaut pour le serveur (postgresql.conf)
--- default_transaction_isolation = 'read committed'
+-- Observer les versions système en direct
+SELECT xmin, xmax, ctid, id, status FROM invitation WHERE id = 'inv-42';
+--  xmin  | xmax | ctid  |   id   | status
+-- -------+------+-------+--------+---------
+--  1001  |    0 | (0,1) | inv-42 | pending
 ```
 
-> **Piege classique** : `SET TRANSACTION` doit etre la **première** commande après `BEGIN`. Si vous executez une requête avant, PostgreSQL refuse le changement d'isolation.
+Un `UPDATE` marque `xmax = tx_courante` sur l'ancien tuple et insère un nouveau tuple avec `xmin = tx_courante`. Les deux versions coexistent physiquement jusqu'au prochain `VACUUM`. Chaque transaction choisit quelle version elle voit grâce à son **snapshot** — une photo de l'ensemble des XIDs commitées au moment où le snapshot est pris.
+
+Conséquence clé : les `SELECT` ne posent aucun verrou de lecture. **Les lecteurs ne bloquent jamais les écrivains, et vice-versa.** Seuls deux écrivains sur la **même ligne** se bloquent mutuellement.
+
+### Quand le snapshot est-il pris ?
+
+C'est la définition exacte du niveau d'isolation :
+
+| Niveau | Snapshot pris | Anomalies restantes |
+|---|---|---|
+| Read Committed (défaut PG) | À chaque **statement** | non-repeatable read, phantom, write skew |
+| Repeatable Read | Au **premier statement** de la transaction | write skew (phantom protégé aussi par PG) |
+| Serializable | Au premier statement + **détection SSI** | aucune |
+
+PostgreSQL n'implémente pas Read Uncommitted de façon distincte : il se comporte exactement comme Read Committed. Les dirty reads sont **impossibles** dans PostgreSQL quel que soit le niveau déclaré.
+
+### Les anomalies de concurrence
+
+**Dirty read** : lire une donnée écrite par une transaction non encore commitée (qui pourrait rollback). Impossible dans PostgreSQL — MVCC ne rend visibles que les tuples commitées.
+
+**Non-repeatable read** : relire la **même ligne** dans la même transaction et obtenir une valeur différente (une autre tx a commité entre les deux lectures). Possible en Read Committed (snapshot par statement) ; impossible en Repeatable Read et Serializable.
+
+**Phantom read** : réexécuter la **même requête multi-lignes** et voir apparaître ou disparaître des lignes (insertions/suppressions commitées entre les deux). Possible en Read Committed ; bloqué aussi par Repeatable Read dans PostgreSQL (au-delà du minimum du standard SQL).
+
+**Write skew / anomalie de sérialisation** : deux transactions lisent un état cohérent, écrivent chacune de leur côté, et le résultat combiné viole une règle métier qu'aucune n'aurait violée seule. Seul Serializable l'interdit.
+
+Tableau — comportement **réel de PostgreSQL 17** :
+
+| Anomalie | Read Committed | Repeatable Read | Serializable |
+|---|:---:|:---:|:---:|
+| Dirty read | impossible | impossible | impossible |
+| Non-repeatable read | possible | impossible | impossible |
+| Phantom read | possible | impossible\* | impossible |
+| Write skew | possible | possible | impossible |
+
+\* PostgreSQL Repeatable Read utilise le snapshot isolation : toutes les requêtes de la transaction partagent le même snapshot figé — les insertions commitées après le premier statement sont invisibles, ce qui protège des phantoms au-delà du minimum du standard SQL.
+
+### Erreurs de sérialisation et retry obligatoire
+
+En Repeatable Read et Serializable, PostgreSQL peut lever :
+
+```
+ERROR: could not serialize access due to concurrent update
+SQLSTATE: 40001
+```
+
+Ce n'est pas un bug — c'est le signal que le résultat aurait été incohérent. La réponse correcte est **`ROLLBACK` immédiat puis retry**. Après toute erreur dans une transaction PostgreSQL, toutes les commandes suivantes sont rejetées (`current transaction is aborted, commands ignored until end of transaction block`) jusqu'au `ROLLBACK`.
+
+### SET TRANSACTION ISOLATION LEVEL
 
 ```sql
--- ERREUR : trop tard !
+-- Méthode 1 : directement dans BEGIN
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+
+-- Méthode 2 : premier statement après BEGIN (avant toute requête)
 BEGIN;
-SELECT 1;  -- Une requete a deja ete executee
 SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
--- ERROR: SET TRANSACTION ISOLATION LEVEL must be called
--- before any query
-```
 
-### Vérifier le niveau courant
+-- Méthode 3 : défaut de session
+SET default_transaction_isolation = 'repeatable read';
 
-```sql
+-- Vérifier le niveau actif
 SHOW transaction_isolation;
--- read committed  (par defaut)
-
--- Ou dans une transaction
-BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
-SHOW transaction_isolation;
--- repeatable read
 ```
 
----
+Piège : `SET TRANSACTION ISOLATION LEVEL` doit être la **première commande** après `BEGIN`, avant toute requête. Une requête préalable provoque `ERROR: SET TRANSACTION ISOLATION LEVEL must be called before any query`.
 
-## 6. Read Committed en profondeur
+## 3. Worked examples
 
-### 6.1 Principe
+### Exemple A — Read Committed : non-repeatable read (deux sessions psql)
 
-En **Read Committed**, chaque instruction SQL prend un **nouveau snapshot**. Cela signifie qu'entre deux SELECTs dans la même transaction, vous pouvez voir des modifications committees par d'autres transactions.
-
-> **Analogie** : Vous etes un photographe qui prend une nouvelle photo à chaque clic. Entre deux photos, le paysage peut changer : des voitures passent, des gens bougent. Chaque photo est coherente en elle-même, mais deux photos successives peuvent montrer des états différents.
-
-### 6.2 Exemple concret : deux transactions
+Objectif : voir concrètement qu'en Read Committed la session A obtient deux valeurs différentes pour la même ligne dans la même transaction.
 
 ```sql
--- Preparation
-CREATE TABLE comptes (
-    id    SERIAL PRIMARY KEY,
-    nom   TEXT NOT NULL,
-    solde NUMERIC(10,2) NOT NULL
+-- Setup (une seule fois)
+CREATE TABLE invitation (
+  id         TEXT PRIMARY KEY,
+  status     TEXT NOT NULL DEFAULT 'pending'
+             CHECK (status IN ('pending','accepted','declined')),
+  family_id  TEXT NOT NULL,
+  invitee_id TEXT NOT NULL
 );
-
-INSERT INTO comptes (nom, solde) VALUES
-    ('Alice', 1000.00),
-    ('Bob', 500.00);
+INSERT INTO invitation VALUES ('inv-42', 'pending', 'fam-1', 'user-9');
 ```
 
-```
-Terminal 1 (Tx A)                    Terminal 2 (Tx B)
-─────────────────                    ─────────────────
+```sql
+-- Session A (terminal 1)               -- Session B (terminal 2)
 BEGIN;
-                                     BEGIN;
-SELECT solde FROM comptes
-  WHERE nom = 'Alice';
--- 1000.00
-                                     UPDATE comptes
-                                       SET solde = solde - 200
-                                       WHERE nom = 'Alice';
-                                     COMMIT;
+SELECT status FROM invitation
+  WHERE id = 'inv-42';
+-- 'pending'
+                                         BEGIN;
+                                         UPDATE invitation
+                                           SET status = 'accepted'
+                                           WHERE id = 'inv-42';
+                                         COMMIT;
 
-SELECT solde FROM comptes
-  WHERE nom = 'Alice';
--- 800.00 ← a change !
--- (Nouveau snapshot = voit le COMMIT de B)
+SELECT status FROM invitation
+  WHERE id = 'inv-42';
+-- 'accepted'  ← snapshot frais, voit le COMMIT de B
+--   c'est un non-repeatable read
 COMMIT;
 ```
 
-### 6.3 Le piege de l'UPDATE conditionnel
+Pas-à-pas : (1) la session A ouvre une transaction en Read Committed (défaut) ; (2) la session B committe une modification sur la même ligne ; (3) le **deuxième SELECT de A** prend un nouveau snapshot et voit le commit de B — le statut a changé dans la même transaction. Si A avait décidé d'accepter l'invitation sur la base du premier SELECT, elle aurait agi sur une donnée devenue obsolète.
 
-```
-Terminal 1 (Tx A)                    Terminal 2 (Tx B)
-─────────────────                    ─────────────────
-BEGIN;                               BEGIN;
+### Exemple B — Repeatable Read : snapshot stable et erreur 40001
 
-                                     UPDATE comptes
-                                       SET solde = solde + 100
-                                       WHERE nom = 'Alice'
-                                       AND solde >= 500;
-                                     -- OK, solde etait 1000
-
-UPDATE comptes
-  SET solde = solde - 600
-  WHERE nom = 'Alice'
-  AND solde >= 600;
--- Bloque ! Attend le COMMIT de B
-
-                                     COMMIT;
-
--- Debloque !
--- PostgreSQL RE-EVALUE la condition WHERE
--- avec les nouvelles valeurs.
--- solde est maintenant 1100, >= 600 → OK
--- solde = 1100 - 600 = 500
-COMMIT;
-```
-
-> **Point clé** : En Read Committed, quand un UPDATE est debloque après avoir attendu un lock, PostgreSQL **reevalue** la clause WHERE avec la version a jour de la ligne. C'est subtil et important.
-
-### 6.4 Quand Read Committed suffit
-
-- Applications CRUD classiques
-- Operations qui ne dependent pas de la coherence inter-requêtes
-- Quand chaque requête est independante
-- La grande majorite des applications web
-
----
-
-## 7. Repeatable Read en profondeur
-
-### 7.1 Principe
-
-En **Repeatable Read**, le snapshot est pris au debut de la transaction (plus precisement, au moment de la première instruction). Toutes les requêtes de la transaction voient **le même état** de la base.
-
-> **Analogie** : Vous etes un photographe qui prend UNE seule photo au debut, puis travaille uniquement à partir de cette photo. Peu importe ce qui change dans le monde réel, vous ne le voyez pas.
-
-### 7.2 Exemple concret
-
-```
-Terminal 1 (Tx A)                    Terminal 2 (Tx B)
-─────────────────                    ─────────────────
-BEGIN TRANSACTION ISOLATION
-  LEVEL REPEATABLE READ;
-
-SELECT solde FROM comptes
-  WHERE nom = 'Alice';
--- 1000.00 (snapshot fige ici)
-
-                                     BEGIN;
-                                     UPDATE comptes
-                                       SET solde = 800
-                                       WHERE nom = 'Alice';
-                                     COMMIT;
-
-SELECT solde FROM comptes
-  WHERE nom = 'Alice';
--- 1000.00 ← TOUJOURS le meme !
--- (Le snapshot est fige)
-
-COMMIT;
-```
-
-### 7.3 L'erreur de serialisation
-
-Que se passe-t-il si la transaction essaie de **modifier** une ligne qui a change ?
-
-```
-Terminal 1 (Tx A)                    Terminal 2 (Tx B)
-─────────────────                    ─────────────────
-BEGIN TRANSACTION ISOLATION
-  LEVEL REPEATABLE READ;
-
-SELECT solde FROM comptes
-  WHERE nom = 'Alice';
--- 1000.00
-
-                                     BEGIN;
-                                     UPDATE comptes
-                                       SET solde = 800
-                                       WHERE nom = 'Alice';
-                                     COMMIT;
-
-UPDATE comptes
-  SET solde = 900
-  WHERE nom = 'Alice';
--- ERROR: could not serialize access
--- due to concurrent update
--- La transaction est ANNULEE !
-
-ROLLBACK;  -- Obligatoire
-```
-
-> **Piege classique** : Après une erreur de serialisation, la transaction est dans un état "aborted". Vous DEVEZ faire ROLLBACK. Tout autre commande retournera : `ERROR: current transaction is aborted, commands ignored until end of transaction block`.
-
-### 7.4 Le retry pattern
-
-L'erreur de serialisation n'est **pas un bug** mais un comportement attendu. Il faut **reessayer** la transaction.
+Objectif : montrer que Repeatable Read fige le snapshot **et** lève une erreur 40001 si la ligne a été modifiée concurremment avant l'UPDATE.
 
 ```sql
--- Pattern de retry en PL/pgSQL
-DO $$
-DECLARE
-    retries INT := 0;
-    max_retries CONSTANT INT := 5;
-BEGIN
-    LOOP
-        BEGIN
-            -- Debut de la transaction (implicite dans DO)
-            PERFORM pg_sleep(0); -- Reset du snapshot
-
-            UPDATE comptes
-              SET solde = solde - 100
-              WHERE nom = 'Alice'
-              AND solde >= 100;
-
-            -- Si on arrive ici, c'est OK
-            EXIT; -- Sort de la boucle
-
-        EXCEPTION
-            WHEN serialization_failure OR deadlock_detected THEN
-                retries := retries + 1;
-                IF retries >= max_retries THEN
-                    RAISE EXCEPTION 'Trop de retries (%)', retries;
-                END IF;
-                RAISE NOTICE 'Retry % / %', retries, max_retries;
-        END;
-    END LOOP;
-END $$;
+-- Remettre l'invitation à 'pending'
+UPDATE invitation SET status = 'pending' WHERE id = 'inv-42';
 ```
-
-### 7.5 Cas d'usage pour Repeatable Read
-
-- Rapports financiers (coherence des lectures)
-- Calculs qui lisent plusieurs tables et doivent voir un état coherent
-- Exports de donnees
-- Verifications de coherence
-
----
-
-## 8. Serializable en profondeur
-
-### 8.1 Principe
-
-Le niveau **Serializable** garantit que le résultat de l'exécution concurrente est **identique** à une exécution serie des transactions (dans un certain ordre).
-
-> **Analogie** : Imaginez un guichet de banque ou les clients passent un par un. Le résultat est toujours coherent car il n'y a pas de concurrence. Serializable donne la même garantie, mais SANS forcer les transactions a passer une par une.
-
-### 8.2 SSI — Serializable Snapshot Isolation
-
-PostgreSQL utilise l'algorithme **SSI** (Serializable Snapshot Isolation) :
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                         SSI                                   │
-│                                                               │
-│  1. Chaque transaction voit un snapshot (comme Repeatable     │
-│     Read)                                                     │
-│  2. PostgreSQL DETECTE les dependances entre transactions     │
-│  3. Si un cycle de dependances apparait → anomalie possible   │
-│  4. PostgreSQL ANNULE une des transactions (rollback)         │
-│                                                               │
-│  Pas de locks supplementaires ! Seulement de la detection.   │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### 8.3 Exemple : detection d'anomalie
 
 ```sql
--- Table initiale
-CREATE TABLE compteurs (
-    id     INT PRIMARY KEY,
-    valeur INT NOT NULL
-);
-INSERT INTO compteurs VALUES (1, 10), (2, 20);
+-- Session A                             -- Session B
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+
+SELECT status FROM invitation
+  WHERE id = 'inv-42';
+-- 'pending'  (snapshot figé ici)
+                                         BEGIN;
+                                         UPDATE invitation
+                                           SET status = 'accepted'
+                                           WHERE id = 'inv-42';
+                                         COMMIT;
+
+SELECT status FROM invitation
+  WHERE id = 'inv-42';
+-- 'pending'  ← snapshot figé, ne voit pas le COMMIT de B
+
+UPDATE invitation
+  SET status = 'accepted'
+  WHERE id = 'inv-42';
+-- ERROR: could not serialize access due to concurrent update
+-- SQLSTATE 40001 — transaction abortée
+ROLLBACK;  -- obligatoire avant toute nouvelle commande
 ```
 
-```
-Terminal 1 (Tx A)                    Terminal 2 (Tx B)
-─────────────────                    ─────────────────
-BEGIN TRANSACTION ISOLATION
-  LEVEL SERIALIZABLE;
-                                     BEGIN TRANSACTION ISOLATION
-                                       LEVEL SERIALIZABLE;
+Pas-à-pas : (1) le snapshot de A est pris au premier statement — `status = 'pending'` ; (2) B committe ; (3) le second SELECT de A voit toujours `'pending'` (snapshot stable, c'est la garantie Repeatable Read) ; (4) quand A tente l'UPDATE sur une ligne que B a déjà modifiée et commitée, PostgreSQL détecte le conflit et annule A avec SQLSTATE 40001 ; (5) A doit `ROLLBACK` et relancer la transaction complète — au retry, son snapshot sera postérieur au commit de B, elle verra `status = 'accepted'` et sa garde métier (`IF status != 'pending'`) stoppera proprement.
 
-SELECT valeur FROM compteurs
-  WHERE id = 1;
--- 10
-                                     SELECT valeur FROM compteurs
-                                       WHERE id = 2;
-                                     -- 20
-
-UPDATE compteurs
-  SET valeur = 21   -- basé sur lecture de B
-  WHERE id = 2;
-
-                                     UPDATE compteurs
-                                       SET valeur = 11  -- basé sur lecture de A
-                                       WHERE id = 1;
-
-COMMIT;
--- OK (le premier a committer gagne)
-
-                                     COMMIT;
-                                     -- ERROR: could not serialize access
-                                     -- due to read/write dependencies
-                                     -- among transactions
-```
-
-### 8.4 Performance de Serializable
-
-| Aspect | Impact |
-|---|---|
-| Mémoire | Legere augmentation (tracking des dépendances) |
-| CPU | Legere augmentation (detection de cycles) |
-| Taux de rollback | Augmente (faux positifs possibles) |
-| Throughput | Depend du workload (souvent < 10% de perte) |
-| Lock contention | **Pas de locks supplementaires** |
-
-> **Point clé** : SSI peut générer des **faux positifs** — PostgreSQL annule parfois une transaction qui n'aurait pas cause d'anomalie. C'est le prix de la detection sans locks.
-
-### 8.5 Configuration pour Serializable
+### Exemple C — Observer MVCC avec xmin/xmax
 
 ```sql
--- Parametres importants
-SHOW max_pred_locks_per_transaction;  -- defaut : 64
-SHOW max_pred_locks_per_relation;     -- defaut : -2 (auto)
-SHOW max_pred_locks_per_page;         -- defaut : 2
+-- État initial
+SELECT xmin, xmax, ctid, id, status FROM invitation WHERE id = 'inv-42';
+--  xmin  | xmax | ctid  |   id   | status
+-- -------+------+-------+--------+---------
+--  1001  |    0 | (0,1) | inv-42 | pending
+-- xmax = 0 → tuple vivant
 
--- Augmenter si beaucoup de serialization failures
-ALTER SYSTEM SET max_pred_locks_per_transaction = 128;
-SELECT pg_reload_conf();
+-- Terminal 2 : BEGIN; UPDATE ... ; (ne pas committer)
+-- Depuis ce terminal, observer pendant l'update :
+SELECT xmin, xmax, ctid, id, status FROM invitation WHERE id = 'inv-42';
+--  xmin  | xmax | ctid  |   id   | status
+-- -------+------+-------+--------+---------
+--  1001  | 1003 | (0,1) | inv-42 | pending
+-- xmax = 1003 : la tx 1003 a marqué ce tuple comme expiré mais n'a pas encore commité
+-- Ce terminal voit toujours 'pending' : le nouveau tuple non commité reste invisible
+
+-- Après COMMIT du terminal 2 :
+SELECT xmin, xmax, ctid, id, status FROM invitation WHERE id = 'inv-42';
+--  xmin  | xmax | ctid  |   id   |  status
+-- -------+------+-------+--------+----------
+--  1003  |    0 | (0,2) | inv-42 | accepted
+-- Nouveau tuple à l'emplacement (0,2) — le ctid a changé
+-- L'ancien (0,1) avec xmax=1003 est mort, en attente de VACUUM
 ```
 
----
+## 4. Pièges & misconceptions
 
-## 9. Predicate Locks (SIReadLock) — le mécanisme interne de SSI
+- **« En Read Committed, ma transaction voit un snapshot fixe. »** Faux : le snapshot est pris à **chaque statement**. Deux SELECT successifs dans la même transaction peuvent retourner des valeurs différentes si une autre transaction a commité entre les deux. *Correct* : pour une vue stable sur toute la transaction, utiliser **Repeatable Read**.
 
-### 9.1 Ce que sont les Predicate Locks
+- **« PostgreSQL autorise les dirty reads si on demande Read Uncommitted. »** Faux : PostgreSQL traite Read Uncommitted exactement comme Read Committed. Les dirty reads sont impossibles dans PostgreSQL, quel que soit le niveau déclaré.
 
-Pour détecter les anomalies de serialisation, PostgreSQL utilise des **Predicate Locks** (aussi appeles **SIReadLock**). Contrairement aux verrous classiques (`RowExclusiveLock`, `AccessShareLock`...), les Predicate Locks **ne bloquent personne**. Ils ne font que **tracer les dépendances** entre transactions.
+- **« Une erreur 40001 est un bug à corriger dans le code. »** Faux : c'est le comportement attendu de Repeatable Read et Serializable. *Correct* : implémenter une **boucle de retry** (3 à 5 tentatives, backoff exponentiel) sur SQLSTATE 40001.
 
-> **Point clé** : Un Predicate Lock ne signifie pas "cette ligne est verrouillee". Il signifie "cette transaction a **lu** ces donnees et depend de leur état". C'est un **traceur de dépendances**, pas un mécanisme de blocage.
+- **« Après une erreur 40001, je peux continuer mes requêtes. »** Faux : après toute erreur dans une transaction PostgreSQL, le moteur rejette toutes les commandes suivantes jusqu'au `ROLLBACK` (`current transaction is aborted`). *Correct* : toujours `ROLLBACK` immédiatement, puis relancer la transaction complète.
 
-### 9.2 Les trois niveaux d'escalation
+- **« Serializable est le niveau à utiliser partout pour plus de sécurité. »** Vrai pour la cohérence, faux pour les performances : Serializable génère davantage d'erreurs 40001 (faux positifs SSI), augmente la charge mémoire (predicate locks), et exige un retry systématique. *Correct* : utiliser Read Committed (défaut) pour les CRUD courants, Repeatable Read pour les rapports cohérents ou les lectures longues, Serializable pour les opérations financières ou les systèmes de réservation.
 
-Les Predicate Locks existent a trois niveaux de granularite :
+- **« VACUUM est optionnel si la base est petite. »** Faux : MVCC accumule des tuples morts à chaque UPDATE/DELETE — sans VACUUM, la table gonfle (bloat), les index grossissent, et les performances se dégradent. PostgreSQL lance autovacuum automatiquement, mais les tables très actives nécessitent un réglage du seuil ou un VACUUM manuel après des imports massifs.
 
-| Niveau | Granularite | Quand ? |
-|---|---|---|
-| **Tuple-level** | Une ligne spécifique | Lecture d'un petit nombre de lignes via index |
-| **Page-level** | Une page entière (8 Ko) | Escalation quand trop de tuples sont verrouilles sur une page |
-| **Relation-level** | La table entière | Escalation quand trop de pages sont verrouillees, ou Seq Scan |
+## 5. Ancrage TribuZen
 
-L'escalation est controlee par les paramètres :
-- `max_pred_locks_per_transaction` (defaut : 64)
-- `max_pred_locks_per_relation` (defaut : -2, auto)
-- `max_pred_locks_per_page` (defaut : 2)
+Couche fil-rouge : **isolation d'une invitation concurrente** dans `smaurier/tribuzen`.
 
-### 9.3 Le graphe de dépendances rw (Read-Write)
-
-SSI construit un graphe de **dépendances rw** (read-write) entre transactions :
-
-```
- Graphe de dependances rw :
-
- Tx A lit X → Tx B ecrit X   =  dependance rw de A vers B
- Tx B lit Y → Tx A ecrit Y   =  dependance rw de B vers A
-
-       ┌─── rw ───▶ Tx B
-  Tx A │              │
-       ◀─── rw ──────┘
-
-  Cycle detecte ! → "dangerous structure"
-  PostgreSQL annule une des deux transactions.
-```
-
-La detection se fait lors du COMMIT : si une **dangerous structure** (deux dépendances rw consecutives formant un cycle potentiel) est detectee, PostgreSQL annule la transaction.
-
-### 9.4 Faux positifs
-
-PostgreSQL est **conservateur** dans sa detection. Il peut annuler une transaction qui n'aurait pas cause d'anomalie réelle. C'est un compromis delibere :
-
-- **Pas de faux negatifs** : toute vraie anomalie est detectee
-- **Faux positifs possibles** : certaines transactions valides sont annulees par precaution
-- L'escalation (tuple → page → relation) augmente le risque de faux positifs
-
-C'est pourquoi le **retry pattern** est indispensable en Serializable.
-
-### 9.5 Observer les Predicate Locks
+Le cas des deux parents qui acceptent simultanément la même invitation est le scénario de concurrence le plus probable dans TribuZen — une famille multi-appareils où les parents reçoivent tous deux la même notification push et appuient quasi-simultanément.
 
 ```sql
--- Observer les predicate locks actifs pendant une transaction Serializable
-BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
-SELECT * FROM compteurs WHERE id = 1;
-
--- Dans un autre terminal :
-SELECT locktype, relation::regclass, page, tuple, pid, mode
-FROM pg_locks
-WHERE mode = 'SIReadLock';
-
---  locktype  | relation  | page | tuple | pid  |    mode
--- -----------+-----------+------+-------+------+------------
---  tuple     | compteurs |    0 |     1 | 1234 | SIReadLock
-```
-
-### 9.6 Impact sur la performance
-
-| Aspect | Impact en Serializable |
-|---|---|
-| Mémoire supplementaire | Stockage des predicate locks (shared memory) |
-| CPU supplementaire | Detection des dangerous structures à chaque COMMIT |
-| Taux de rollback | Plus eleve qu'en Repeatable Read (faux positifs) |
-| Debit global | Generalement < 10% de perte si peu de conflits |
-| Transactions longues | Penalisantes : maintiennent les predicate locks plus longtemps |
-
-> **Ce qu'il faut retenir** : Les Predicate Locks sont la brique interne qui rend Serializable possible sans verrous bloquants. Ils tracent les dépendances de lecture, et PostgreSQL annule une transaction si un cycle est détecté. Le cout est un leger overhead en mémoire/CPU et un taux de retry plus eleve. Pour minimiser les faux positifs : garder les transactions courtes et éviter les Seq Scans en Serializable.
-
----
-
-## 10. xmin/xmax en pratique
-
-### 10.1 Observer les versions
-
-```sql
--- Creer une table de test
-CREATE TABLE test_mvcc (
-    id   SERIAL PRIMARY KEY,
-    data TEXT
+-- Structure TribuZen (extrait)
+CREATE TABLE invitation (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  status      TEXT NOT NULL DEFAULT 'pending'
+              CHECK (status IN ('pending','accepted','declined')),
+  family_id   UUID NOT NULL REFERENCES family(id),
+  invitee_id  UUID NOT NULL REFERENCES app_user(id),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Inserer une ligne
-INSERT INTO test_mvcc (data) VALUES ('version 1');
-
--- Observer
-SELECT xmin, xmax, ctid, * FROM test_mvcc;
---  xmin  | xmax | ctid  | id |   data
--- -------+------+-------+----+-----------
---  1001  |    0 | (0,1) |  1 | version 1
+CREATE TABLE family_member (
+  family_id  UUID NOT NULL REFERENCES family(id),
+  user_id    UUID NOT NULL REFERENCES app_user(id),
+  joined_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (family_id, user_id)   -- UNIQUE implicite = filet de sécurité
+);
 ```
 
-### 10.2 Après un UPDATE
+Sans isolation suffisante (Read Committed) : les deux transactions passent, deux `family_member` sont insérées pour le même `invitee_id` — la contrainte `PRIMARY KEY (family_id, user_id)` sur `family_member` sauve la mise avec une erreur `23505` (unique violation), mais c'est une erreur logique non retriable qui doit être gérée en amont.
 
-```sql
-UPDATE test_mvcc SET data = 'version 2' WHERE id = 1;
+Avec **Repeatable Read** : la deuxième transaction reçoit SQLSTATE 40001 quand elle tente l'UPDATE sur `invitation`. Au retry, son snapshot est postérieur au commit de la première — elle voit `status = 'accepted'` et sa garde métier lève une erreur propre (`ALREADY_ACCEPTED`) sans donnée corrompue.
 
-SELECT xmin, xmax, ctid, * FROM test_mvcc;
---  xmin  | xmax | ctid  | id |   data
--- -------+------+-------+----+-----------
---  1002  |    0 | (0,2) |  1 | version 2
---                  ^^^^
---  Notez : ctid a change ! (0,1) → (0,2)
---  L'ancienne version est en (0,1) mais invisible
-```
+Décision d'architecture TribuZen : la transaction d'acceptation d'invitation tourne en **Repeatable Read** avec retry sur 40001. La contrainte `PRIMARY KEY` sur `family_member` reste comme filet de sécurité de dernier recours.
 
-### 10.3 Pendant un UPDATE (dans une autre transaction)
+## 6. Points clés
 
-```sql
--- Terminal 1
-BEGIN;
-UPDATE test_mvcc SET data = 'version 3' WHERE id = 1;
--- NE PAS COMMIT
+1. MVCC : PostgreSQL crée une nouvelle version du tuple à chaque modification. `xmin`/`xmax` contrôlent la visibilité par snapshot. Les lecteurs ne bloquent jamais les écrivains.
+2. Dirty reads impossibles dans PostgreSQL : Read Uncommitted se comporte comme Read Committed.
+3. **Read Committed** (défaut PG) : snapshot par statement → non-repeatable read et phantom possibles. Convient à 90 % des cas CRUD.
+4. **Repeatable Read** : snapshot par transaction → vue stable, phantom protégé par PostgreSQL. Peut lever SQLSTATE 40001 sur conflit d'écriture → retry obligatoire.
+5. **Serializable** : SSI détecte les cycles de dépendances read/write → interdit le write skew. Plus d'erreurs 40001, exige retry systématique.
+6. `BEGIN ISOLATION LEVEL ...` ou `SET TRANSACTION ISOLATION LEVEL ...` avant toute requête dans la transaction.
+7. Après erreur 40001 : `ROLLBACK` immédiat, puis relancer la transaction complète — jamais continuer dans la transaction abortée.
+8. VACUUM nettoie les tuples morts accumulés par MVCC : indispensable pour éviter le bloat et que les vieux snapshots bloquent l'autovacuum.
 
--- Terminal 2
-SELECT xmin, xmax, ctid, * FROM test_mvcc;
---  xmin  | xmax | ctid  | id |   data
--- -------+------+-------+----+-----------
---  1002  | 1003 | (0,2) |  1 | version 2
---          ^^^^
---  xmax = 1003 signifie : la transaction 1003 a marque
---  cette version comme morte, mais n'a pas encore committe
-```
-
-### 10.4 La fonction txid_current()
-
-```sql
--- Connaitre l'ID de la transaction courante
-SELECT txid_current();
--- 1004
-
--- Connaitre le snapshot courant
-SELECT txid_current_snapshot();
--- '1003:1005:1003'
--- Signifie : transactions 1003 encore en cours,
--- prochain XID = 1005
-```
-
-### 10.5 Compter les tuples morts
-
-```sql
--- Apres plusieurs UPDATE sans VACUUM
-SELECT
-    relname,
-    n_live_tup,    -- tuples vivants
-    n_dead_tup,    -- tuples morts (a nettoyer)
-    last_vacuum,
-    last_autovacuum
-FROM pg_stat_user_tables
-WHERE relname = 'test_mvcc';
-```
-
----
-
-## 11. Le retry pattern en Node.js
-
-### 11.1 Implementation de base
-
-```typescript
-import pg from 'pg';
-const { Pool } = pg;
-
-const pool = new Pool({
-    host: 'localhost',
-    port: 5432,
-    database: 'mydb',
-    user: 'myuser',
-    password: 'mypassword',
-    max: 20,
-});
-
-/**
- * Execute une transaction avec retry automatique
- * en cas de serialization failure.
- *
- * @param {Function} txFn - Fonction recevant le client
- * @param {Object} options - Options
- * @param {string} options.isolationLevel - Niveau d'isolation
- * @param {number} options.maxRetries - Nombre max de retries
- * @returns {Promise<any>} - Resultat de la transaction
- */
-async function withTransaction(txFn, options = {}) {
-    const {
-        isolationLevel = 'SERIALIZABLE',
-        maxRetries = 5,
-    } = options;
-
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        const client = await pool.connect();
-
-        try {
-            await client.query(
-                `BEGIN TRANSACTION ISOLATION LEVEL ${isolationLevel}`
-            );
-
-            const result = await txFn(client);
-
-            await client.query('COMMIT');
-            return result;
-        } catch (error) {
-            await client.query('ROLLBACK');
-
-            // Code '40001' = serialization_failure
-            // Code '40P01' = deadlock_detected
-            const isRetryable =
-                error.code === '40001' || error.code === '40P01';
-
-            if (isRetryable && attempt < maxRetries) {
-                console.warn(
-                    `Serialization failure, retry ${attempt}/${maxRetries}`
-                );
-                // Backoff exponentiel avec jitter
-                const delay = Math.min(
-                    100 * Math.pow(2, attempt) + Math.random() * 100,
-                    5000
-                );
-                await new Promise((r) => setTimeout(r, delay));
-                continue;
-            }
-
-            throw error;
-        } finally {
-            client.release();
-        }
-    }
-}
-```
-
-### 11.2 Utilisation
-
-```typescript
-// Transfert d'argent avec isolation Serializable
-async function transfert(fromId, toId, montant) {
-    return withTransaction(async (client) => {
-        // Verifier le solde
-        const { rows } = await client.query(
-            'SELECT solde FROM comptes WHERE id = $1',
-            [fromId]
-        );
-
-        if (rows.length === 0) {
-            throw new Error(`Compte ${fromId} introuvable`);
-        }
-
-        if (rows[0].solde < montant) {
-            throw new Error('Solde insuffisant');
-        }
-
-        // Debiter
-        await client.query(
-            'UPDATE comptes SET solde = solde - $1 WHERE id = $2',
-            [montant, fromId]
-        );
-
-        // Crediter
-        await client.query(
-            'UPDATE comptes SET solde = solde + $1 WHERE id = $2',
-            [montant, toId]
-        );
-
-        return { success: true, montant };
-    });
-}
-
-// Appel
-try {
-    const result = await transfert(1, 2, 100);
-    console.log('Transfert reussi :', result);
-} catch (error) {
-    console.error('Transfert echoue :', error.message);
-}
-```
-
-### 11.3 Pont vers TypeORM
-
-Si vous utilisez TypeORM (cf. NestJS module 14), vous pouvez spécifier le niveau d'isolation directement dans une transaction :
-
-```typescript
-// TypeORM : isolation dans une transaction
-await dataSource.transaction('SERIALIZABLE', async (manager) => {
-  const user = await manager.findOne(User, { where: { id: 1 } });
-  user.solde -= montant;
-  await manager.save(user);
-});
-```
-
-TypeORM géré le `BEGIN TRANSACTION ISOLATION LEVEL ...` et le `COMMIT`/`ROLLBACK` pour vous. En revanche, le **retry** en cas de `serialization_failure` reste a votre charge — TypeORM ne reessaie pas automatiquement.
-
-### 11.4 Les codes d'erreur importants
-
-| Code | Nom | Signification | Retryable ? |
-|------|-----|---------------|-------------|
-| `40001` | serialization_failure | Conflit de serialisation | **Oui** |
-| `40P01` | deadlock_detected | Deadlock détecté | **Oui** |
-| `23505` | unique_violation | Doublon sur contrainte unique | **Non** (logique) |
-| `23503` | foreign_key_violation | FK inexistante | **Non** (logique) |
-| `57014` | query_canceled | Timeout ou annulation | Peut-etre |
-
----
-
-## 12. Choisir le bon niveau d'isolation
-
-### 12.1 Arbre de decision
+## 7. Seeds Anki
 
 ```
-                    Votre cas d'usage
-                          │
-                ┌─────────┴──────────┐
-                │                    │
-        Chaque requete          Coherence entre
-        est independante        plusieurs requetes
-                │                    │
-                ▼                    │
-         READ COMMITTED      ┌──────┴──────┐
-         (defaut, 90%        │             │
-          des cas)      Seulement      Ecritures
-                        lectures       concurrentes
-                             │         critiques
-                             ▼              │
-                       REPEATABLE          ▼
-                       READ           SERIALIZABLE
-                       (rapports)     (finance,
-                                       reservations)
+Qu'est-ce que MVCC dans PostgreSQL ?|Multi-Version Concurrency Control : chaque UPDATE crée une nouvelle version du tuple (xmin/xmax). Les lecteurs voient leur snapshot sans bloquer les écrivains.
+Quel niveau d'isolation est le défaut de PostgreSQL et que garantit-il ?|Read Committed : chaque statement prend un snapshot frais des données commitées. Deux SELECT dans la même transaction peuvent retourner des valeurs différentes.
+Quelle anomalie Read Committed ne prévient-il pas ?|Non-repeatable read (relire la même ligne donne un résultat différent) et phantom read (nouvelles lignes apparaissent) et write skew.
+PostgreSQL autorise-t-il les dirty reads en Read Uncommitted ?|Non. PostgreSQL traite Read Uncommitted exactement comme Read Committed. Les dirty reads sont impossibles quel que soit le niveau.
+Que signifie SQLSTATE 40001 et que faire ?|could not serialize access — conflit de sérialisation en Repeatable Read ou Serializable. Faire ROLLBACK immédiatement puis relancer toute la transaction (retry).
+Quelle anomalie Serializable empêche-t-il que Repeatable Read ne bloque pas ?|Write skew : deux transactions lisent un état cohérent et écrivent chacune de leur côté, donnant un résultat impossible en exécution série.
+Comment déclarer le niveau d'isolation d'une transaction ?|BEGIN ISOLATION LEVEL REPEATABLE READ ou BEGIN; SET TRANSACTION ISOLATION LEVEL SERIALIZABLE; — avant toute requête dans la transaction.
+Que stockent xmin et xmax dans un tuple PostgreSQL ?|xmin = XID de la transaction qui a créé cette version ; xmax = XID de celle qui l'a supprimée/remplacée (0 si le tuple est encore vivant).
+Pourquoi Repeatable Read protège-t-il aussi des phantom reads dans PostgreSQL ?|PostgreSQL utilise le snapshot isolation : toutes les requêtes partagent le même snapshot figé — les insertions commitées après ne sont pas visibles, au-delà du minimum du standard SQL.
 ```
 
-### 12.2 Guide par cas d'usage
+## Pont vers le lab
 
-| Cas d'usage | Niveau recommande | Raison |
-|---|---|---|
-| API REST CRUD basique | Read Committed | Chaque requête est independante |
-| Dashboard temps réel | Read Committed | Donnees approximatives OK |
-| Rapport financier mensuel | Repeatable Read | Coherence sur toute la lecture |
-| Export de donnees | Repeatable Read | Snapshot fige pendant l'export |
-| Transfert bancaire | Serializable | Integrite absolue requise |
-| Système de reservation | Serializable | Pas de double booking |
-| Gestion de stock | Serializable | Pas de survente |
-| Compteur de likes | Read Committed | Approximation acceptable |
-
-### 12.3 Matrice performance / sécurité
-
-```
-  Securite ▲
-           │
-           │   ★ Serializable
-           │
-           │         ★ Repeatable Read
-           │
-           │                    ★ Read Committed
-           │
-           └──────────────────────────────────► Performance
-```
-
----
-
-## 13. Exercice mental
-
-> **Exercice mental** : Deux utilisateurs ajoutent simultanement un article au même panier e-commerce. L'un ajoute 3 unites, l'autre 2 unites. En Read Committed, que se passe-t-il si les deux font `UPDATE paniers SET quantite = quantite + N WHERE id = 42` ?
-
-<details>
-<summary>Reponse</summary>
-
-En **Read Committed** :
-1. La première transaction acquiert le lock sur la ligne et fait `quantite = quantite + 3`
-2. La deuxieme transaction attend le lock
-3. Quand la première committe, la deuxieme est debloquee
-4. PostgreSQL **reevalue** la condition : `quantite` est maintenant la valeur committee
-5. La deuxieme fait `quantite = (nouvelle_valeur) + 2`
-
-Résultat : **quantite initiale + 3 + 2 = correct !**
-
-C'est parce que PostgreSQL reevalue la clause après deblocage en Read Committed.
-</details>
-
----
-
-## Ce qu'il faut retenir
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                    A RETENIR                                  │
-│                                                               │
-│  1. MVCC = pas de locks en lecture, versions multiples        │
-│                                                               │
-│  2. Dirty Read est IMPOSSIBLE dans PostgreSQL                 │
-│                                                               │
-│  3. Read Committed = snapshot par statement (defaut)          │
-│                                                               │
-│  4. Repeatable Read = snapshot par transaction                │
-│                                                               │
-│  5. Serializable = SSI, detecte les anomalies                │
-│                                                               │
-│  6. Les erreurs de serialisation sont NORMALES                │
-│     → implementer un retry pattern                           │
-│                                                               │
-│  7. xmin/xmax permettent de voir les versions en live        │
-│                                                               │
-│  8. VACUUM nettoie les tuples morts (indispensable)          │
-└──────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Navigation
-
-| Précédent | Suivant |
-|---|---|
-| [Module 07 — Index avancés](./07-index-avances) | [Module 09 — Verrous & Locks](./09-verrous-et-locks) |
-
-**Travaux pratiques** : [Lab 08 — Expérimenter les niveaux d'isolation](/labs/lab-08-isolation-levels/README)
-
----
-
-> *"La concurrence n'est pas un problème a éviter, c'est une realite a gérer. MVCC est l'outil qui transforme le chaos en harmonie."*
-
----
-
-<!-- parcours-recommande -->
-
-::: tip Parcours recommandé
-1. **Screencast** : [screencast 08 niveaux isolation](../screencasts/screencast-08-niveaux-isolation.md)
-2. **Lab** : [lab-08-isolation-levels](../labs/lab-08-isolation-levels/README)
-3. **Visualisation** : [MVCC & Isolation](../visualizations/mvcc-isolation.html)
-4. **Quiz** : [quiz 08 niveaux isolation](../quizzes/quiz-08-niveaux-isolation.html)
-:::
+> Lab associé : `10-postgresql/labs/lab-08-isolation-levels/`. Tu reproduis en deux sessions psql le scénario des deux parents TribuZen — tu observes le non-repeatable read en Read Committed, tu provoques l'erreur 40001 en Repeatable Read, tu inspectes xmin/xmax en direct, et tu écris le retry pattern. Corrigé SQL inline dans le README, aucun fichier séparé.

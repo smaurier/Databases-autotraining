@@ -1,946 +1,406 @@
-# Module 11 — Performances & Optimisation
-
-> **Objectif** : Identifier les goulots d'etranglement, optimiser les connexions, le bulk loading, le VACUUM, le partitionnement et les paramètres clés de PostgreSQL.
->
-> **Difficulte** : ⭐⭐⭐⭐
-
+---
+titre: Performances et optimisation
+cours: 10-postgresql
+notions: [optimisation guidée par EXPLAIN, tuning d'index, VACUUM et ANALYZE, autovacuum, pagination keyset vs OFFSET, éviter le N plus 1, work_mem et mémoire, connection pooling, dénormalisation raisonnée]
+outcomes: [optimiser une requête lente via EXPLAIN ANALYZE, choisir la pagination keyset, entretenir la base avec VACUUM ANALYZE, arbitrer normalisation et perf]
+prerequis: [10-deadlocks]
+next: 12-fonctions-avancees-sql
+libs: [{ name: postgresql, version: "17" }]
+tribuzen: optimiser le feed TribuZen (pagination keyset, index adaptés, requête sous 10ms)
+last-reviewed: 2026-07
 ---
 
-## 1. Les couches de performance
+# Performances et optimisation
 
-Avant d'optimiser, il faut comprendre **où** se situe le problème. Une requête traverse plusieurs couches :
+> **Outcomes — tu sauras FAIRE :** optimiser une requête lente via `EXPLAIN ANALYZE`, remplacer `OFFSET` par la pagination keyset, entretenir la base avec `VACUUM ANALYZE`, et arbitrer entre normalisation et performance.
+> **Difficulté :** :star::star::star::star:
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     APPLICATION (Node.js)                     │
-├─────────────────────────────────────────────────────────────┤
-│  1. RESEAU        │ Latence client → serveur (TCP, DNS)      │
-├────────────────────┼────────────────────────────────────────┤
-│  2. CONNEXION      │ Etablissement de connexion (handshake)  │
-├────────────────────┼────────────────────────────────────────┤
-│  3. PARSING        │ Analyse syntaxique du SQL               │
-├────────────────────┼────────────────────────────────────────┤
-│  4. PLANNING       │ Le planner choisit le meilleur plan     │
-├────────────────────┼────────────────────────────────────────┤
-│  5. EXECUTION      │ Execution du plan (scans, joins, sorts) │
-├────────────────────┼────────────────────────────────────────┤
-│  6. I/O            │ Lecture/ecriture sur disque (ou cache)   │
-├─────────────────────────────────────────────────────────────┤
-│                     STOCKAGE (SSD/HDD)                       │
-└─────────────────────────────────────────────────────────────┘
-```
+## 1. Cas concret d'abord
 
-> **Analogie** : Optimiser uniquement les requêtes SQL, c'est comme acheter un moteur de Formule 1 pour une voiture avec des roues carrees. Il faut regarder la **chaine complete**.
-
-| Couche | Temps typique | Optimisation |
-|--------|--------------|-------------|
-| Réseau | 1-50ms | Connection pooling, requêtes en batch |
-| Connexion | 50-100ms | Connection pooling (PgBouncer) |
-| Parsing | < 1ms | Prepared statements |
-| Planning | 1-10ms | Statistiques a jour, prepared statements |
-| Exécution | 1ms - minutes | Index, requêtes optimisees |
-| I/O | 0.1ms (SSD) - 10ms (HDD) | shared_buffers, cache OS |
-
----
-
-## 2. Connection pooling
-
-### 2.1 Le problème
-
-Chaque connexion a PostgreSQL créé un **nouveau processus** sur le serveur (fork). C'est couteux :
-
-```
-Sans pooling (100 requetes/s) :
-┌──────────┐        ┌──────────────────┐
-│ App      │───────►│ PostgreSQL       │
-│          │  100   │  100 processus ! │
-│          │  conn  │  ~10MB chacun    │
-│          │        │  = 1GB RAM       │
-└──────────┘        └──────────────────┘
-
-Avec pooling (100 requetes/s) :
-┌──────────┐  ┌──────────┐  ┌──────────────────┐
-│ App      │─►│ Pool     │─►│ PostgreSQL       │
-│          │  │ (10 conn)│  │  10 processus    │
-│          │  │          │  │  = 100MB RAM     │
-└──────────┘  └──────────┘  └──────────────────┘
-                   │
-            Reutilise les connexions
-```
-
-### 2.2 PgBouncer — Le standard de l'industrie
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  PgBouncer : modes de pooling                                │
-│                                                               │
-│  Session pooling :    1 client = 1 connexion PG              │
-│                       (utile pour les features de session)   │
-│                                                               │
-│  Transaction pooling : partage entre transactions            │
-│                        (le plus courant et performant)       │
-│                                                               │
-│  Statement pooling :  partage entre requetes                 │
-│                       (le plus agressif, limites)            │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### 2.3 Node.js pg.Pool : configuration optimale
-
-```typescript
-import pg from 'pg';
-const { Pool } = pg;
-
-const pool = new Pool({
-    host: process.env.PGHOST || 'localhost',
-    port: parseInt(process.env.PGPORT || '5432'),
-    database: process.env.PGDATABASE || 'mydb',
-    user: process.env.PGUSER || 'myuser',
-    password: process.env.PGPASSWORD,
-
-    // CONFIGURATION DU POOL
-    max: 20,                      // Max 20 connexions simultanees
-    min: 5,                       // Maintenir au minimum 5 connexions
-    idleTimeoutMillis: 30_000,    // Fermer les connexions idle apres 30s
-    connectionTimeoutMillis: 5_000, // Timeout de connexion 5s
-    maxUses: 7500,                // Recycler apres 7500 requetes
-    allowExitOnIdle: true,        // Laisser le process Node exit
-});
-
-// Gestion des erreurs du pool
-pool.on('error', (err: Error) => {
-    console.error('Erreur inattendue du pool :', err.message);
-});
-
-// Monitoring du pool
-pool.on('connect', () => {
-    console.log(`Pool: nouvelle connexion (total: ${pool.totalCount})`);
-});
-
-pool.on('remove', () => {
-    console.log(`Pool: connexion fermee (total: ${pool.totalCount})`);
-});
-```
-
-### 2.4 Choisir la valeur de `max`
-
-```
-Regle empirique :
-
-  max_connections_pg = nombre_de_CPU * 2 + nombre_de_disques
-
-  pool_max_par_instance = max_connections_pg / nombre_instances_app
-
-Exemple :
-  Serveur 8 CPU, 1 SSD : max_connections ≈ 17 → arrondi a 20
-  3 instances Node.js : pool.max = 20 / 3 ≈ 7 par instance
-```
-
-| max | Situation | Consequence |
-|-----|-----------|-------------|
-| Trop petit (2-3) | Beaucoup de requêtes | Attente dans le pool |
-| Optimal (5-20) | Equilibre | Bonne utilisation des ressources |
-| Trop grand (100+) | Peu de requêtes | Gaspillage de RAM, context switching |
-
-> **Piege classique** : Plus de connexions ne signifie PAS plus de performance. Au-dela d'un certain seuil, les context switches entre processus PostgreSQL **degradent** les performances.
-
----
-
-## 3. Prepared statements
-
-### 3.1 Le problème du re-planning
-
-Chaque fois que PostgreSQL recoit une requête, il doit :
-1. **Parser** le SQL (syntaxe)
-2. **Analyser** (semantique, permissions)
-3. **Planifier** (choisir le meilleur plan d'exécution)
-4. **Exécuter** le plan
-
-Les étapes 1-3 sont couteuses. Si vous executez la même requête 10 000 fois avec des paramètres différents, c'est du gaspillage.
-
-### 3.2 PREPARE / EXECUTE en SQL
+Le feed TribuZen charge les 20 derniers posts d'une famille. En développement avec 200 lignes, c'est instantané. En pré-prod avec 150 000 posts, la **page 26** — `OFFSET 500 LIMIT 20` — prend 820 ms. La page 100 prend 3 s. La cible est 10 ms.
 
 ```sql
--- Preparer une fois
-PREPARE get_user (INT) AS
-    SELECT id, nom, email
-    FROM users
-    WHERE id = $1;
-
--- Executer N fois (pas de re-planning)
-EXECUTE get_user(1);
-EXECUTE get_user(42);
-EXECUTE get_user(100);
-
--- Liberer
-DEALLOCATE get_user;
+-- Page 26 du feed famille 1
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT p.id, p.content, p.created_at, u.display_name
+FROM posts p
+JOIN users u ON p.author_id = u.id
+WHERE p.family_id = 1
+ORDER BY p.created_at DESC
+OFFSET 500 LIMIT 20;
 ```
 
-### 3.3 Node.js : prepared statements avec pg
-
-```typescript
-import pg from 'pg';
-const { Pool } = pg;
-
-const pool = new Pool({ max: 10 });
-
-interface User {
-    id: number;
-    nom: string;
-    email: string;
-}
-
-// SANS prepared statement (re-planning a chaque fois)
-async function getUserSlow(id: number): Promise<User | undefined> {
-    const { rows } = await pool.query<User>(
-        'SELECT id, nom, email FROM users WHERE id = $1',
-        [id]
-    );
-    return rows[0];
-}
-
-// AVEC prepared statement (plan reutilise)
-async function getUserFast(id: number): Promise<User | undefined> {
-    const { rows } = await pool.query<User>({
-        name: 'get-user-by-id',  // ← Nom du prepared statement
-        text: 'SELECT id, nom, email FROM users WHERE id = $1',
-        values: [id],
-    });
-    return rows[0];
-}
+```
+Sort  (cost=22000.10..22375.10 rows=150000 width=80)
+      (actual time=815.120..815.180 rows=20 loops=1)
+  Sort Key: p.created_at DESC
+  Buffers: shared read=14820
+  ->  Hash Join  (actual time=12.820..420.000 rows=5000 loops=1)
+        ->  Seq Scan on posts p  (actual time=0.012..250.000 rows=5000 loops=1)
+              Filter: (family_id = 1)
+              Buffers: shared read=14820
+        ->  Hash on users u  (rows=500 loops=1)
+Execution Time: 820.3 ms
 ```
 
-### 3.4 Quand utiliser les prepared statements
+PostgreSQL lit 14 820 pages de `posts`, trie les 5 000 lignes de la famille 1, puis **jette** les 500 premières pour rendre les 20 suivantes. Changer d'OFFSET ne réduit pas ce travail : c'est O(N). La suite donne la démarche pour diagnostiquer via `EXPLAIN`, corriger le plan avec un index, puis éliminer `OFFSET` avec la pagination keyset — qui reste sous 2 ms à toute profondeur.
 
-| Scenario | Prepared ? | Raison |
-|---|---|---|
-| Requête executee > 100 fois | **Oui** | Gain de planning significatif |
-| Requête ad-hoc unique | Non | Pas de reutilisation |
-| Requête avec paramètres dynamiques (colonnes, tables) | Non | Impossible a preparer |
-| Batch processing en boucle | **Oui** | Gros gain |
+## 2. Théorie complète, concise
 
----
+### Démarche EXPLAIN-first : mesurer avant d'optimiser
 
-## 4. Batch operations
+Ne jamais ajouter un index ou réécrire une requête au feeling. La boucle est toujours :
 
-### 4.1 INSERT multi-valeurs vs INSERT en boucle
+1. `EXPLAIN (ANALYZE, BUFFERS)` — identifier le nœud lent (Seq Scan, Sort, Hash Join avec batches disque)
+2. Intervenir (index, réécriture, paramètre)
+3. Re-mesurer avec les mêmes données et la même taille
 
-```typescript
-interface UserInput {
-    nom: string;
-    email: string;
-}
+`EXPLAIN` sans `ANALYZE` affiche le plan estimé sans exécuter (sûr sur DELETE/UPDATE). `EXPLAIN ANALYZE` exécute réellement et mesure. `BUFFERS` révèle les pages lues sur disque (`shared read`) vs en cache (`shared hit`).
 
-// LENT : 1000 INSERTs individuels (1000 allers-retours reseau)
-for (const user of users) {
-    await pool.query(
-        'INSERT INTO users (nom, email) VALUES ($1, $2)',
-        [user.nom, user.email]
-    );
-}
-// Temps : ~5 secondes pour 1000 lignes
+### Tuning d'index
 
-// RAPIDE : 1 INSERT multi-valeurs
-const values: string = users.map((u: UserInput, i: number) =>
-    `($${i * 2 + 1}, $${i * 2 + 2})`
-).join(', ');
-
-const params: string[] = users.flatMap((u: UserInput) => [u.nom, u.email]);
-
-await pool.query(
-    `INSERT INTO users (nom, email) VALUES ${values}`,
-    params
-);
-// Temps : ~50ms pour 1000 lignes (100x plus rapide)
-```
-
-### 4.2 unnest() pour les batch inserts paramètres
-
-```typescript
-// ENCORE MIEUX : unnest() avec arrays
-const noms: string[] = users.map((u: UserInput) => u.nom);
-const emails: string[] = users.map((u: UserInput) => u.email);
-
-await pool.query(
-    `INSERT INTO users (nom, email)
-     SELECT * FROM unnest($1::text[], $2::text[])`,
-    [noms, emails]
-);
-// Propre, parametrise, et tres performant
-```
-
-### 4.3 COPY pour le bulk loading
+Un index composite `(col_égalité, col_tri DESC)` élimine à la fois le Seq Scan et le nœud Sort dans le plan. L'ordre des colonnes compte : la colonne d'égalité en premier, la colonne de tri en second.
 
 ```sql
--- 10-100x plus rapide que INSERT
--- Format CSV
-COPY users (nom, email) FROM '/tmp/users.csv' WITH (FORMAT csv, HEADER);
-
--- Format texte (separateur tabulation)
-COPY users (nom, email) FROM '/tmp/users.tsv';
-
--- Depuis STDIN (utile en script)
-COPY users (nom, email) FROM STDIN WITH (FORMAT csv);
-Alice,alice@test.com
-Bob,bob@test.com
-\.
+-- Filtre WHERE family_id = ? ORDER BY created_at DESC, id DESC
+CREATE INDEX idx_posts_family_date ON posts(family_id, created_at DESC, id DESC);
+ANALYZE posts;
 ```
 
-### 4.4 COPY depuis Node.js
-
-```typescript
-import pg from 'pg';
-import type { PoolClient } from 'pg';
-import { pipeline } from 'stream/promises';
-import { Readable } from 'stream';
-import copyFrom from 'pg-copy-streams';
-
-const { Pool } = pg;
-const pool = new Pool({ max: 5 });
-
-async function bulkInsertUsers(users: UserInput[]): Promise<void> {
-    const client: PoolClient = await pool.connect();
-
-    try {
-        const stream = client.query(
-            copyFrom.from('COPY users (nom, email) FROM STDIN WITH (FORMAT csv)')
-        );
-
-        const data: string = users.map((u: UserInput) => `${u.nom},${u.email}\n`).join('');
-        const readable = Readable.from(data);
-
-        await pipeline(readable, stream);
-        console.log(`${users.length} utilisateurs inseres par COPY`);
-    } finally {
-        client.release();
-    }
-}
-```
-
-### 4.5 Comparaison des méthodes
-
-| Méthode | 1000 lignes | 100K lignes | 1M lignes |
-|---------|------------|------------|----------|
-| INSERT en boucle | 5s | 8min | 80min |
-| INSERT multi-valeurs | 50ms | 5s | 50s |
-| unnest() | 40ms | 4s | 40s |
-| COPY | 10ms | 1s | 10s |
-
----
-
-## 5. VACUUM et AUTOVACUUM
-
-### 5.1 Dead tuples et table bloat
-
-> **Analogie** : Imaginez un immeuble de 100 appartements. Quand un locataire demenage (DELETE), l'appartement reste vide mais occupe toujours de l'espace dans l'immeuble. Quand un locataire change de numéro de telephone (UPDATE), PostgreSQL "demenage" le locataire dans un nouvel appartement et laisse l'ancien vide. Après des milliers de demenagements, l'immeuble est plein d'appartements vides. C'est le **bloat**.
-
-```
-Table "comptes" apres beaucoup d'UPDATEs :
-
-Page 0 : [Alice v1 MORTE] [Bob v1 MORT] [Alice v2 VIVANTE] [vide]
-Page 1 : [Bob v2 MORT] [Charlie VIVANT] [Bob v3 VIVANT] [vide]
-Page 2 : [Alice v3 MORTE] [Alice v4 VIVANTE] [vide] [vide]
-
-                 Tuples vivants : 4
-                 Tuples morts   : 4  (50% de bloat !)
-                 Espace gaspille : 50%
-```
-
-### 5.2 VACUUM — Le nettoyeur
+Un **index partiel** réduit la taille de l'index quand seul un sous-ensemble est interrogé :
 
 ```sql
--- VACUUM standard : marque l'espace des dead tuples comme reutilisable
--- MAIS ne reduit PAS la taille du fichier sur disque
-VACUUM comptes;
-
--- VACUUM VERBOSE : affiche les details
-VACUUM VERBOSE comptes;
--- INFO: vacuuming "public.comptes"
--- INFO: "comptes": removed 1000 dead row versions in 5 pages
--- INFO: "comptes": found 1000 removable, 500 nonremovable row versions
---        in 20 out of 50 pages
+-- Seulement les posts non supprimés — index plus petit et plus rapide
+CREATE INDEX idx_posts_active ON posts(family_id, created_at DESC, id DESC)
+WHERE deleted_at IS NULL;
 ```
 
-### 5.3 VACUUM vs VACUUM FULL
-
-| Caracteristique | VACUUM | VACUUM FULL |
-|----------------|--------|-------------|
-| Lock | Aucun (concurrent !) | **ACCESS EXCLUSIVE** (bloque tout) |
-| Espace libere | Marque comme réutilisable | **Retourne a l'OS** |
-| Taille fichier | Inchangee | Reduite |
-| Vitesse | Rapide | Lent (reecrit toute la table) |
-| Utilisation | Regulier (automatique) | Exceptionnel |
+Un **covering index** inclut les colonnes du SELECT pour éviter tout accès à la heap (Index Only Scan) :
 
 ```sql
--- VACUUM FULL : reecrit toute la table (compacte)
--- ATTENTION : ACCESS EXCLUSIVE lock !
-VACUUM FULL comptes;
--- La table est reecrite, taille reduite
--- Mais la table etait INACCESSIBLE pendant l'operation
+CREATE INDEX idx_posts_feed_covering
+  ON posts(family_id, created_at DESC, id DESC)
+  INCLUDE (content, author_id);
 ```
 
-> **Piege classique** : Ne faites JAMAIS `VACUUM FULL` en production sur une grosse table sans maintenance window. Utilisez `pg_repack` à la place (pas de lock exclusif).
+Après tout `CREATE INDEX`, lancer `ANALYZE` pour que le planner intègre les nouvelles statistiques.
 
-### 5.4 Autovacuum — Le pilote automatique
+### Pagination keyset vs OFFSET
 
-PostgreSQL lance automatiquement VACUUM grâce à l'**autovacuum daemon**.
+`OFFSET N` force PostgreSQL à lire et jeter N lignes avant de rendre le résultat — coût O(N). La page 500 est 500× plus lente que la page 1.
+
+La **pagination keyset** (cursor-based) passe les valeurs de la dernière ligne vue. Le moteur saute directement au bon endroit via l'index — coût O(log N), constant quelle que soit la profondeur.
 
 ```sql
--- Voir la configuration
-SHOW autovacuum;                          -- on (defaut)
-SHOW autovacuum_vacuum_threshold;         -- 50 (defaut)
-SHOW autovacuum_vacuum_scale_factor;      -- 0.2 (defaut)
-SHOW autovacuum_naptime;                  -- 1min (defaut)
-```
+-- OFFSET : coût O(N), dégrade linéairement
+SELECT id, content, created_at
+FROM posts
+WHERE family_id = 1
+ORDER BY created_at DESC, id DESC
+OFFSET 500 LIMIT 20;
 
-**Formule de declenchement** :
-
-```
-VACUUM se declenche quand :
-
-  dead_tuples > autovacuum_vacuum_threshold
-                + autovacuum_vacuum_scale_factor * n_live_tup
-
-Exemple avec les defauts :
-  Table de 10 000 lignes :
-  seuil = 50 + 0.2 * 10000 = 2050 dead tuples
-
-  Table de 1 000 000 lignes :
-  seuil = 50 + 0.2 * 1000000 = 200 050 dead tuples (!)
-```
-
-### 5.5 Tuner l'autovacuum pour les grosses tables
-
-```sql
--- Pour une table tres active : lancer le VACUUM plus souvent
-ALTER TABLE orders SET (
-    autovacuum_vacuum_threshold = 100,
-    autovacuum_vacuum_scale_factor = 0.01,  -- 1% au lieu de 20%
-    autovacuum_analyze_threshold = 100,
-    autovacuum_analyze_scale_factor = 0.01
-);
-```
-
-### 5.6 Monitorer l'autovacuum
-
-```sql
-SELECT
-    relname,
-    n_live_tup,
-    n_dead_tup,
-    ROUND(100.0 * n_dead_tup / NULLIF(n_live_tup + n_dead_tup, 0), 1)
-        AS dead_pct,
-    last_vacuum,
-    last_autovacuum,
-    last_analyze,
-    last_autoanalyze
-FROM pg_stat_user_tables
-ORDER BY n_dead_tup DESC
+-- Keyset : coût O(log N), constant
+-- last_ts et last_id = valeurs de la dernière ligne de la page précédente
+SELECT id, content, created_at
+FROM posts
+WHERE family_id = 1
+  AND (created_at, id) < ($last_ts, $last_id)
+ORDER BY created_at DESC, id DESC
 LIMIT 20;
 ```
 
----
+La condition `(created_at, id) < (...)` est une comparaison de tuple : si `created_at` est strictement inférieur c'est valide ; si `created_at` est égal, `id` sert de départage — cela évite les doublons quand deux posts ont le même timestamp. L'index `(family_id, created_at DESC, id DESC)` sert directement l'`Index Cond` — aucun Sort externe.
 
-## 6. ANALYZE — Mettre a jour les statistiques
+Contrainte : on ne peut pas sauter à la page N sans suivre le curseur. La keyset convient aux feeds infinis et au scroll continu, pas aux interfaces paginées numérotées.
 
-### 6.1 Pourquoi c'est crucial
+### Éviter le N+1
 
-Le **query planner** de PostgreSQL choisit le meilleur plan d'exécution en se basant sur des **statistiques** : nombre de lignes, distribution des valeurs, valeurs les plus frequentes, etc.
-
-Si les statistiques sont obsoletes, le planner prend de mauvaises decisions :
-
-```
-Statistiques obsoletes :           Statistiques a jour :
-"La table a 100 lignes"           "La table a 10 millions de lignes"
-→ Seq Scan (parcourt tout)        → Index Scan (utilise l'index)
-→ 10M lignes lues !               → 1 ligne lue
-→ 30 secondes                     → 1 milliseconde
-```
-
-### 6.2 Quand lancer ANALYZE
+Le problème N+1 apparaît quand une boucle charge N entités puis exécute une requête par entité pour une relation. Résultat : 1 + N allers-retours base de données.
 
 ```sql
--- Analyser une table specifique
-ANALYZE users;
+-- N+1 : 1 requête pour les posts, puis 1 par post pour l'auteur
+SELECT id, author_id FROM posts WHERE family_id = 1 ORDER BY created_at DESC LIMIT 20;
+-- puis, pour chaque post :
+SELECT display_name FROM users WHERE id = $1;   -- répété 20 fois
+```
 
--- Analyser toute la base
+Solution : un JOIN unique couvre les deux en un seul aller-retour :
+
+```sql
+SELECT p.id, p.content, p.created_at, u.display_name
+FROM posts p
+JOIN users u ON p.author_id = u.id
+WHERE p.family_id = 1
+ORDER BY p.created_at DESC
+LIMIT 20;
+```
+
+Pour détecter un N+1, activer `log_min_duration_statement = 0` en développement et repérer les rafales de requêtes similaires dans les logs, ou utiliser `pg_stat_statements` en production.
+
+### VACUUM, ANALYZE et autovacuum
+
+PostgreSQL ne modifie pas les lignes en place : un `UPDATE` écrit une nouvelle version (tuple) et laisse l'ancienne comme **tuple mort**. Un `DELETE` laisse aussi le tuple mort en place. Ces tuples morts gonflent la table (**bloat**) et allongent les Seq Scan.
+
+`VACUUM` marque l'espace des tuples morts comme réutilisable (sans réduire le fichier sur disque, sans lock exclusif). `ANALYZE` met à jour les statistiques du planner. `VACUUM ANALYZE table` fait les deux en un seul passage.
+
+```sql
+-- Diagnostiquer le bloat et le statut vacuum
+SELECT relname, n_live_tup, n_dead_tup,
+       ROUND(100.0 * n_dead_tup / NULLIF(n_live_tup + n_dead_tup, 0), 1) AS dead_pct,
+       last_vacuum, last_autovacuum, last_analyze, last_autoanalyze
+FROM pg_stat_user_tables
+WHERE relname IN ('posts', 'reactions', 'users')
+ORDER BY n_dead_tup DESC;
+
+-- Nettoyer et mettre à jour les stats (sans lock exclusif)
+VACUUM ANALYZE posts;
+```
+
+**Autovacuum** déclenche VACUUM + ANALYZE automatiquement quand le nombre de dead tuples dépasse un seuil :
+
+```
+seuil = autovacuum_vacuum_threshold + autovacuum_vacuum_scale_factor × n_live_tup
+défaut   50                            0.20 (20 %)
+```
+
+Pour une table de 150 000 lignes, cela donne un seuil à 30 050 dead tuples — trop tardif pour un feed actif. Tuning par table (sans toucher `postgresql.conf`) :
+
+```sql
+ALTER TABLE posts SET (
+  autovacuum_vacuum_scale_factor    = 0.02,   -- 2 % au lieu de 20 %
+  autovacuum_analyze_scale_factor   = 0.01,
+  autovacuum_vacuum_threshold       = 100,
+  autovacuum_analyze_threshold      = 100
+);
+```
+
+Ne jamais utiliser `VACUUM FULL` en production : il prend un lock `ACCESS EXCLUSIVE` qui bloque toutes les requêtes (lectures incluses) pendant la réécriture complète. Si le bloat est sévère, préférer `pg_repack`.
+
+### work_mem et mémoire
+
+`work_mem` est alloué **par opération** de tri ou de hachage — pas par requête, pas par connexion. Une requête avec un Hash Join et deux sorts peut consommer `3 × work_mem`. Avec 100 connexions actives, le pic est `connexions × opérations × work_mem`.
+
+```sql
+SHOW work_mem;   -- 4MB par défaut (souvent insuffisant)
+
+-- Augmenter pour la session courante avant une requête lourde
+SET work_mem = '64MB';
+EXPLAIN (ANALYZE, BUFFERS) SELECT ...;
+-- Observer : Hash Join doit afficher  Batches: 1  (tout en mémoire)
+-- Si Batches: N (N > 1) → débordement disque, augmenter work_mem
+```
+
+Ne jamais modifier `work_mem` globalement sans calculer le budget : `50 connexions × 3 ops × 64 MB = 9,6 GB` de pic possible.
+
+### Connection pooling
+
+Chaque connexion PostgreSQL crée un processus OS (~5-10 MB de RAM, latence de fork ~50 ms). Une application multi-instances peut saturer `max_connections` rapidement.
+
+`pg.Pool` (driver `node-postgres`) maintient un pool de connexions réutilisables dans le même process Node.js. Pour les architectures multi-instances, un proxy externe comme **PgBouncer** en mode transaction pooling partage un petit nombre de connexions PG entre des centaines de clients.
+
+```sql
+-- Voir les connexions actives et les requêtes en attente de slot
+SELECT state, wait_event_type, wait_event, COUNT(*)
+FROM pg_stat_activity
+WHERE datname = current_database()
+GROUP BY state, wait_event_type, wait_event
+ORDER BY COUNT(*) DESC;
+```
+
+Règle empirique : `max_connections` PostgreSQL ≤ `(CPUs × 2) + disques`. Pool par instance Node = `max_connections / nb_instances`.
+
+### Dénormalisation raisonnée
+
+La normalisation élimine la redondance mais force des jointures coûteuses sur les tables très consultées. La **dénormalisation raisonnée** accepte une redondance contrôlée quand la jointure est mesurée comme goulot et quand les mises à jour sont peu fréquentes.
+
+Exemples courants :
+- **Compteur dénormalisé** : stocker `families.members_count` plutôt que `COUNT(*)` sur `family_members` à chaque affichage.
+- **Colonne calculée** : stocker `posts.reaction_count` mis à jour par trigger ou côté applicatif.
+
+Règle : dénormaliser **seulement** après que `EXPLAIN ANALYZE` montre que la jointure ou l'agrégat est le nœud lent, et seulement si les mises à jour sont peu fréquentes. Pas l'inverse.
+
+## 3. Worked examples
+
+### Exemple A — OFFSET → keyset sur le feed TribuZen
+
+```sql
+-- Schéma et données de test
+CREATE TABLE users    (id SERIAL PRIMARY KEY, display_name TEXT NOT NULL);
+CREATE TABLE families (id SERIAL PRIMARY KEY, name TEXT NOT NULL);
+CREATE TABLE posts (
+  id         SERIAL PRIMARY KEY,
+  family_id  INT NOT NULL REFERENCES families(id),
+  author_id  INT NOT NULL REFERENCES users(id),
+  content    TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO users    SELECT i, 'User '||i FROM generate_series(1, 500) i;
+INSERT INTO families SELECT i, 'Famille '||i FROM generate_series(1, 30) i;
+INSERT INTO posts
+  SELECT i,
+         (random()*29  + 1)::int,
+         (random()*499 + 1)::int,
+         repeat('Post TribuZen contenu ', 8),
+         now() - (random()*365 || ' days')::interval
+  FROM generate_series(1, 150000) i;
 ANALYZE;
-
--- L'autovacuum lance aussi ANALYZE automatiquement
--- (avec autovacuum_analyze_threshold et autovacuum_analyze_scale_factor)
 ```
 
-| Situation | Action |
-|-----------|--------|
-| Après un bulk COPY/INSERT | `ANALYZE table_name;` |
-| Après une migration (ALTER TABLE) | `ANALYZE table_name;` |
-| Requête soudainement lente | Vérifier `last_autoanalyze`, puis `ANALYZE` |
-| En continu | L'autovacuum s'en charge |
-
-### 6.3 Voir les statistiques
+Plan avec `OFFSET 500` sans index :
 
 ```sql
--- Statistiques du planner pour une colonne
-SELECT
-    attname,
-    n_distinct,     -- Nombre de valeurs distinctes
-    null_frac,      -- Fraction de NULLs
-    avg_width,      -- Taille moyenne en octets
-    most_common_vals,
-    most_common_freqs
-FROM pg_stats
-WHERE tablename = 'users'
-  AND attname = 'status';
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT p.id, p.content, p.created_at, u.display_name
+FROM posts p
+JOIN users u ON p.author_id = u.id
+WHERE p.family_id = 1
+ORDER BY p.created_at DESC
+OFFSET 500 LIMIT 20;
 ```
 
----
-
-## 7. Table bloat
-
-### 7.1 Detecter le bloat
-
-```sql
--- Methode simple : comparer taille reelle vs taille estimee
-SELECT
-    relname,
-    pg_size_pretty(pg_total_relation_size(relid)) AS total_size,
-    pg_size_pretty(pg_relation_size(relid)) AS table_size,
-    pg_size_pretty(pg_indexes_size(relid)) AS index_size,
-    n_live_tup,
-    n_dead_tup,
-    ROUND(100.0 * n_dead_tup / NULLIF(n_live_tup, 0), 1) AS dead_ratio
-FROM pg_stat_user_tables
-ORDER BY pg_total_relation_size(relid) DESC
-LIMIT 10;
+```
+Sort  (cost=22000.10..22375.10 rows=150000 width=80)
+      (actual time=815.120..815.180 rows=20 loops=1)
+  Sort Key: p.created_at DESC
+  Buffers: shared read=14820
+  ->  Seq Scan on posts p  (actual time=0.012..250.000 rows=5000 loops=1)
+        Filter: (family_id = 1)
+        Buffers: shared read=14820
+Execution Time: 820.3 ms
 ```
 
-### 7.2 Extension pgstattuple (plus précis)
+Création de l'index et bascule keyset :
 
 ```sql
--- Installer l'extension
-CREATE EXTENSION IF NOT EXISTS pgstattuple;
+CREATE INDEX idx_posts_family_date ON posts(family_id, created_at DESC, id DESC);
+ANALYZE posts;
 
--- Analyser le bloat d'une table
-SELECT * FROM pgstattuple('comptes');
--- table_len          | 8192
--- tuple_count        | 100
--- tuple_len          | 3200
--- tuple_percent      | 39.06   ← seulement 39% utilise
--- dead_tuple_count   | 50
--- dead_tuple_len     | 1600
--- dead_tuple_percent | 19.53   ← 20% de dead tuples
--- free_space         | 3392
--- free_percent       | 41.41   ← 41% d'espace libre
-```
-
-### 7.3 Resoudre le bloat
-
-| Méthode | Lock | Vitesse | Production ? |
-|---------|------|---------|-------------|
-| VACUUM | Aucun | Rapide | Oui (regulier) |
-| VACUUM FULL | ACCESS EXCLUSIVE | Lent | Non (downtime) |
-| pg_repack | Très leger | Moyen | **Oui** (recommande) |
-| CLUSTER | ACCESS EXCLUSIVE | Lent | Non (downtime) |
-
-```sql
--- pg_repack : reorganiser sans lock exclusif
--- (extension a installer)
-CREATE EXTENSION pg_repack;
-
--- Depuis la ligne de commande
--- pg_repack -t comptes -d mydb
-```
-
----
-
-## 8. Partitioning
-
-### 8.1 Le concept
-
-> **Analogie** : Imaginez une bibliotheque avec un seul rayonnage de 10 millions de livres. Trouver un livre prend du temps car il faut tout parcourir. Maintenant, divisez les livres par annee : rayonnage 2023, rayonnage 2024, rayonnage 2025. Pour trouver un livre de 2024, vous allez directement au bon rayonnage. C'est le **partitionnement**.
-
-### 8.2 PARTITION BY RANGE
-
-```sql
--- Table principale (declarative partitioning, PG 10+)
-CREATE TABLE events (
-    id          BIGSERIAL,
-    event_type  TEXT NOT NULL,
-    payload     JSONB,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-) PARTITION BY RANGE (created_at);
-
--- Partitions par mois
-CREATE TABLE events_2025_01 PARTITION OF events
-    FOR VALUES FROM ('2025-01-01') TO ('2025-02-01');
-
-CREATE TABLE events_2025_02 PARTITION OF events
-    FOR VALUES FROM ('2025-02-01') TO ('2025-03-01');
-
-CREATE TABLE events_2025_03 PARTITION OF events
-    FOR VALUES FROM ('2025-03-01') TO ('2025-04-01');
-
--- Index sur chaque partition (PG 11+ : cree automatiquement)
-CREATE INDEX idx_events_created ON events (created_at);
-```
-
-### 8.3 PARTITION BY LIST
-
-```sql
--- Partitionnement par region (multi-tenant)
-CREATE TABLE orders (
-    id        BIGSERIAL,
-    region    TEXT NOT NULL,
-    amount    NUMERIC(10,2),
-    order_date DATE
-) PARTITION BY LIST (region);
-
-CREATE TABLE orders_europe PARTITION OF orders
-    FOR VALUES IN ('FR', 'DE', 'ES', 'IT', 'UK');
-
-CREATE TABLE orders_americas PARTITION OF orders
-    FOR VALUES IN ('US', 'CA', 'BR', 'MX');
-
-CREATE TABLE orders_asia PARTITION OF orders
-    FOR VALUES IN ('JP', 'CN', 'KR', 'IN');
-
--- Partition par defaut (attrape-tout)
-CREATE TABLE orders_other PARTITION OF orders DEFAULT;
-```
-
-### 8.4 PARTITION BY HASH
-
-```sql
--- Partitionnement par hash (distribution uniforme)
-CREATE TABLE sessions (
-    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id    INT NOT NULL,
-    data       JSONB,
-    expires_at TIMESTAMPTZ
-) PARTITION BY HASH (id);
-
-CREATE TABLE sessions_0 PARTITION OF sessions
-    FOR VALUES WITH (MODULUS 4, REMAINDER 0);
-CREATE TABLE sessions_1 PARTITION OF sessions
-    FOR VALUES WITH (MODULUS 4, REMAINDER 1);
-CREATE TABLE sessions_2 PARTITION OF sessions
-    FOR VALUES WITH (MODULUS 4, REMAINDER 2);
-CREATE TABLE sessions_3 PARTITION OF sessions
-    FOR VALUES WITH (MODULUS 4, REMAINDER 3);
-```
-
-### 8.5 Partition pruning
-
-```sql
--- PostgreSQL elimine automatiquement les partitions inutiles
-EXPLAIN SELECT * FROM events
-WHERE created_at >= '2025-02-01' AND created_at < '2025-03-01';
-
--- Scan UNIQUEMENT events_2025_02 !
--- Les autres partitions sont ignorees (pruned)
-
--- Verifier que le pruning est active
-SHOW enable_partition_pruning;  -- on (defaut)
-```
-
-### 8.6 Maintenance des partitions
-
-```sql
--- Ajouter une nouvelle partition (mensuelle)
-CREATE TABLE events_2025_04 PARTITION OF events
-    FOR VALUES FROM ('2025-04-01') TO ('2025-05-01');
-
--- Supprimer une vieille partition (INSTANTANE, pas de DELETE lent)
-DROP TABLE events_2024_01;
-
--- Detacher une partition (la garder comme table independante)
-ALTER TABLE events DETACH PARTITION events_2024_01;
--- Maintenant events_2024_01 est une table normale
--- (utile pour archivage)
-```
-
-### 8.7 Quand partitionner
-
-| Critere | Partitionner | Ne pas partitionner |
-|---------|-------------|-------------------|
-| Taille table | > 10 GB | < 1 GB |
-| Pattern de requêtes | Toujours filtre sur la clé | Requetes variees |
-| Purge de donnees | Frequente (DROP vs DELETE) | Rare |
-| Nombre de partitions | < 100 | > 1000 (overhead) |
-
----
-
-## 9. Monitoring
-
-### 9.1 pg_stat_statements — Top queries
-
-```sql
--- Installer l'extension
-CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
--- Necessite shared_preload_libraries = 'pg_stat_statements'
--- dans postgresql.conf (puis restart)
-```
-
-```sql
--- Top 10 requetes les plus lentes (temps total)
-SELECT
-    LEFT(query, 80) AS query_preview,
-    calls,
-    ROUND(total_exec_time::numeric, 2) AS total_ms,
-    ROUND(mean_exec_time::numeric, 2) AS avg_ms,
-    ROUND(max_exec_time::numeric, 2) AS max_ms,
-    rows
-FROM pg_stat_statements
-ORDER BY total_exec_time DESC
-LIMIT 10;
-```
-
-```sql
--- Top 10 requetes les plus appelees
-SELECT
-    LEFT(query, 80) AS query_preview,
-    calls,
-    ROUND(total_exec_time::numeric, 2) AS total_ms,
-    ROUND((total_exec_time / calls)::numeric, 2) AS avg_ms
-FROM pg_stat_statements
-ORDER BY calls DESC
-LIMIT 10;
-```
-
-```sql
--- Requetes qui font le plus de I/O
-SELECT
-    LEFT(query, 80) AS query_preview,
-    calls,
-    shared_blks_read + shared_blks_hit AS total_blocks,
-    ROUND(100.0 * shared_blks_hit /
-        NULLIF(shared_blks_read + shared_blks_hit, 0), 1) AS cache_hit_pct
-FROM pg_stat_statements
-ORDER BY shared_blks_read DESC
-LIMIT 10;
-```
-
-### 9.2 pg_stat_user_tables — Sante des tables
-
-```sql
-SELECT
-    schemaname,
-    relname,
-    seq_scan,          -- Nombre de seq scans (full table scans)
-    seq_tup_read,      -- Tuples lus par seq scan
-    idx_scan,          -- Nombre d'index scans
-    idx_tup_fetch,     -- Tuples lus par index scan
-    n_live_tup,
-    n_dead_tup,
-    ROUND(100.0 * idx_scan / NULLIF(seq_scan + idx_scan, 0), 1)
-        AS idx_scan_pct
-FROM pg_stat_user_tables
-ORDER BY seq_scan DESC
+-- Récupérer d'abord le curseur de la dernière ligne de la page précédente
+-- (la valeur ci-dessous est illustrative — prendre la vraie dernière ligne de page 25)
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT p.id, p.content, p.created_at, u.display_name
+FROM posts p
+JOIN users u ON p.author_id = u.id
+WHERE p.family_id = 1
+  AND (p.created_at, p.id) < ('2026-05-15 14:22:10+00', 74320)
+ORDER BY p.created_at DESC, p.id DESC
 LIMIT 20;
 ```
 
-> **Regle** : Si `idx_scan_pct` est inferieur a 95% pour une grosse table, il manque probablement un index.
+```
+Limit  (actual time=0.260..0.490 rows=20 loops=1)
+  ->  Nested Loop  (actual time=0.255..0.475 rows=20 loops=1)
+        ->  Index Scan using idx_posts_family_date on posts p
+              (actual time=0.028..0.082 rows=20 loops=1)
+              Index Cond: ((family_id = 1) AND ((created_at, id) < (...)))
+              Buffers: shared hit=5
+        ->  Index Scan using users_pkey on users u  (loops=20)
+Execution Time: 0.6 ms
+```
 
-### 9.3 Cache hit ratio
+Pas-à-pas : (1) sans index, le planner fait un Seq Scan sur 14 820 pages suivi d'un Sort coûteux — PostgreSQL trie les 5 000 lignes de `family_id=1` pour en jeter 500, quel que soit l'OFFSET demandé ; (2) l'index `(family_id, created_at DESC, id DESC)` livre les lignes dans l'ordre exact du `ORDER BY` — le nœud `Sort` disparaît du plan car les données arrivent déjà triées ; (3) la condition keyset `(created_at, id) < (...)` est évaluée directement dans l'`Index Cond` — le planner ne lit que 5 pages d'index (`shared hit=5`) sans aucun accès à la heap ; (4) le temps reste 0,6 ms à toute profondeur du feed, même à la page 10 000.
+
+### Exemple B — Diagnostic VACUUM et tuning autovacuum
 
 ```sql
--- Ratio de cache global (objectif : > 99%)
-SELECT
-    SUM(blks_hit) AS cache_hits,
-    SUM(blks_read) AS disk_reads,
-    ROUND(100.0 * SUM(blks_hit) /
-        NULLIF(SUM(blks_hit) + SUM(blks_read), 0), 2) AS cache_hit_ratio
-FROM pg_stat_database
-WHERE datname = current_database();
+-- Simuler de l'activité : UPDATE génère des dead tuples
+UPDATE posts SET content = content || ' (edit)' WHERE id % 4 = 0;
+UPDATE posts SET content = content || ' (v2)'   WHERE id % 6 = 0;
+
+-- Diagnostic avant VACUUM
+SELECT relname, n_live_tup, n_dead_tup,
+       ROUND(100.0 * n_dead_tup / NULLIF(n_live_tup + n_dead_tup, 0), 1) AS dead_pct,
+       last_vacuum, last_autovacuum
+FROM pg_stat_user_tables
+WHERE relname = 'posts';
 ```
 
 ```
-Cache hit ratio :
-  > 99%   : Excellent (presque tout en RAM)
-  95-99%  : Bon
-  < 95%   : Augmenter shared_buffers ou RAM
-  < 80%   : Probleme serieux de dimensionnement
+ relname | n_live_tup | n_dead_tup | dead_pct | last_vacuum | last_autovacuum
+---------+------------+------------+----------+-------------+------------------
+ posts   |    150000  |     47142  |    23.9  | (null)      | (null)
 ```
 
-### 9.4 pg_stat_bgwriter
+L'autovacuum n'a pas encore tourné (le daemon se réveille par naptime, ~1 min). Forcer le nettoyage manuellement :
 
 ```sql
-SELECT
-    checkpoints_timed,      -- Checkpoints planifies
-    checkpoints_req,        -- Checkpoints forces (mauvais si > timed)
-    buffers_checkpoint,     -- Buffers ecrits par checkpoints
-    buffers_clean,          -- Buffers ecrits par bgwriter
-    maxwritten_clean,       -- Fois ou bgwriter a arrete (limite)
-    buffers_backend,        -- Buffers ecrits par backends (mauvais si eleve)
-    buffers_alloc
-FROM pg_stat_bgwriter;
+VACUUM ANALYZE posts;
+
+-- Revérifier : n_dead_tup doit être proche de 0
+SELECT relname, n_live_tup, n_dead_tup, last_vacuum
+FROM pg_stat_user_tables
+WHERE relname = 'posts';
 ```
 
----
-
-## 10. Tuning des paramètres clés
-
-### 10.1 shared_buffers
-
-Le cache de pages en mémoire partagee. C'est le paramètre **le plus important**.
+Tuning autovacuum pour éviter que le bloat atteigne 20 % :
 
 ```sql
-SHOW shared_buffers;  -- 128MB (defaut, beaucoup trop bas !)
+ALTER TABLE posts SET (
+  autovacuum_vacuum_scale_factor    = 0.02,   -- déclenche à 2 % au lieu de 20 %
+  autovacuum_analyze_scale_factor   = 0.01,
+  autovacuum_vacuum_threshold       = 100,
+  autovacuum_analyze_threshold      = 100
+);
 
--- Recommandation : 25% de la RAM totale
--- Serveur 16 GB RAM → shared_buffers = 4GB
-ALTER SYSTEM SET shared_buffers = '4GB';
--- Necessite un RESTART
+-- Vérifier la config stockée dans le catalogue
+SELECT relname, reloptions
+FROM pg_class
+WHERE relname = 'posts';
+-- → reloptions = {autovacuum_vacuum_scale_factor=0.02,...}
 ```
 
-### 10.2 work_mem
+Pas-à-pas : (1) `pg_stat_user_tables` est la première source de diagnostic — `n_dead_tup` et `dead_pct` indiquent le bloat instantané, `last_autovacuum` confirme si le daemon a tourné ; (2) `VACUUM ANALYZE posts` nettoie les dead tuples **et** rafraîchit les stats du planner en un seul passage non bloquant — les requêtes SELECT et INSERT continuent pendant l'opération ; (3) le tuning par table via `ALTER TABLE ... SET (...)` cible la table active sans perturber les petites tables qui n'ont pas besoin de vacuum fréquent ; (4) avec `scale_factor = 0.02` sur 150 000 lignes, le seuil passe de 30 050 à 3 100 dead tuples — le bloat reste sous 2 % en permanence et les stats restent fraîches pour des plans optimaux.
 
-Mémoire allouee par **operation de tri/hash** (par requête, pas global).
+## 4. Pièges & misconceptions
 
-```sql
-SHOW work_mem;  -- 4MB (defaut)
+- **`OFFSET` semblait rapide en développement.** Avec 200 lignes, tout est rapide. Avec 150 000 lignes et `OFFSET 500`, PostgreSQL trie et jette 500 lignes à chaque appel — coût O(N). *Correct* : adopter la pagination keyset dès le départ sur tout feed à volume croissant.
 
--- Augmenter pour les requetes avec ORDER BY, GROUP BY, DISTINCT, joins
--- ATTENTION : c'est par operation ! Une requete peut en utiliser plusieurs
--- 100 connexions * 3 sorts * 64MB = 19 GB !
-ALTER SYSTEM SET work_mem = '64MB';
-SELECT pg_reload_conf();
-```
+- **Ajouter un index résout tout.** Un index inutilisé consomme de la RAM, ralentit les INSERT/UPDATE/DELETE et grossit après chaque commit. Chaque index doit être justifié par un `EXPLAIN ANALYZE` montrant un Seq Scan sur une grande table sélective. *Correct* : mesurer d'abord, créer l'index, re-mesurer — si le plan n'en profite pas, le supprimer.
 
-### 10.3 maintenance_work_mem
+- **`work_mem` est par requête.** Non : c'est par **opération** (sort, hash). Une requête avec un Hash Join et deux ORDER BY peut consommer `3 × work_mem`. Multiplié par toutes les connexions actives, une valeur mal calibrée cause des OOM. *Correct* : calculer `max_connexions × ops_max × work_mem` avant d'augmenter globalement ; préférer `SET work_mem = '...'` par session pour les requêtes lourdes.
 
-Mémoire pour les operations de maintenance (VACUUM, CREATE INDEX, etc.).
+- **`VACUUM FULL` règle le bloat en production.** Il prend un lock `ACCESS EXCLUSIVE` qui bloque 100 % des requêtes (lectures incluses) pendant la réécriture. *Correct* : `VACUUM` standard ou `pg_repack` pour le bloat sans downtime ; `VACUUM FULL` uniquement en maintenance window planifiée.
 
-```sql
-SHOW maintenance_work_mem;  -- 64MB (defaut)
+- **Dénormaliser d'abord, mesurer ensuite.** La dénormalisation complique les mises à jour, risque les incohérences et ne s'annule pas facilement. *Correct* : normaliser d'abord, mesurer le coût de la jointure avec `EXPLAIN ANALYZE`, dénormaliser seulement si c'est le goulot prouvé et si les écritures sont peu fréquentes.
 
--- Augmenter pour accelerer VACUUM et CREATE INDEX
-ALTER SYSTEM SET maintenance_work_mem = '1GB';
-SELECT pg_reload_conf();
-```
+- **Le N+1 est invisible en développement.** Sur une base de 200 lignes tout en cache, 20 requêtes supplémentaires passent inaperçues. En production sur 10 000 posts, c'est 10 000 allers-retours. *Correct* : activer `log_min_duration_statement = 0` en développement et repérer les rafales de requêtes similaires dans les logs.
 
-### 10.4 effective_cache_size
+## 5. Ancrage TribuZen
 
-Estimation de la mémoire totale disponible pour le cache (shared_buffers + cache OS).
+Couche fil-rouge : **optimiser le feed TribuZen** dans `smaurier/tribuzen` — feed = liste des posts récents d'une famille, chargée à chaque ouverture de l'app.
 
-```sql
-SHOW effective_cache_size;  -- 4GB (defaut)
+- La pagination keyset `(created_at, id) < (curseur)` remplace `OFFSET` dans l'API `/feed` : le premier curseur est `null` (page 1) ; chaque réponse renvoie `id` et `created_at` de la dernière ligne pour que le client puisse demander la page suivante. Le client React Native mémorise ce curseur dans son état local.
+- L'index `(family_id, created_at DESC, id DESC)` couvre exactement le pattern d'accès du feed — filtrer par `family_id`, trier par date décroissante. Ajouter `INCLUDE (content, author_id)` permet un Index Only Scan qui évite entièrement la heap pour les colonnes couvertes.
+- `families.members_count` est maintenu dans la transaction d'acceptation d'invitation (module 04) — évite un `COUNT(*)` sur `family_members` à chaque rendu de la carte famille. C'est le cas de dénormalisation validé par `EXPLAIN ANALYZE` qui montrait le `COUNT(*)` en goulot.
+- L'autovacuum de `posts` et `reactions` (les deux tables les plus écrites) est tuné à 2 % pour que les stats restent fraîches et que le bloat n'impacte pas les plans.
+- `pg_stat_statements` surveille `mean_exec_time` sur la requête feed en continu : une régression au-delà de 10 ms déclenche une alerte — signal que l'index a peut-être été supprimé accidentellement ou que les statistiques sont obsolètes.
 
--- Recommandation : 50-75% de la RAM totale
--- Serveur 16 GB → effective_cache_size = 12GB
-ALTER SYSTEM SET effective_cache_size = '12GB';
-SELECT pg_reload_conf();
-```
+## 6. Points clés
 
-### 10.5 random_page_cost
+1. Toujours mesurer avant d'agir : `EXPLAIN (ANALYZE, BUFFERS)` identifie le nœud lent — Seq Scan, Sort coûteux, Hash Join avec `Batches > 1`.
+2. L'index composite `(col_égalité, col_tri DESC)` élimine à la fois le Seq Scan et le Sort — l'ordre des colonnes est intentionnel et déterminant.
+3. `OFFSET N` coûte O(N) : la page 500 est 500× plus lente que la page 1. La pagination keyset `(col, id) < (curseur)` reste constante à toute profondeur.
+4. `VACUUM ANALYZE table` nettoie les dead tuples et rafraîchit les stats en un seul passage non bloquant — ne jamais utiliser `VACUUM FULL` en production (lock ACCESS EXCLUSIVE).
+5. Tuner l'autovacuum par table active : `autovacuum_vacuum_scale_factor = 0.02` déclenche le nettoyage à 2 % de dead tuples au lieu de 20 %.
+6. `work_mem` est par opération, pas par requête — calculer le budget mémoire total avant d'augmenter globalement.
+7. Chaque connexion PostgreSQL crée un processus OS ; `pg.Pool` et PgBouncer partagent les connexions pour maintenir `max_connections` bas.
+8. Dénormaliser uniquement après que `EXPLAIN ANALYZE` prouve que la jointure est le goulot, et seulement si les mises à jour sont peu fréquentes.
 
-Cout relatif d'une lecture aleatoire (vs sequentielle).
-
-```sql
-SHOW random_page_cost;  -- 4.0 (defaut, calibre pour HDD)
-
--- Pour SSD : baisser a 1.1-1.5
-ALTER SYSTEM SET random_page_cost = 1.1;
-SELECT pg_reload_conf();
-```
-
-> **Point clé** : Sur SSD, les lectures aleatoires sont presque aussi rapides que les lectures sequentielles. Baisser `random_page_cost` pousse le planner à utiliser **plus d'index scans**.
-
-### 10.6 max_connections
-
-```sql
-SHOW max_connections;  -- 100 (defaut)
-
--- MOINS est souvent MIEUX (utiliser un pool !)
--- Regle : 2-5x le nombre de CPUs
-ALTER SYSTEM SET max_connections = 50;
--- Necessite un RESTART
-```
-
-### 10.7 Tableau récapitulatif
-
-| Paramètre | Defaut | SSD 16GB RAM | SSD 64GB RAM | Restart ? |
-|-----------|--------|-------------|-------------|-----------|
-| shared_buffers | 128MB | 4GB | 16GB | **Oui** |
-| work_mem | 4MB | 64MB | 256MB | Non |
-| maintenance_work_mem | 64MB | 1GB | 2GB | Non |
-| effective_cache_size | 4GB | 12GB | 48GB | Non |
-| random_page_cost | 4.0 | 1.1 | 1.1 | Non |
-| max_connections | 100 | 50 | 100 | **Oui** |
-| wal_buffers | -1 (auto) | 64MB | 128MB | **Oui** |
-| checkpoint_completion_target | 0.9 | 0.9 | 0.9 | Non |
-
----
-
-## 11. Exercice mental
-
-> **Exercice mental** : Votre application fait 10 000 INSERTs/seconde dans une table de logs. Après quelques jours, les SELECTs deviennent de plus en plus lents. Que diagnostiqueriez-vous et comment resoudriez-vous le problème ?
-
-<details>
-<summary>Reponse</summary>
-
-**Diagnostic** :
-1. **Table bloat** : 10K inserts/s = beaucoup d'activite. Si des UPDATE/DELETE accompagnent, le bloat augmente
-2. **Autovacuum dépasse** : Avec le seuil par defaut (20%), sur 100M de lignes, il faut 20M dead tuples pour declencher VACUUM
-3. **Statistiques obsoletes** : ANALYZE peut ne pas suivre le rythme
-4. **Index bloat** : Les index aussi peuvent etre bloates
-
-**Solutions** :
-1. **Tuner l'autovacuum** pour cette table : `scale_factor = 0.01`
-2. **Partitionner** par date : DROP les vieilles partitions (instantane)
-3. **COPY** au lieu de INSERT individuel pour le bulk
-4. Vérifier `pg_stat_user_tables` pour le ratio dead_tup
-5. Lancer `ANALYZE` manuellement si nécessaire
-</details>
-
----
-
-## Ce qu'il faut retenir
+## 7. Seeds Anki
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    A RETENIR                                  │
-│                                                               │
-│  1. Connection pooling est INDISPENSABLE en production       │
-│     (pg.Pool ou PgBouncer)                                   │
-│                                                               │
-│  2. COPY est 10-100x plus rapide que INSERT en boucle        │
-│                                                               │
-│  3. VACUUM garde la table saine, AUTOVACUUM le fait          │
-│     automatiquement (mais tunez-le pour les grosses tables)  │
-│                                                               │
-│  4. ANALYZE maintient les statistiques du planner a jour     │
-│                                                               │
-│  5. Partitionnement : ideal pour time-series et purge        │
-│                                                               │
-│  6. shared_buffers = 25% RAM, work_mem selon workload        │
-│                                                               │
-│  7. pg_stat_statements est votre meilleur ami en prod        │
-│                                                               │
-│  8. Cache hit ratio > 99% = tout va bien                     │
-└──────────────────────────────────────────────────────────────┘
+Pourquoi OFFSET 500 LIMIT 20 est-il lent sur une grande table ?|PostgreSQL lit et jette les 500 premières lignes avant de rendre les 20 suivantes — coût O(N), la page 500 est 500× plus lente que la page 1
+Comment fonctionne la pagination keyset ?|Passer les valeurs de la dernière ligne vue : WHERE (created_at, id) < ($last_ts, $last_id) ORDER BY created_at DESC, id DESC LIMIT 20 — le planner saute directement via l'index, coût O(log N) constant
+Quel index convient au pattern WHERE family_id = ? ORDER BY created_at DESC, id DESC ?|CREATE INDEX ON posts(family_id, created_at DESC, id DESC) — family_id pour le filtre d'égalité, created_at DESC et id DESC pour le tri sans Sort supplémentaire
+Que fait VACUUM ANALYZE table ?|Marque l'espace des dead tuples comme réutilisable (VACUUM) ET met à jour les statistiques du planner (ANALYZE) en un seul passage sans lock exclusif
+Pourquoi éviter VACUUM FULL en production ?|Il prend un lock ACCESS EXCLUSIVE qui bloque toutes les requêtes (lectures et écritures) pendant la réécriture complète — utiliser pg_repack à la place
+Comment tuner l'autovacuum pour une table très active ?|ALTER TABLE t SET (autovacuum_vacuum_scale_factor = 0.02, autovacuum_analyze_scale_factor = 0.01) — déclenche à 2 % de dead tuples au lieu de 20 %
+Qu'est-ce que le problème N+1 ?|Charger N entités puis une requête par entité pour une relation — 1 + N allers-retours. Résoudre avec un JOIN unique ou un IN groupé
+Pourquoi work_mem doit-il être calibré avec précaution ?|C'est alloué par opération (sort, hash), pas par requête — une requête peut en utiliser plusieurs ; 100 connexions × 3 ops × 64 MB = 19 GB de pic mémoire possible
+Que signifie Batches: N dans un plan Hash Join ?|La hash table a débordé sur disque (N passes au lieu de 1) — augmenter work_mem localement peut l'éliminer et réduire le temps de la jointure
 ```
 
----
+## Pont vers le lab
 
-## Navigation
-
-| Précédent | Suivant |
-|---|---|
-| [Module 10 — Deadlocks](./10-deadlocks.md) | [Module 12 — Fonctions avancees SQL](./12-fonctions-avancees-sql.md) |
-
-**Travaux pratiques** : [Lab 11 — Optimiser une base lente](../labs/lab-11-performances.md)
-
----
-
-> *"La performance n'est pas une feature qu'on ajoute à la fin. C'est une propriété emergente d'une architecture bien pensee."*
-
----
-
-<!-- parcours-recommande -->
-
-::: tip Parcours recommandé
-1. **Screencast** : [screencast 11 performances et optimisation](../screencasts/screencast-11-performances-et-optimisation.md)
-2. **Lab** : [lab-11-performances](../labs/lab-11-performances/README)
-3. **Quiz** : [quiz 11 performances et optimisation](../quizzes/quiz-11-performances-et-optimisation.html)
-:::
+> Lab associé : `10-postgresql/labs/lab-11-performances/`. Tu y mesures le coût réel d'`OFFSET` vs keyset sur le feed TribuZen, tu ajoutes l'index composite et vérifies la chute du plan, tu diagnostiques le bloat sur `posts` avec `pg_stat_user_tables` et lances `VACUUM ANALYZE`, et tu tunes l'autovacuum. Corrigé SQL inline dans le README, aucun fichier séparé.

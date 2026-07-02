@@ -1,955 +1,333 @@
-# Module 09 — Verrous & Locks
-
-> **Objectif** : Maîtriser les mécanismes de verrouillage de PostgreSQL — row locks, table locks, advisory locks — pour controler finement la concurrence.
->
-> **Difficulte** : ⭐⭐⭐
-
+---
+titre: Verrous et locks
+cours: 10-postgresql
+notions: [verrous de ligne FOR UPDATE et FOR SHARE, verrous de table et modes de lock, LOCK explicite, advisory locks, SELECT FOR UPDATE SKIP LOCKED, NOWAIT, observer les locks avec pg_locks, contention]
+outcomes: [poser un verrou de ligne pour une mise à jour sûre, utiliser SKIP LOCKED pour une file de tâches, diagnostiquer une contention avec pg_locks, choisir le bon mode de lock]
+prerequis: [08-niveaux-isolation]
+next: 10-deadlocks
+libs: [{ name: postgresql, version: "17" }]
+tribuzen: verrou sur une ressource à quota limité de TribuZen (réservation d'une place)
+last-reviewed: 2026-07
 ---
 
-## 1. Pourquoi les verrous
+# Verrous et locks
 
-On a vu dans le module précédent que MVCC evite les locks en lecture. Mais quand deux transactions veulent **modifier la même ligne**, il faut bien un arbitre.
+> **Outcomes — tu sauras FAIRE :** poser un verrou de ligne `FOR UPDATE` pour sécuriser une réservation, utiliser `SKIP LOCKED` pour une file de tâches sans contention, diagnostiquer un blocage en live avec `pg_locks`, choisir le bon mode de lock selon le cas d'usage.
+> **Difficulté :** :star::star::star:
 
-> **Analogie** : La salle de bain d'un appartement partage. Plusieurs colocataires (transactions) peuvent lire le planning sur la porte en même temps (SELECT = pas de lock). Mais quand quelqu'un entre dans la salle de bain (UPDATE), il verrouille la porte. Les autres doivent attendre. Si deux personnes pouvaient modifier le thermostat de la douche en même temps, le résultat serait imprevisible.
+## 1. Cas concret d'abord
 
-### Le spectre des verrous PostgreSQL
-
-```
-         Leger                                      Lourd
-           │                                          │
-           ▼                                          ▼
-    FOR KEY SHARE → FOR SHARE → FOR NO KEY UPDATE → FOR UPDATE
-    (le plus          (lecture     (UPDATE sans       (le plus
-     permissif)       partagee)    toucher PK/UK)     restrictif)
-
-    ACCESS SHARE ──────────────────────────► ACCESS EXCLUSIVE
-    (SELECT)                                  (DROP TABLE)
-```
-
----
-
-## 2. Deux familles de verrous
-
-PostgreSQL utilise deux familles de verrous très différentes :
-
-| Famille | Granularite | Cree par | Duree |
-|---------|------------|----------|-------|
-| **Row-level locks** | Une ligne | SELECT ... FOR UPDATE, UPDATE, DELETE | Jusqu'au COMMIT/ROLLBACK |
-| **Table-level locks** | Une table entière | SELECT, INSERT, ALTER TABLE, DROP | Jusqu'au COMMIT/ROLLBACK |
-
-> **Point clé** : Les **row-level locks** ne sont PAS stockes en mémoire partagee. Ils sont marques directement dans le tuple (via xmax). C'est pourquoi PostgreSQL peut verrouiller des millions de lignes sans surcharge mémoire.
-
-### Différence avec d'autres SGBD
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  MySQL InnoDB : Lock escalation possible                      │
-│  (beaucoup de row locks → table lock automatique)            │
-│                                                               │
-│  PostgreSQL : JAMAIS de lock escalation !                     │
-│  Meme 10 millions de row locks restent des row locks.        │
-└──────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 3. Row-level locks
-
-### 3.1 Les 4 modes de verrouillage de ligne
-
-| Mode | Cree par | Bloque | Cas d'usage |
-|------|---------|--------|-------------|
-| `FOR KEY SHARE` | FK check | Rien sauf FOR UPDATE sur PK | Vérification FK |
-| `FOR SHARE` | Lecture protegee | FOR UPDATE, FOR NO KEY UPDATE | Lire et garantir que la ligne ne change pas |
-| `FOR NO KEY UPDATE` | UPDATE sans PK | FOR UPDATE, FOR SHARE | UPDATE de colonnes non-PK |
-| `FOR UPDATE` | Verrouillage exclusif | TOUT (sauf FOR KEY SHARE) | Modifier, supprimer |
-
-### 3.2 Matrice de compatibilite (Row-level)
-
-```
-                    Lock existant sur la ligne
-                    ┌────────────┬────────────┬─────────────────┬─────────────┐
-                    │ FOR KEY    │ FOR SHARE  │ FOR NO KEY      │ FOR UPDATE  │
-                    │ SHARE      │            │ UPDATE          │             │
-┌───────────────────┼────────────┼────────────┼─────────────────┼─────────────┤
-│ FOR KEY SHARE     │     ✅     │     ✅     │       ✅        │      ✅     │
-│ FOR SHARE         │     ✅     │     ✅     │       ❌        │      ❌     │
-│ FOR NO KEY UPDATE │     ✅     │     ❌     │       ❌        │      ❌     │
-│ FOR UPDATE        │     ✅     │     ❌     │       ❌        │      ❌     │
-└───────────────────┴────────────┴────────────┴─────────────────┴─────────────┘
-
-✅ = Compatible (les deux peuvent coexister)
-❌ = Conflit (le deuxieme doit attendre)
-```
-
-### 3.3 FOR UPDATE — Le plus courant
+Dans TribuZen, un événement famille ("Pique-nique Martin") n'a plus **qu'une seule place**. Deux membres ouvrent l'app en même temps et cliquent sur "Réserver". Sans verrou, les deux transactions lisent `places_restantes = 1`, valident la garde (`> 0`), et décrémentent toutes les deux. Résultat : `places_restantes = -1`. Surbooking silencieux, aucune erreur levée.
 
 ```sql
--- Scenario : transfert bancaire
+-- Sans verrou : MVCC donne le même snapshot aux deux sessions → lost update
+SELECT places_restantes FROM evenements WHERE id = 1; -- Session A : voit 1
+SELECT places_restantes FROM evenements WHERE id = 1; -- Session B : voit aussi 1
+UPDATE evenements SET places_restantes = places_restantes - 1 WHERE id = 1; -- A : 1→0
+UPDATE evenements SET places_restantes = places_restantes - 1 WHERE id = 1; -- B : 0→-1
+-- Résultat : deux réservations créées pour une seule place.
+```
+
+La solution : `SELECT … FOR UPDATE`. La première session acquiert un verrou exclusif sur la ligne **avant** de lire la valeur. La seconde attend que la première commite, puis lit la valeur après mise à jour — elle voit `places_restantes = 0` et annule.
+
+```sql
+-- Avec FOR UPDATE : atomique, pas de race condition
 BEGIN;
-
--- Verrouiller la ligne d'Alice AVANT de lire le solde
-SELECT solde FROM comptes
-  WHERE id = 1
-  FOR UPDATE;
--- solde = 1000
-
--- Maintenant personne d'autre ne peut modifier cette ligne
-UPDATE comptes
-  SET solde = solde - 200
-  WHERE id = 1;
-
+SELECT places_restantes FROM evenements WHERE id = 1 FOR UPDATE;
+-- places_restantes = 1 → verrou exclusif acquis ; Session B BLOQUÉE jusqu'au COMMIT
+UPDATE evenements SET places_restantes = places_restantes - 1 WHERE id = 1;
+INSERT INTO reservations (evenement_id, membre_id) VALUES (1, 'u-7');
 COMMIT;
--- Lock libere
+-- Verrou libéré. Session B se débloque, lit places_restantes = 0. Elle doit ROLLBACK.
 ```
 
-> **Analogie** : FOR UPDATE, c'est comme prendre un livre à la bibliotheque et le poser sur votre table avec un panneau "reserve". Les autres peuvent VOIR qu'il est la, mais personne ne peut le prendre.
+La suite couvre tous les modes de row lock, les table locks, les advisory locks, `SKIP LOCKED` et `NOWAIT`, et comment observer tout ça en direct dans `pg_locks`.
 
-### 3.4 FOR SHARE — Verrouillage partage
+## 2. Théorie complète, concise
+
+### Row-level locks — 4 modes
+
+PostgreSQL pose un verrou de ligne automatiquement sur chaque `UPDATE`/`DELETE`, et manuellement via `SELECT … FOR …`. Quatre modes du plus léger au plus exclusif :
+
+| Mode | Posé par | Bloque | Cas d'usage |
+|------|----------|--------|-------------|
+| `FOR KEY SHARE` | vérification FK interne | Seulement `FOR UPDATE` sur PK | Check de clé étrangère |
+| `FOR SHARE` | `SELECT FOR SHARE` | `FOR UPDATE`, `FOR NO KEY UPDATE` | Lecture protégée — ligne ne sera pas supprimée |
+| `FOR NO KEY UPDATE` | `UPDATE` sans toucher PK/UNIQUE | `FOR SHARE`, `FOR UPDATE` | Modification sans impacter les FK |
+| `FOR UPDATE` | `SELECT FOR UPDATE`, `DELETE` | Tout sauf `FOR KEY SHARE` | Modification ou suppression imminente |
+
+**Pas de lock escalation.** Les row locks sont stockés dans les tuples (`xmax`), pas en mémoire partagée. PostgreSQL ne remplace jamais des row locks par un table lock — contrairement à SQL Server ou MySQL. Dix millions de row locks restent dix millions de row locks.
+
+### NOWAIT et SKIP LOCKED
+
+`SELECT … FOR UPDATE` attend indéfiniment si la ligne est verrouillée. Deux modificateurs changent ce comportement :
+
+- **`NOWAIT`** : échoue immédiatement avec `ERROR 55P03 lock_not_available`.
+- **`SKIP LOCKED`** : ignore silencieusement les lignes verrouillées, retourne seulement les libres.
 
 ```sql
--- Scenario : verifier qu'un produit existe avant de creer une commande
+-- NOWAIT : erreur immédiate
+SELECT places_restantes FROM evenements WHERE id = 1 FOR UPDATE NOWAIT;
+-- → ERROR: could not obtain lock on row in relation "evenements"  (55P03)
+
+-- SKIP LOCKED : prendre les notifications disponibles sans attendre
+SELECT id, membre_id, contenu FROM notifications
+WHERE statut = 'pending'
+ORDER BY id
+LIMIT 5
+FOR UPDATE SKIP LOCKED;
+-- Retourne jusqu'à 5 lignes non verrouillées. Zéro attente.
+```
+
+Variante avec délai configurable :
+
+```sql
+SET lock_timeout = '3s'; -- Attendre max 3 s avant erreur 55P03
+```
+
+### Table-level locks — 8 modes
+
+Chaque statement acquiert aussi un **table lock** pour signaler son intention. Du plus permissif au plus exclusif :
+
+| Niveau | Acquis automatiquement par | Bloque |
+|--------|---------------------------|--------|
+| `ACCESS SHARE` | `SELECT` | Seulement `ACCESS EXCLUSIVE` |
+| `ROW SHARE` | `SELECT FOR UPDATE/SHARE` | `EXCLUSIVE`, `ACCESS EXCLUSIVE` |
+| `ROW EXCLUSIVE` | `INSERT`, `UPDATE`, `DELETE` | `SHARE` et plus lourds |
+| `SHARE UPDATE EXCLUSIVE` | `VACUUM`, `ANALYZE`, `CREATE INDEX CONCURRENTLY` | Lui-même et plus lourds |
+| `SHARE` | `CREATE INDEX` (non-concurrent) | `ROW EXCLUSIVE` et plus lourds |
+| `SHARE ROW EXCLUSIVE` | `CREATE TRIGGER` | `ROW EXCLUSIVE` et plus lourds |
+| `EXCLUSIVE` | `REFRESH MATERIALIZED VIEW CONCURRENTLY` | `ROW SHARE` et plus lourds |
+| `ACCESS EXCLUSIVE` | `ALTER TABLE`, `DROP TABLE`, `VACUUM FULL` | **Tout** — bloque même les `SELECT` |
+
+`ALTER TABLE … ADD COLUMN` acquiert `ACCESS EXCLUSIVE` : sur une grande table, cela peut bloquer tous les `SELECT` pendant plusieurs minutes. Préférer `ADD COLUMN … DEFAULT expr` (PostgreSQL 11+ : instantané si valeur constante) ou `CREATE INDEX CONCURRENTLY`.
+
+### LOCK TABLE — verrou explicite
+
+Utile pour des opérations de maintenance qui exigent une vue cohérente sur plusieurs tables. **Par défaut `LOCK TABLE` pose `ACCESS EXCLUSIVE`** — toujours préciser le mode :
+
+```sql
+-- DANGEREUX : ACCESS EXCLUSIVE par défaut, bloque tout y compris SELECT
+LOCK TABLE evenements; -- à éviter sans besoin précis
+
+-- Correct : bloquer seulement les écritures
 BEGIN;
-
--- Verifier que le produit existe et ne sera pas supprime
-SELECT * FROM produits
-  WHERE id = 42
-  FOR SHARE;
--- Personne ne peut DELETE ou UPDATE ce produit
--- mais d'autres peuvent aussi le FOR SHARE
-
-INSERT INTO commandes (produit_id, quantite)
-  VALUES (42, 3);
-
+LOCK TABLE evenements IN SHARE MODE;
+SELECT id, places_restantes FROM evenements; -- lecture cohérente, personne ne peut modifier
 COMMIT;
 ```
 
-### 3.5 FOR NO KEY UPDATE
+### Advisory locks
 
-Quand vous faites un UPDATE qui ne touche **pas** la clé primaire ni les colonnes avec UNIQUE, PostgreSQL utilise automatiquement `FOR NO KEY UPDATE` en interne.
+Les advisory locks sont des verrous applicatifs portant une clé numérique définie par l'application, sans lien avec une table ou une ligne. Utiles pour du mutex applicatif (un seul process traite une entité à la fois).
 
-```sql
--- Ceci acquiert FOR NO KEY UPDATE en interne :
-UPDATE comptes SET solde = 500 WHERE id = 1;
--- Car 'solde' n'est pas une PK ni UNIQUE
-
--- Ceci acquiert FOR UPDATE en interne :
-UPDATE comptes SET id = 999 WHERE id = 1;
--- Car 'id' est la PK
-```
-
-L'avantage : `FOR NO KEY UPDATE` ne bloque pas les verifications de FK.
-
-### 3.6 FOR KEY SHARE
-
-Le mode le plus leger. PostgreSQL l'utilise en interne pour les verifications de **foreign keys**.
+| Fonction | Scope | Bloquant | Libération |
+|----------|-------|----------|------------|
+| `pg_advisory_lock(key)` | Session | Oui | `pg_advisory_unlock(key)` ou fin de session |
+| `pg_try_advisory_lock(key)` | Session | Non — retourne bool | Idem |
+| `pg_advisory_xact_lock(key)` | Transaction | Oui | Automatique au `COMMIT`/`ROLLBACK` |
+| `pg_try_advisory_xact_lock(key)` | Transaction | Non — retourne bool | Automatique |
 
 ```sql
--- Quand vous inserez dans une table enfant :
-INSERT INTO commandes (produit_id, quantite) VALUES (42, 1);
-
--- PostgreSQL verifie que le produit 42 existe en acquierant
--- un FOR KEY SHARE sur produits WHERE id = 42
--- Cela ne bloque PAS les UPDATE sur cette ligne
--- (sauf si on modifie la PK du produit)
-```
-
----
-
-## 4. Table-level locks
-
-### 4.1 Les 8 niveaux de locks
-
-Du plus leger au plus lourd :
-
-| # | Mode | Acquis par | Bloque |
-|---|------|-----------|--------|
-| 1 | `ACCESS SHARE` | `SELECT` | Seulement ACCESS EXCLUSIVE |
-| 2 | `ROW SHARE` | `SELECT FOR UPDATE/SHARE` | EXCLUSIVE, ACCESS EXCLUSIVE |
-| 3 | `ROW EXCLUSIVE` | `INSERT, UPDATE, DELETE` | SHARE, SHARE ROW EXCLUSIVE, EXCLUSIVE, ACCESS EXCLUSIVE |
-| 4 | `SHARE UPDATE EXCLUSIVE` | `VACUUM, ANALYZE, CREATE INDEX CONCURRENTLY` | Memes + SHARE UPDATE EXCLUSIVE |
-| 5 | `SHARE` | `CREATE INDEX (non-concurrent)` | ROW EXCLUSIVE + plus lourds |
-| 6 | `SHARE ROW EXCLUSIVE` | `CREATE TRIGGER` | ROW EXCLUSIVE + plus lourds |
-| 7 | `EXCLUSIVE` | `REFRESH MATERIALIZED VIEW CONCURRENTLY` | ROW SHARE + plus lourds |
-| 8 | `ACCESS EXCLUSIVE` | `ALTER TABLE, DROP TABLE, VACUUM FULL, LOCK TABLE` | **TOUT** |
-
-### 4.2 Matrice de compatibilite (Table-level)
-
-```
-                      ACCESS  ROW    ROW     SHARE   SHARE  SHARE    EXCLU-  ACCESS
-                      SHARE   SHARE  EXCL.   UPD.EX  .      ROW EX  SIVE    EXCL.
-┌────────────────────┬───────┬──────┬───────┬───────┬──────┬────────┬───────┬───────┐
-│ ACCESS SHARE       │  ✅   │  ✅  │  ✅   │  ✅   │  ✅  │   ✅   │  ✅   │  ❌   │
-│ ROW SHARE          │  ✅   │  ✅  │  ✅   │  ✅   │  ✅  │   ✅   │  ❌   │  ❌   │
-│ ROW EXCLUSIVE      │  ✅   │  ✅  │  ✅   │  ✅   │  ❌  │   ❌   │  ❌   │  ❌   │
-│ SHARE UPDATE EXCL. │  ✅   │  ✅  │  ✅   │  ❌   │  ❌  │   ❌   │  ❌   │  ❌   │
-│ SHARE              │  ✅   │  ✅  │  ❌   │  ❌   │  ✅  │   ❌   │  ❌   │  ❌   │
-│ SHARE ROW EXCL.    │  ✅   │  ✅  │  ❌   │  ❌   │  ❌  │   ❌   │  ❌   │  ❌   │
-│ EXCLUSIVE          │  ✅   │  ❌  │  ❌   │  ❌   │  ❌  │   ❌   │  ❌   │  ❌   │
-│ ACCESS EXCLUSIVE   │  ❌   │  ❌  │  ❌   │  ❌   │  ❌  │   ❌   │  ❌   │  ❌   │
-└────────────────────┴───────┴──────┴───────┴───────┴──────┴────────┴───────┴───────┘
-```
-
-### 4.3 LOCK TABLE — Verrouillage explicite
-
-```sql
--- Rarement necessaire, mais parfois utile
+-- Mutex : un seul cron génère le récapitulatif de l'événement 1 à la fois
 BEGIN;
+SELECT pg_advisory_xact_lock(1); -- bloquant : attend si un autre process tient la clé 1
+-- ... opérations sur l'événement 1 ...
+COMMIT; -- lock libéré automatiquement
 
-LOCK TABLE comptes IN SHARE MODE;
--- Plus personne ne peut INSERT/UPDATE/DELETE
--- mais tout le monde peut SELECT
-
--- Calculer une somme coherente
-SELECT SUM(solde) FROM comptes;
-
+-- Non-bloquant : tenter sans attendre
+BEGIN;
+SELECT pg_try_advisory_xact_lock(1) AS acquired; -- false si déjà pris → skip
+-- Si acquired = false → ROLLBACK, log, retry
 COMMIT;
 ```
 
-> **Piege classique** : `LOCK TABLE` acquiert un **ACCESS EXCLUSIVE** lock par defaut, ce qui bloque TOUT, même les SELECT. Specifiez toujours le mode explicitement.
+### Observer les locks avec pg_locks
+
+La vue système `pg_locks` liste tous les verrous actifs sur l'instance.
 
 ```sql
--- DANGEREUX : bloque tout
-LOCK TABLE comptes;
--- Equivalent a : LOCK TABLE comptes IN ACCESS EXCLUSIVE MODE;
-
--- MIEUX : seulement bloquer les ecritures
-LOCK TABLE comptes IN SHARE MODE;
-```
-
-### 4.4 Impact sur les migrations
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  ATTENTION MIGRATION !                                        │
-│                                                               │
-│  ALTER TABLE ... ADD COLUMN → ACCESS EXCLUSIVE                │
-│  = Bloque TOUS les SELECT pendant la migration !             │
-│                                                               │
-│  Sur une table de 100M de lignes, cela peut durer            │
-│  des minutes = downtime !                                     │
-│                                                               │
-│  Solutions :                                                  │
-│  - CREATE INDEX CONCURRENTLY (pas de lock)                   │
-│  - ADD COLUMN sans DEFAULT (instantane en PG 11+)            │
-│  - Utiliser pg_repack pour eviter VACUUM FULL                │
-└──────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 5. pg_locks — Observer les verrous en temps réel
-
-### 5.1 La vue pg_locks
-
-```sql
+-- Locks actifs avec contexte
 SELECT
     l.locktype,
     l.relation::regclass AS table_name,
     l.mode,
     l.granted,
     l.pid,
-    a.usename,
-    a.query,
-    a.state,
+    left(a.query, 60) AS query,
     age(now(), a.query_start) AS duree
 FROM pg_locks l
 JOIN pg_stat_activity a ON l.pid = a.pid
 WHERE l.relation IS NOT NULL
   AND a.datname = current_database()
-ORDER BY a.query_start;
+ORDER BY l.granted DESC, a.query_start;
 ```
 
-### 5.2 Colonnes clés de pg_locks
-
-| Colonne | Description | Exemple |
-|---------|-------------|---------|
-| `locktype` | Type de verrou | relation, transactionid, advisory |
-| `database` | OID de la database | 16384 |
-| `relation` | OID de la table | 16389 (caster avec ::regclass) |
-| `page` | Numero de page (pour row locks) | 0 |
-| `tuple` | Numero de tuple | 1 |
-| `virtualxid` | Virtual transaction ID | 3/45 |
-| `transactionid` | Transaction ID réel | 12345 |
-| `mode` | Mode du lock | RowExclusiveLock |
-| `granted` | Lock accorde ? | true/false |
-| `pid` | Process ID du backend | 1234 |
-
-### 5.3 Trouver les transactions bloquantes
-
 ```sql
--- Requete pour trouver qui bloque qui
+-- Qui bloque qui ? (PostgreSQL 9.6+)
 SELECT
-    blocked.pid AS blocked_pid,
-    blocked.usename AS blocked_user,
-    blocked.query AS blocked_query,
-    blocking.pid AS blocking_pid,
-    blocking.usename AS blocking_user,
-    blocking.query AS blocking_query,
-    age(now(), blocked.query_start) AS blocked_since
+    blocked.pid          AS pid_bloque,
+    left(blocked.query, 50) AS requete_bloquee,
+    blocking.pid         AS pid_bloquant,
+    left(blocking.query, 50) AS requete_bloquante,
+    age(now(), blocked.query_start) AS bloque_depuis
 FROM pg_stat_activity blocked
-JOIN pg_locks bl ON bl.pid = blocked.pid AND NOT bl.granted
-JOIN pg_locks gl ON gl.relation = bl.relation
-    AND gl.locktype = bl.locktype
-    AND gl.pid != bl.pid
-    AND gl.granted
-JOIN pg_stat_activity blocking ON blocking.pid = gl.pid
-WHERE blocked.state = 'active';
+JOIN pg_stat_activity blocking
+    ON blocking.pid = ANY(pg_blocking_pids(blocked.pid))
+WHERE cardinality(pg_blocking_pids(blocked.pid)) > 0;
 ```
 
-### 5.4 Vue simplifiee (PostgreSQL 14+)
+`granted = false` dans `pg_locks` = verrou **en attente** (session bloquée). `pg_blocking_pids(pid)` retourne directement la liste des PIDs bloquants — la forme la plus simple pour diagnostiquer une contention.
+
+## 3. Worked examples
+
+### Exemple A — Réservation de place TribuZen avec FOR UPDATE
+
+Objectif : une seule réservation créée pour la dernière place, même sous concurrence.
 
 ```sql
--- pg_blocking_pids() : retourne les PIDs bloquants
-SELECT
-    pid,
-    usename,
-    pg_blocking_pids(pid) AS blocked_by,
-    query,
-    state,
-    wait_event_type,
-    wait_event
-FROM pg_stat_activity
-WHERE cardinality(pg_blocking_pids(pid)) > 0;
-```
-
----
-
-## 6. pg_stat_activity
-
-La vue `pg_stat_activity` est votre **tableau de bord** pour la concurrence.
-
-### 6.1 Colonnes essentielles
-
-| Colonne | Description | Valeurs courantes |
-|---------|-------------|-------------------|
-| `pid` | Process ID | 1234 |
-| `usename` | Utilisateur | 'myapp' |
-| `datname` | Base de donnees | 'production' |
-| `state` | État du backend | active, idle, idle in transaction |
-| `query` | Derniere requête | 'SELECT ...' |
-| `query_start` | Debut de la requête | timestamp |
-| `xact_start` | Debut de la transaction | timestamp |
-| `wait_event_type` | Type d'attente | Lock, IO, Client |
-| `wait_event` | Événement d'attente | relation, transactionid |
-| `backend_type` | Type de processus | client backend |
-
-### 6.2 Requetes utiles
-
-```sql
--- Transactions "idle in transaction" (danger !)
-SELECT pid, usename, state, query,
-       age(now(), xact_start) AS tx_duration
-FROM pg_stat_activity
-WHERE state = 'idle in transaction'
-  AND age(now(), xact_start) > interval '5 minutes'
-ORDER BY xact_start;
-```
-
-> **Piege classique** : Une transaction "idle in transaction" maintient ses locks ET empeche VACUUM de nettoyer les tuples morts. C'est un des problèmes les plus courants en production.
-
-```sql
--- Tuer une session bloquante (en dernier recours)
-SELECT pg_terminate_backend(1234);
-
--- Plus doux : annuler seulement la requete
-SELECT pg_cancel_backend(1234);
-```
-
-### 6.3 Les états d'un backend
-
-```
-                 Connexion
-                     │
-                     ▼
-              ┌─────────────┐
-              │    idle      │ ← Connecte, ne fait rien
-              └──────┬──────┘
-                     │ Debut de requete
-                     ▼
-              ┌─────────────┐
-              │   active     │ ← Execute une requete
-              └──────┬──────┘
-                     │ Requete terminee
-                     ├──────────────────┐
-                     │                  │
-                     ▼                  ▼
-              ┌─────────────┐   ┌──────────────────┐
-              │    idle      │   │ idle in           │
-              │              │   │ transaction       │ ← DANGER
-              └─────────────┘   └──────────────────┘
-                                        │ Trop longtemps
-                                        ▼
-                                ┌──────────────────┐
-                                │ idle in           │
-                                │ transaction       │
-                                │ (aborted)         │ ← Erreur non-geree
-                                └──────────────────┘
-```
-
----
-
-## 7. NOWAIT et lock_timeout
-
-### 7.1 NOWAIT — Echouer immediatement
-
-```sql
--- Sans NOWAIT : attend indefiniment
-BEGIN;
-SELECT * FROM comptes WHERE id = 1 FOR UPDATE;
--- Si la ligne est verrouillee, attend... attend... attend...
-
--- Avec NOWAIT : echoue immediatement
-BEGIN;
-SELECT * FROM comptes WHERE id = 1 FOR UPDATE NOWAIT;
--- Si la ligne est verrouillee :
--- ERROR: could not obtain lock on row in relation "comptes"
-```
-
-### 7.2 lock_timeout — Timeout configurable
-
-```sql
--- Attendre maximum 5 secondes pour un lock
-SET lock_timeout = '5s';
-
-BEGIN;
-SELECT * FROM comptes WHERE id = 1 FOR UPDATE;
--- Si la ligne est verrouillee et pas liberee en 5s :
--- ERROR: canceling statement due to lock timeout
-```
-
-```sql
--- Combiner avec statement_timeout
-SET lock_timeout = '5s';       -- Max 5s pour obtenir le lock
-SET statement_timeout = '30s'; -- Max 30s pour la requete entiere
-```
-
-### 7.3 Node.js : gérer NOWAIT
-
-```typescript
-import pg from 'pg';
-const { Pool } = pg;
-
-const pool = new Pool({ /* ... */ });
-
-async function reserverProduit(produitId, quantite) {
-    const client = await pool.connect();
-
-    try {
-        await client.query('BEGIN');
-
-        // Essayer de verrouiller le produit immediatement
-        const { rows } = await client.query(
-            `SELECT stock FROM produits
-             WHERE id = $1
-             FOR UPDATE NOWAIT`,
-            [produitId]
-        );
-
-        if (rows.length === 0) {
-            throw new Error('Produit introuvable');
-        }
-
-        if (rows[0].stock < quantite) {
-            throw new Error('Stock insuffisant');
-        }
-
-        await client.query(
-            `UPDATE produits
-             SET stock = stock - $1
-             WHERE id = $2`,
-            [quantite, produitId]
-        );
-
-        await client.query('COMMIT');
-        return { success: true };
-    } catch (error) {
-        await client.query('ROLLBACK');
-
-        // Code 55P03 = lock_not_available (NOWAIT)
-        if (error.code === '55P03') {
-            return {
-                success: false,
-                reason: 'Le produit est en cours de modification, reessayez.',
-            };
-        }
-
-        throw error;
-    } finally {
-        client.release();
-    }
-}
-```
-
----
-
-## 8. SKIP LOCKED — Le pattern de file d'attente
-
-### 8.1 Principe
-
-`SKIP LOCKED` saute les lignes déjà verrouillees au lieu d'attendre. C'est **parfait** pour implementer une file d'attente (queue).
-
-> **Analogie** : Imaginez un supermarche avec plusieurs caisses. Au lieu de faire la queue derriere quelqu'un, vous allez directement à la caisse libre. `SKIP LOCKED` fait exactement ça : il prend les lignes "libres" et ignore les "occupees".
-
-### 8.2 Exemple : Job queue
-
-```sql
--- Table de jobs
-CREATE TABLE jobs (
-    id        SERIAL PRIMARY KEY,
-    payload   JSONB NOT NULL,
-    status    TEXT NOT NULL DEFAULT 'pending',
-    locked_by TEXT,
-    created_at TIMESTAMPTZ DEFAULT now()
+-- Schéma
+CREATE TABLE evenements (
+    id               SERIAL PRIMARY KEY,
+    titre            TEXT NOT NULL,
+    places_totales   INT NOT NULL,
+    places_restantes INT NOT NULL CHECK (places_restantes >= 0)
 );
 
--- Worker 1 : prendre le prochain job disponible
-BEGIN;
-SELECT id, payload
-FROM jobs
-WHERE status = 'pending'
-ORDER BY created_at
-LIMIT 1
-FOR UPDATE SKIP LOCKED;
+CREATE TABLE reservations (
+    id            SERIAL PRIMARY KEY,
+    evenement_id  INT NOT NULL REFERENCES evenements(id),
+    membre_id     TEXT NOT NULL,
+    reservee_le   TIMESTAMPTZ DEFAULT now()
+);
 
--- Si un job est retourne, le traiter
-UPDATE jobs SET status = 'processing', locked_by = 'worker-1'
-WHERE id = 42;
-COMMIT;
-
--- Worker 2 (en meme temps) : prend le SUIVANT automatiquement !
-BEGIN;
-SELECT id, payload
-FROM jobs
-WHERE status = 'pending'
-ORDER BY created_at
-LIMIT 1
-FOR UPDATE SKIP LOCKED;
--- Retourne le job SUIVANT (pas le meme que worker 1)
+INSERT INTO evenements (titre, places_totales, places_restantes)
+VALUES ('Pique-nique Martin', 8, 1);
 ```
 
-### 8.3 Pattern complet de job queue
+```sql
+-- Session A : réservation avec verrou
+BEGIN;
+
+SELECT places_restantes
+FROM evenements
+WHERE id = 1
+FOR UPDATE;
+-- → places_restantes = 1 ; verrou exclusif acquis.
+-- Session B qui tente le même SELECT FOR UPDATE est BLOQUÉE jusqu'au COMMIT de A.
+
+UPDATE evenements
+SET places_restantes = places_restantes - 1
+WHERE id = 1;
+
+INSERT INTO reservations (evenement_id, membre_id)
+VALUES (1, 'u-7');
+
+COMMIT;
+-- Session B se débloque. Elle lit places_restantes = 0. Elle doit ROLLBACK.
+```
+
+Pas-à-pas : (1) `FOR UPDATE` verrouille la ligne **atomiquement avec la lecture** — pas de fenêtre entre "lire" et "verrouiller" comme dans un `SELECT` suivi d'un `UPDATE` séparé ; (2) Session B attend le `COMMIT` de A, puis lit `places_restantes = 0` — la contrainte `CHECK` bloquerait un décrément supplémentaire, mais la garde métier doit l'anticiper pour renvoyer un message clair ; (3) une seule réservation est créée, zéro surbooking, zéro erreur de sérialisation.
+
+### Exemple B — SKIP LOCKED pour les notifications TribuZen
+
+Objectif : plusieurs workers envoient des notifications en parallèle sans doublon ni blocage.
 
 ```sql
--- Prendre et traiter un batch de jobs
-WITH next_jobs AS (
+-- Table de notifications
+CREATE TABLE notifications (
+    id         SERIAL PRIMARY KEY,
+    membre_id  TEXT NOT NULL,
+    contenu    TEXT NOT NULL,
+    statut     TEXT NOT NULL DEFAULT 'pending'
+);
+
+INSERT INTO notifications (membre_id, contenu)
+SELECT 'u-' || i, 'Rappel : événement demain'
+FROM generate_series(1, 20) i;
+```
+
+```sql
+-- Worker 1 : prendre et marquer atomiquement un batch de 5 notifications
+BEGIN;
+
+WITH batch AS (
     SELECT id
-    FROM jobs
-    WHERE status = 'pending'
-    ORDER BY created_at
-    LIMIT 10
+    FROM notifications
+    WHERE statut = 'pending'
+    ORDER BY id
+    LIMIT 5
     FOR UPDATE SKIP LOCKED
 )
-UPDATE jobs
-SET status = 'processing',
-    locked_by = 'worker-' || pg_backend_pid()
-FROM next_jobs
-WHERE jobs.id = next_jobs.id
-RETURNING jobs.*;
+UPDATE notifications
+SET statut = 'en_cours'
+FROM batch
+WHERE notifications.id = batch.id
+RETURNING notifications.id, notifications.membre_id, notifications.contenu;
+-- → ids 1,2,3,4,5 — verrouillés et passés à 'en_cours' atomiquement
+-- (Worker 1 traite ses notifications ; ne COMMIT pas encore)
+
+-- Worker 2 (simultané) — même requête exacte :
+-- → ids 6,7,8,9,10 (les 5 de Worker 1 sont verrouillés → skippés)
+-- Aucune attente, aucun doublon.
+
+COMMIT; -- Worker 1
+-- 10 notifications traitées en parallèle.
 ```
 
-### 8.4 Node.js : Worker de jobs
+Pas-à-pas : (1) `SKIP LOCKED` ne bloque jamais — une ligne verrouillée est ignorée silencieusement ; (2) le CTE `WITH … AS (SELECT … FOR UPDATE SKIP LOCKED)` suivi d'un `UPDATE … FROM` est le pattern "sélectionner + marquer" en une seule requête atomique — pas de second `SELECT` ; (3) `RETURNING` donne directement les données à traiter ; (4) chaque worker traite son propre lot en totale indépendance.
 
-```typescript
-import pg from 'pg';
-const { Pool } = pg;
+## 4. Pièges & misconceptions
 
-const pool = new Pool({ max: 5 });
+- **`SELECT` puis `UPDATE` sans `FOR UPDATE` = lost update.** Lire une valeur et décider d'agir dessus sans verrou laisse une fenêtre pendant laquelle une autre session modifie la même ligne. *Correct* : toujours `SELECT … FOR UPDATE` quand la logique dépend de la valeur lue avant d'écrire.
 
-async function processNextJob() {
-    const client = await pool.connect();
+- **`LOCK TABLE` sans mode = `ACCESS EXCLUSIVE`.** Le défaut bloque **tout**, y compris les `SELECT`. C'est rarement l'intention. *Correct* : toujours écrire `LOCK TABLE t IN SHARE MODE` (ou le mode adapté) — jamais `LOCK TABLE t` tout court en production.
 
-    try {
-        await client.query('BEGIN');
+- **`NOWAIT` et `lock_timeout` ne sont pas interchangeables.** `NOWAIT` échoue immédiatement ; `lock_timeout` laisse patienter N secondes avant d'échouer. *Correct* : `NOWAIT` pour les APIs temps réel (réponse immédiate à l'utilisateur — intercepter `SQLSTATE 55P03`) ; `lock_timeout` pour les traitements batch qui peuvent attendre quelques secondes.
 
-        // Prendre le prochain job disponible
-        const { rows } = await client.query(`
-            SELECT id, payload
-            FROM jobs
-            WHERE status = 'pending'
-            ORDER BY created_at
-            LIMIT 1
-            FOR UPDATE SKIP LOCKED
-        `);
+- **`SKIP LOCKED` n'est pas un filtre métier.** Il saute des lignes selon leur état de verrouillage au moment de l'exécution. Une ligne skippée n'est pas perdue — elle sera disponible au prochain passage du worker. *Correct* : réserver `SKIP LOCKED` au dispatch de work items, jamais à une logique de filtrage fonctionnel.
 
-        if (rows.length === 0) {
-            await client.query('ROLLBACK');
-            return null; // Pas de job disponible
-        }
+- **Advisory locks sans enforcement.** Un process qui n'appelle pas `pg_advisory_xact_lock` n'est pas bloqué. Les advisory locks sont purement conventionnels. *Correct* : ils ne remplacent pas les row locks — ils servent de mutex applicatif pour des ressources qui n'ont pas de ligne dans la base (cron, batch, singleton).
 
-        const job = rows[0];
+- **Transaction `idle in transaction` qui tient un lock.** Une session qui ouvre `BEGIN`, pose un `FOR UPDATE`, puis reste en attente (I/O externe, pause utilisateur) maintient le verrou et bloque toutes les sessions concurrentes sur cette ligne indéfiniment. *Correct* : configurer `idle_in_transaction_session_timeout` (ex. `60s`) ; ne placer aucune I/O externe dans une transaction.
 
-        try {
-            // Traiter le job
-            await executeJob(job.payload);
+- **`pg_locks` sans jointure sur `pg_stat_activity` = OIDs illisibles.** La colonne `relation` est un OID ; `pid` seul ne dit pas quelle requête est en cause. *Correct* : toujours joindre `pg_stat_activity` et caster `relation::regclass` pour voir le nom de la table et la requête.
 
-            // Marquer comme termine
-            await client.query(
-                `UPDATE jobs SET status = 'done' WHERE id = $1`,
-                [job.id]
-            );
-        } catch (jobError) {
-            // Marquer comme echoue
-            await client.query(
-                `UPDATE jobs
-                 SET status = 'failed',
-                     payload = payload || $1::jsonb
-                 WHERE id = $2`,
-                [JSON.stringify({ error: jobError.message }), job.id]
-            );
-        }
+## 5. Ancrage TribuZen
 
-        await client.query('COMMIT');
-        return job;
-    } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-    } finally {
-        client.release();
-    }
-}
+Couche fil-rouge : **verrou sur une ressource à quota limité** dans `smaurier/tribuzen` — la réservation de place dans un événement famille.
 
-// Boucle de traitement
-async function workerLoop() {
-    while (true) {
-        const job = await processNextJob();
-        if (!job) {
-            // Pas de job, attendre un peu
-            await new Promise((r) => setTimeout(r, 1000));
-        }
-    }
-}
+- Le cas du pique-nique (Exemple A) reproduit le scénario de production exact : une famille avec plusieurs membres sur des appareils différents, tous notifiés simultanément qu'il reste une place. `FOR UPDATE` est la seule garantie d'atomicité entre la lecture du quota et l'écriture de la réservation.
+- La contrainte `CHECK (places_restantes >= 0)` est un filet de sécurité complémentaire au verrou : même si un bug applicatif oublie la garde métier, la base refuse le décrément.
+- Les notifications TribuZen (Exemple B) illustrent `SKIP LOCKED` : plusieurs instances du service notification envoient des pushes en parallèle — `SKIP LOCKED` garantit qu'une notification n'est jamais traitée deux fois sans sérialiser les workers.
+- En production, les advisory locks servent à s'assurer qu'un seul cron (récapitulatif hebdomadaire famille) tourne à la fois, même en déploiement multi-instances.
+- En session, les deux exemples s'exécutent sur la base Docker locale TribuZen avec deux terminaux `psql` — les blocages et timings sont réels, pas simulés.
 
-workerLoop().catch(console.error);
-```
+## 6. Points clés
 
----
+1. `SELECT … FOR UPDATE` verrouille la ligne atomiquement avec la lecture — pas de fenêtre entre "lire" et "verrouiller". Indispensable pour tout pattern check-then-act.
+2. Quatre modes de row lock du plus léger au plus exclusif : `FOR KEY SHARE` → `FOR SHARE` → `FOR NO KEY UPDATE` → `FOR UPDATE`. PostgreSQL ne fait jamais de lock escalation.
+3. `NOWAIT` : erreur immédiate (55P03) si verrou impossible ; `SKIP LOCKED` : ignore les lignes verrouillées sans erreur ni attente — les deux évitent l'attente, mais pour des cas différents.
+4. Table locks : 8 modes de `ACCESS SHARE` (`SELECT`) à `ACCESS EXCLUSIVE` (`ALTER TABLE` — bloque tout). `LOCK TABLE` sans mode = `ACCESS EXCLUSIVE` : toujours spécifier le mode.
+5. Advisory locks : verrou numérique applicatif, scope session ou transaction, bloquant ou non-bloquant (`pg_try_advisory_*`). Purement conventionnel — à combiner avec les row locks, pas à les remplacer.
+6. `pg_locks` + jointure `pg_stat_activity` + cast `::regclass` : observer tous les locks en live. `granted = false` = en attente. `pg_blocking_pids(pid)` : raccourci pour identifier le bloquant.
+7. Transaction `idle in transaction` + row lock = blocage indéfini en production. Configurer `idle_in_transaction_session_timeout`. Ne mettre aucune I/O externe dans une transaction.
+8. Bon outil selon le scénario : réservation → `FOR UPDATE` ; file de tâches → `SKIP LOCKED` ; rapport cohérent multi-tables → `LOCK TABLE … IN SHARE MODE` ; mutex applicatif → advisory lock.
 
-## 9. Advisory locks — Verrous applicatifs
-
-### 9.1 Concept
-
-Les **advisory locks** sont des verrous "virtuels" qui ne protegent aucune ligne ni table. C'est votre application qui decide de leur signification.
-
-> **Analogie** : Imaginez un panneau "Occupe/Libre" sur une porte. Le panneau n'empeche pas physiquement d'ouvrir la porte — c'est un signal que tout le monde respecte par convention. Les advisory locks fonctionnent de la même façon.
-
-### 9.2 Types d'advisory locks
-
-| Fonction | Type | Bloquant ? | Liberation |
-|----------|------|-----------|------------|
-| `pg_advisory_lock(key)` | Session | Oui (attend) | `pg_advisory_unlock(key)` ou fin de session |
-| `pg_try_advisory_lock(key)` | Session | Non (retourne false) | Idem |
-| `pg_advisory_xact_lock(key)` | Transaction | Oui (attend) | Automatique au COMMIT/ROLLBACK |
-| `pg_try_advisory_xact_lock(key)` | Transaction | Non (retourne false) | Idem |
-
-### 9.3 Cas d'usage : mutex applicatif
-
-```sql
--- Empêcher deux instances de lancer le même batch
-SELECT pg_advisory_lock(hashtext('batch_facturation'));
--- Ici, un seul processus peut executer ce code a la fois
-
--- ... traitement du batch ...
-
-SELECT pg_advisory_unlock(hashtext('batch_facturation'));
-```
-
-### 9.4 Cas d'usage : singleton par entite
-
-```sql
--- Verrouiller le traitement d'un utilisateur specifique
--- (cle composee : type + id)
-SELECT pg_advisory_xact_lock(1, 42);
--- 1 = "type: user processing", 42 = user_id
-
--- Un seul processus traite l'utilisateur 42 a la fois
--- Le lock est libere automatiquement au COMMIT
-```
-
-### 9.5 Node.js : advisory lock pattern
-
-```typescript
-import pg from 'pg';
-const { Pool } = pg;
-
-const pool = new Pool({ max: 10 });
-
-/**
- * Execute une fonction avec un advisory lock.
- * Un seul processus peut executer la fonction pour cette cle.
- */
-async function withAdvisoryLock(lockKey, fn) {
-    const client = await pool.connect();
-
-    try {
-        await client.query('BEGIN');
-
-        // Essayer d'obtenir le lock (non-bloquant)
-        const { rows } = await client.query(
-            'SELECT pg_try_advisory_xact_lock($1) AS acquired',
-            [lockKey]
-        );
-
-        if (!rows[0].acquired) {
-            await client.query('ROLLBACK');
-            return { skipped: true, reason: 'Lock deja pris' };
-        }
-
-        // Lock obtenu — executer la fonction
-        const result = await fn(client);
-
-        await client.query('COMMIT');
-        // Lock libere automatiquement (xact_lock)
-
-        return { skipped: false, result };
-    } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-    } finally {
-        client.release();
-    }
-}
-
-// Utilisation : un seul worker traite chaque facture
-async function genererFacture(factureId) {
-    const lockKey = 100000 + factureId; // Namespace pour les factures
-
-    const outcome = await withAdvisoryLock(lockKey, async (client) => {
-        // Ce code est garanti de s'executer par un seul process
-        const { rows } = await client.query(
-            'SELECT * FROM factures WHERE id = $1 AND status = $2',
-            [factureId, 'pending']
-        );
-
-        if (rows.length === 0) return null;
-
-        // Generer le PDF, envoyer l'email, etc.
-        await client.query(
-            `UPDATE factures SET status = 'sent' WHERE id = $1`,
-            [factureId]
-        );
-
-        return rows[0];
-    });
-
-    if (outcome.skipped) {
-        console.log(`Facture ${factureId} deja en cours de traitement`);
-    }
-}
-```
-
-### 9.6 Observer les advisory locks
-
-```sql
-SELECT
-    l.classid,
-    l.objid,
-    l.mode,
-    l.granted,
-    a.pid,
-    a.usename,
-    a.query
-FROM pg_locks l
-JOIN pg_stat_activity a ON l.pid = a.pid
-WHERE l.locktype = 'advisory';
-```
-
----
-
-## 10. Deadlock preview
-
-Quand deux transactions se bloquent mutuellement, c'est un **deadlock**. Un apercu rapide avant le module 10 :
+## 7. Seeds Anki
 
 ```
-Transaction A                    Transaction B
-─────────────                    ─────────────
-BEGIN;                           BEGIN;
-
-UPDATE comptes SET solde = 100   UPDATE comptes SET solde = 200
-  WHERE id = 1;                    WHERE id = 2;
--- Lock sur id=1                 -- Lock sur id=2
-
-UPDATE comptes SET solde = 300   UPDATE comptes SET solde = 400
-  WHERE id = 2;                    WHERE id = 1;
--- ATTEND le lock sur id=2      -- ATTEND le lock sur id=1
--- (detenu par B)                -- (detenu par A)
-
--- DEADLOCK !
--- PostgreSQL detecte le cycle apres ~1s (deadlock_timeout)
--- et tue une des deux transactions
+Quelle différence entre SELECT FOR UPDATE et SELECT FOR SHARE ?|FOR UPDATE est exclusif — bloque tout autre FOR UPDATE/FOR SHARE sur la ligne ; FOR SHARE est partagé — plusieurs lectures FOR SHARE coexistent mais bloquent FOR UPDATE
+Que fait SELECT FOR UPDATE SKIP LOCKED ?|Retourne uniquement les lignes non verrouillées en ignorant silencieusement les lignes déjà verrouillées — idéal pour une file de tâches traitée par plusieurs workers en parallèle
+Quel est le SQLSTATE d'un NOWAIT sur une ligne verrouillée ?|55P03 (lock_not_available) — ERROR: could not obtain lock on row in relation
+Quel mode de lock acquiert LOCK TABLE sans préciser le mode ?|ACCESS EXCLUSIVE — bloque tout, y compris les SELECT. Toujours écrire LOCK TABLE t IN MODE MODE explicitement
+À quoi servent les advisory locks ?|Mutex applicatif défini par clé numérique — un seul processus exécute un traitement à la fois (cron, batch, singleton) sans lier le verrou à une ligne ou une table
+Différence pg_advisory_lock et pg_advisory_xact_lock ?|Session lock — libération manuelle via pg_advisory_unlock ou fin de session ; transaction lock — libération automatique au COMMIT/ROLLBACK. Préférer xact_lock pour éviter les fuites
+Comment trouver qui bloque qui sans analyser pg_locks manuellement ?|SELECT pid, query, pg_blocking_pids(pid) FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0 — retourne les PIDs bloquants pour chaque session bloquée
+Pourquoi PostgreSQL ne fait-il jamais de lock escalation ?|Les row locks sont stockés dans les tuples (xmax), pas en mémoire partagée — pas de limite de nombre, donc pas besoin d'escalader en table lock, contrairement à SQL Server ou MySQL
+Quel piège avec une transaction idle in transaction qui tient un FOR UPDATE ?|Elle maintient le verrou indéfiniment — toutes les sessions concurrentes sur cette ligne sont bloquées. Corriger avec idle_in_transaction_session_timeout et aucune I/O externe dans la transaction
 ```
 
-```
-     ┌──────────┐    attend    ┌──────────┐
-     │    Tx A   │ ──────────► │  Lock 2   │
-     │          │              │ (par B)   │
-     └──────────┘              └──────────┘
-          ▲                         │
-          │                         │
-     ┌──────────┐    attend    ┌──────────┐
-     │  Lock 1   │ ◄────────── │    Tx B   │
-     │ (par A)   │              │          │
-     └──────────┘              └──────────┘
+## Pont vers le lab
 
-     CYCLE = DEADLOCK
-```
-
-Nous verrons les details et les stratégies de prevention dans le module 10.
-
----
-
-## 11. Node.js patterns : FOR UPDATE avec pg
-
-### 11.1 Pattern check-then-act
-
-```typescript
-import pg from 'pg';
-const { Pool } = pg;
-
-const pool = new Pool({ max: 20 });
-
-// Pattern : verifier + modifier atomiquement
-async function decrementerStock(produitId, quantite) {
-    const client = await pool.connect();
-
-    try {
-        await client.query('BEGIN');
-
-        // 1. Verifier avec lock
-        const { rows } = await client.query(
-            `SELECT stock FROM produits
-             WHERE id = $1
-             FOR UPDATE`,
-            [produitId]
-        );
-
-        if (rows.length === 0) {
-            throw new Error('Produit introuvable');
-        }
-
-        const stockActuel = rows[0].stock;
-
-        if (stockActuel < quantite) {
-            throw new Error(
-                `Stock insuffisant (${stockActuel} < ${quantite})`
-            );
-        }
-
-        // 2. Modifier (le lock est deja acquis)
-        await client.query(
-            `UPDATE produits
-             SET stock = stock - $1
-             WHERE id = $2`,
-            [quantite, produitId]
-        );
-
-        await client.query('COMMIT');
-        return { success: true, nouveauStock: stockActuel - quantite };
-    } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-    } finally {
-        client.release();
-    }
-}
-```
-
-### 11.2 Pattern avec lock_timeout
-
-```typescript
-async function modificationAvecTimeout(userId, data) {
-    const client = await pool.connect();
-
-    try {
-        await client.query('BEGIN');
-        await client.query("SET LOCAL lock_timeout = '3s'");
-
-        const { rows } = await client.query(
-            `SELECT * FROM users WHERE id = $1 FOR UPDATE`,
-            [userId]
-        );
-
-        // ... modification ...
-
-        await client.query('COMMIT');
-    } catch (error) {
-        await client.query('ROLLBACK');
-
-        if (error.code === '55P03') {
-            // lock_timeout depasse
-            console.warn(`User ${userId} verrouille, retry plus tard`);
-        }
-        throw error;
-    } finally {
-        client.release();
-    }
-}
-```
-
----
-
-## 12. Exercice mental
-
-> **Exercice mental** : Vous avez 100 workers qui traitent des jobs en parallele. Chaque worker fait `SELECT ... FROM jobs WHERE status = 'pending' LIMIT 1 FOR UPDATE`. Que se passe-t-il ? Est-ce performant ? Quelle alternative proposeriez-vous ?
-
-<details>
-<summary>Reponse</summary>
-
-**Problème** : Tous les 100 workers vont essayer de verrouiller **la même ligne** (le premier job pending). 99 d'entre eux vont attendre. Quand le premier libere le lock, le 2eme le prend, les 98 autres attendent... C'est un **goulot d'etranglement** (lock contention).
-
-**Solution** : `FOR UPDATE SKIP LOCKED`. Chaque worker prend le prochain job **disponible** (non verrouille). Pas d'attente, pas de contention. Les 100 workers traitent 100 jobs différents en parallele.
-</details>
-
----
-
-## Ce qu'il faut retenir
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                    A RETENIR                                  │
-│                                                               │
-│  1. Row locks : FOR UPDATE > FOR NO KEY UPDATE >             │
-│     FOR SHARE > FOR KEY SHARE                                │
-│                                                               │
-│  2. Table locks : 8 niveaux, ACCESS EXCLUSIVE bloque tout    │
-│                                                               │
-│  3. NOWAIT : echouer immediatement si verrouille             │
-│                                                               │
-│  4. SKIP LOCKED : ignorer les lignes verrouillees            │
-│     → pattern job queue tres performant                      │
-│                                                               │
-│  5. Advisory locks : verrous applicatifs personnalises        │
-│     → mutex, singleton, rate limiting                        │
-│                                                               │
-│  6. pg_locks + pg_stat_activity = monitoring des locks        │
-│                                                               │
-│  7. Attention aux "idle in transaction" !                     │
-│                                                               │
-│  8. JAMAIS de lock escalation dans PostgreSQL                │
-└──────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Navigation
-
-| Précédent | Suivant |
-|---|---|
-| [Module 08 — Niveaux d'isolation & MVCC](./08-niveaux-isolation.md) | [Module 10 — Deadlocks](./10-deadlocks.md) |
-
-**Travaux pratiques** : [Lab 09 — Manipuler les verrous](../labs/lab-09-locks.md)
-
----
-
-> *"Un verrou bien place vaut mieux qu'un bug en production. Mais un verrou inutile est un ralentisseur sur une autoroute."*
-
----
-
-<!-- parcours-recommande -->
-
-::: tip Parcours recommandé
-1. **Screencast** : [screencast 09 verrous et locks](../screencasts/screencast-09-verrous-et-locks.md)
-2. **Lab** : [lab-09-locks-en-action](../labs/lab-09-locks-en-action/README)
-3. **Visualisation** : [Lock Matrix](../visualizations/lock-matrix.html)
-4. **Quiz** : [quiz 09 verrous et locks](../quizzes/quiz-09-verrous-et-locks.html)
-:::
+> Lab associé : `10-postgresql/labs/lab-09-locks-en-action/`. Tu reproduis en deux sessions psql le blocage sur la réservation de place TribuZen, tu observes `pg_locks` en live, tu testes `NOWAIT` et `SKIP LOCKED` sur une file de notifications, et tu poses un advisory lock sur un événement. Corrigé SQL inline dans le README, aucun fichier séparé.

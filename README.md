@@ -1,5 +1,9 @@
 # PostgreSQL & Databases — Maîtriser les bases de données relationnelles
 
+![VitePress](https://img.shields.io/badge/-VitePress-646CFF?style=flat-square&logo=vite&logoColor=white)
+![TypeScript](https://img.shields.io/badge/-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)
+[![fullstack-autotraining](https://img.shields.io/badge/curriculum-fullstack--autotraining-4C1?style=flat-square)](https://github.com/smaurier/fullstack-autotraining)
+
 Formation complète sur PostgreSQL et les bases de données relationnelles : du modèle relationnel aux techniques avancées (débutant -> expert).
 
 **Ce cours couvre tout le spectre** : le modèle relationnel, le SQL, les transactions ACID, les index (B-tree, GIN, GiST, BRIN), le query planner, MVCC, les niveaux d'isolation, les verrous, les deadlocks, les performances, les window functions, JSONB, le full-text search, la sécurité, l'administration, la replication, le monitoring et le partitionnement.

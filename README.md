@@ -11,7 +11,7 @@ Formation complète sur PostgreSQL et les bases de données relationnelles : du 
 <!-- labs-gestes:start -->
 ## Labs — refonte du 22/09/2026 : un lab = un geste métier complet
 
-> Règle qualité 5 du parcours : chaque lab est **un geste métier complet**, sous deux formes — **Zéro** (construire de zéro un artefact réel et entier) ou **Intervention** (modifier de l'existant avec consommateurs, findings avant code, non-régression). Un lab n'entre en file qu'avec un **oracle exécutable** (`src/` starter · `test/` · `solution/` séparée). Les labs historiques de ce cours (un concept par lab, sans oracle) restent dans `labs/` jusqu'à remplacement et **ne sont plus la file**. Cible détaillée : [`docs/gestes-complets.md`](../docs/gestes-complets.md). État : **5/6 avec oracle**.
+> Règle qualité 5 du parcours : chaque lab est **un geste métier complet**, sous deux formes — **Zéro** (construire de zéro un artefact réel et entier) ou **Intervention** (modifier de l'existant avec consommateurs, findings avant code, non-régression). Un lab n'entre en file qu'avec un **oracle exécutable** (`src/` starter · `test/` · `solution/` séparée). Les labs historiques de ce cours (un concept par lab, sans oracle) restent dans `labs/` jusqu'à remplacement et **ne sont plus la file**. Cible détaillée : [`docs/gestes-complets.md`](../docs/gestes-complets.md). État : **6/6 avec oracle**.
 
 | # | Lab | Forme | Geste | Oracle |
 |---|-----|-------|-------|--------|
@@ -20,7 +20,7 @@ Formation complète sur PostgreSQL et les bases de données relationnelles : du 
 | 03 | [`lab-03-requete-lente-en-prod`](labs/lab-03-requete-lente-en-prod/README.md) | Intervention | EXPLAIN ANALYZE, index, réécriture, preuve au chiffre | ✅ vérifié |
 | 04 | [`lab-04-deadlock-reproduit`](labs/lab-04-deadlock-reproduit/README.md) | Intervention | isolation, verrous, deadlock reproduit puis résolu | ✅ vérifié |
 | 05 | [`lab-05-migration-destructive`](labs/lab-05-migration-destructive/README.md) | Intervention | rendre sûre une migration qui perd des données | ✅ vérifié |
-| 06 | `lab-06-jsonb-en-production` | Intervention | ajouter un champ JSONB indexé à une table vivante | · à écrire |
+| 06 | [`lab-06-jsonb-en-production`](labs/lab-06-jsonb-en-production/README.md) | Intervention | ajouter un champ JSONB indexé à une table vivante | ✅ vérifié |
 
 <!-- labs-gestes:end -->
 

@@ -5,6 +5,8 @@
   "description": "Oracles executables des labs PostgreSQL (regle : un lab = un geste metier complet). Chaque lab demarre un vrai Postgres 17 ephemere via Docker.",
   "scripts": {
     "lab:01": "cd lab-01-schema-de-zero && npm run lab",
-    "solution:01": "cd lab-01-schema-de-zero && npm run solution"
+    "solution:01": "cd lab-01-schema-de-zero && npm run solution",
+    "lab:02": "cd lab-02-requetes-de-l-appli && npm run lab",
+    "solution:02": "cd lab-02-requetes-de-l-appli && npm run solution"
   }
 }

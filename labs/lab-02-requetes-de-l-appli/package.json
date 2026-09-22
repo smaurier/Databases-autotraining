@@ -1,0 +1,14 @@
+{
+  "name": "lab-02-requetes-de-l-appli",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lab 02 PostgreSQL — les requêtes réelles de TribuZen en SQL brut : transaction atomique, pagination, recherche paramétrée (anti-injection), agrégation.",
+  "type": "module",
+  "scripts": {
+    "lab": "node run-oracle.mjs lab",
+    "solution": "node run-oracle.mjs solution"
+  },
+  "dependencies": {
+    "pg": "8.23.0"
+  }
+}

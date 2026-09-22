@@ -11,6 +11,8 @@
     "lab:03": "cd lab-03-requete-lente-en-prod && npm run lab",
     "solution:03": "cd lab-03-requete-lente-en-prod && npm run solution",
     "lab:04": "cd lab-04-deadlock-reproduit && npm run lab",
-    "solution:04": "cd lab-04-deadlock-reproduit && npm run solution"
+    "solution:04": "cd lab-04-deadlock-reproduit && npm run solution",
+    "lab:05": "cd lab-05-migration-destructive && npm run lab",
+    "solution:05": "cd lab-05-migration-destructive && npm run solution"
   }
 }

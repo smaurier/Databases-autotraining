@@ -1,0 +1,12 @@
+{
+  "name": "lab-03-requete-lente-en-prod",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lab 03 PostgreSQL (intervention) — diagnostiquer et corriger une requête lente en prod avec EXPLAIN ANALYZE réel.",
+  "type": "module",
+  "scripts": {
+    "lab": "node run-oracle.mjs lab",
+    "solution": "node run-oracle.mjs solution"
+  },
+  "dependencies": { "pg": "8.23.0" }
+}

@@ -1,0 +1,3 @@
+-- fix.sql — PAGE BLANCHE. Un ticket de perf vient d'arriver (voir README) : le fil d'une
+-- famille met plus d'une seconde à charger sur 300 000 posts. Le coupable et la correction
+-- sont pour toi à trouver — indice dans le README, § Étapes.

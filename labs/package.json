@@ -7,6 +7,8 @@
     "lab:01": "cd lab-01-schema-de-zero && npm run lab",
     "solution:01": "cd lab-01-schema-de-zero && npm run solution",
     "lab:02": "cd lab-02-requetes-de-l-appli && npm run lab",
-    "solution:02": "cd lab-02-requetes-de-l-appli && npm run solution"
+    "solution:02": "cd lab-02-requetes-de-l-appli && npm run solution",
+    "lab:03": "cd lab-03-requete-lente-en-prod && npm run lab",
+    "solution:03": "cd lab-03-requete-lente-en-prod && npm run solution"
   }
 }

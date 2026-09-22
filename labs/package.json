@@ -9,6 +9,8 @@
     "lab:02": "cd lab-02-requetes-de-l-appli && npm run lab",
     "solution:02": "cd lab-02-requetes-de-l-appli && npm run solution",
     "lab:03": "cd lab-03-requete-lente-en-prod && npm run lab",
-    "solution:03": "cd lab-03-requete-lente-en-prod && npm run solution"
+    "solution:03": "cd lab-03-requete-lente-en-prod && npm run solution",
+    "lab:04": "cd lab-04-deadlock-reproduit && npm run lab",
+    "solution:04": "cd lab-04-deadlock-reproduit && npm run solution"
   }
 }

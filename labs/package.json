@@ -13,6 +13,8 @@
     "lab:04": "cd lab-04-deadlock-reproduit && npm run lab",
     "solution:04": "cd lab-04-deadlock-reproduit && npm run solution",
     "lab:05": "cd lab-05-migration-destructive && npm run lab",
-    "solution:05": "cd lab-05-migration-destructive && npm run solution"
+    "solution:05": "cd lab-05-migration-destructive && npm run solution",
+    "lab:06": "cd lab-06-jsonb-en-production && npm run lab",
+    "solution:06": "cd lab-06-jsonb-en-production && npm run solution"
   }
 }

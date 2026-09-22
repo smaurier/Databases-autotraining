@@ -1,0 +1,13 @@
+{
+  "name": "lab-06-jsonb-en-production",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lab": "node run-oracle.mjs lab",
+    "solution": "node run-oracle.mjs solution"
+  },
+  "dependencies": {
+    "pg": "8.23.0"
+  }
+}

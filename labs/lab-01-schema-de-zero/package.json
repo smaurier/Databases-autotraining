@@ -1,0 +1,14 @@
+{
+  "name": "lab-01-schema-de-zero",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lab 01 PostgreSQL — un schéma TribuZen de zéro : tables, contraintes, migration additive, index justifié par EXPLAIN.",
+  "type": "module",
+  "scripts": {
+    "lab": "node run-oracle.mjs lab",
+    "solution": "node run-oracle.mjs solution"
+  },
+  "dependencies": {
+    "pg": "8.23.0"
+  }
+}

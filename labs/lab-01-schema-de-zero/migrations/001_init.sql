@@ -1,0 +1,25 @@
+-- 001_init.sql — PAGE BLANCHE. Le schéma TribuZen : familles et membres.
+--
+-- Exigences (l'oracle les vérifie toutes) :
+--   TABLE families
+--     id          uuid primary key, généré par défaut (gen_random_uuid() — disponible
+--                 nativement en PostgreSQL 17, aucune extension à activer)
+--     name        text, obligatoire (not null)
+--     created_at  timestamptz, obligatoire, défaut now()
+--
+--   TABLE members
+--     id          uuid primary key, généré par défaut
+--     family_id   uuid, obligatoire, référence families(id)
+--     email       text, obligatoire
+--     role        text, obligatoire, restreint à 'admin' | 'parent' | 'enfant' (CHECK)
+--     created_at  timestamptz, obligatoire, défaut now()
+--     CONTRAINTE  un même email ne peut pas apparaître deux fois DANS LA MÊME famille
+--                 (UNIQUE composite sur family_id + email — pas sur email seul : la même
+--                 personne peut être invitée dans plusieurs familles)
+--
+--   UN INDEX sur members(created_at), nommé idx_members_created_at — justifié : l'app
+--   affiche un fil "membres récemment arrivés, toutes familles confondues"
+--   (ORDER BY created_at DESC LIMIT 20). Le seed de l'oracle pose 100 000 lignes ; sans cet
+--   index, PostgreSQL doit tout lire et tout trier (Seq Scan + Sort) — avec, un simple
+--   parcours d'index en sens inverse suffit (Index Scan Backward). L'oracle le PROUVE via
+--   EXPLAIN, il ne le suppose pas.

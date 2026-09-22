@@ -1,0 +1,10 @@
+{
+  "name": "postgresql-labs",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Oracles executables des labs PostgreSQL (regle : un lab = un geste metier complet). Chaque lab demarre un vrai Postgres 17 ephemere via Docker.",
+  "scripts": {
+    "lab:01": "cd lab-01-schema-de-zero && npm run lab",
+    "solution:01": "cd lab-01-schema-de-zero && npm run solution"
+  }
+}

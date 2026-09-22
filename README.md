@@ -11,11 +11,11 @@ Formation complète sur PostgreSQL et les bases de données relationnelles : du 
 <!-- labs-gestes:start -->
 ## Labs — refonte du 22/09/2026 : un lab = un geste métier complet
 
-> Règle qualité 5 du parcours : chaque lab est **un geste métier complet**, sous deux formes — **Zéro** (construire de zéro un artefact réel et entier) ou **Intervention** (modifier de l'existant avec consommateurs, findings avant code, non-régression). Un lab n'entre en file qu'avec un **oracle exécutable** (`src/` starter · `test/` · `solution/` séparée). Les labs historiques de ce cours (un concept par lab, sans oracle) restent dans `labs/` jusqu'à remplacement et **ne sont plus la file**. Cible détaillée : [`docs/gestes-complets.md`](../docs/gestes-complets.md). État : **0/6 avec oracle**.
+> Règle qualité 5 du parcours : chaque lab est **un geste métier complet**, sous deux formes — **Zéro** (construire de zéro un artefact réel et entier) ou **Intervention** (modifier de l'existant avec consommateurs, findings avant code, non-régression). Un lab n'entre en file qu'avec un **oracle exécutable** (`src/` starter · `test/` · `solution/` séparée). Les labs historiques de ce cours (un concept par lab, sans oracle) restent dans `labs/` jusqu'à remplacement et **ne sont plus la file**. Cible détaillée : [`docs/gestes-complets.md`](../docs/gestes-complets.md). État : **1/6 avec oracle**.
 
 | # | Lab | Forme | Geste | Oracle |
 |---|-----|-------|-------|--------|
-| 01 | `lab-01-schema-de-zero` | Zéro | tables, contraintes, migrations additives, index justifiés par EXPLAIN, jeu de données | · à écrire |
+| 01 | [`lab-01-schema-de-zero`](labs/lab-01-schema-de-zero/README.md) | Zéro | tables, contraintes, migrations additives, index justifiés par EXPLAIN, jeu de données | ✅ vérifié |
 | 02 | `lab-02-requetes-de-l-appli` | Zéro | les requêtes réelles de TribuZen, SQL brut avant l'ORM | · à écrire |
 | 03 | `lab-03-requete-lente-en-prod` | Intervention | EXPLAIN ANALYZE, index, réécriture, preuve au chiffre | · à écrire |
 | 04 | `lab-04-deadlock-reproduit` | Intervention | isolation, verrous, deadlock reproduit puis résolu | · à écrire |
